@@ -43,7 +43,7 @@ async function resolveSectionId(conn, sectionName, gradeLevelId, currentSectionI
 }
 
 exports.createClass = async (req, res) => {
-  const { gradeLevel, section, adviserId, schedule } = req.body;
+  const { gradeLevel, section, room, adviserId, schedule } = req.body;
   // "section" ay text input na ngayon (section name), hindi na section_id
 
   let conn;
@@ -98,12 +98,13 @@ exports.createClass = async (req, res) => {
 
     // 1. Insert sa `classes` table
     const classesQuery = `
-      INSERT INTO classes (grade_level_id, section_id, class_adviser_id) 
-      VALUES (?, ?, ?)
+      INSERT INTO classes (grade_level_id, section_id, room , class_adviser_id) 
+      VALUES (?, ?, ?, ?)
     `;
     const [classResult] = await conn.query(classesQuery, [
       gradeLevel,
       sectionId,
+      room,
       adviserId,
     ]);
 
@@ -192,7 +193,7 @@ exports.createClass = async (req, res) => {
 // re-inserted mula sa payload, tulad ng class_schedule).
 exports.updateClass = async (req, res) => {
   const { id } = req.params;
-  const { gradeLevel, section, adviserId, schedule } = req.body;
+  const { gradeLevel, section, room, adviserId, schedule } = req.body;
 
   let conn;
 
@@ -203,7 +204,7 @@ exports.updateClass = async (req, res) => {
     // 1. Confirm the class exists, kunin ang kasalukuyang values (para
     // malaman kung ano talaga ang nagbago, at yun lang ang i-a-UPDATE)
     const [existingRows] = await conn.query(
-      `SELECT id, grade_level_id, section_id, class_adviser_id FROM classes WHERE id = ? LIMIT 1`,
+      `SELECT id, grade_level_id, section_id, room, class_adviser_id FROM classes WHERE id = ? LIMIT 1`,
       [id],
     );
     if (existingRows.length === 0) {
@@ -286,12 +287,15 @@ exports.updateClass = async (req, res) => {
       }
     }
 
-    // 2. I-UPDATE ang classes row — column na talagang nagbago lang ang
-    // isasama sa SET clause; wala munang UPDATE kung walang nagbago.
+
     const classUpdates = {};
     if (Number(gradeLevel) !== currentClass.grade_level_id) classUpdates.grade_level_id = gradeLevel;
     if (sectionId !== currentClass.section_id) classUpdates.section_id = sectionId;
     if (Number(adviserId) !== currentClass.class_adviser_id) classUpdates.class_adviser_id = adviserId;
+    // NEW: isama ang room sa diff — dating hindi na-uupdate kahit nagbago sa payload
+    const cleanedRoom = room !== undefined && room !== null ? String(room).trim() : "";
+    const currentRoom = currentClass.room !== null && currentClass.room !== undefined ? String(currentClass.room).trim() : "";
+    if (cleanedRoom !== currentRoom) classUpdates.room = cleanedRoom;
 
     if (Object.keys(classUpdates).length > 0) {
       const setClause = Object.keys(classUpdates)
@@ -616,7 +620,7 @@ exports.getSubjectsByGrade = async (req, res) => {
 };
 
 const ADVISER_NAME_EXPR = "CONCAT(t.first_name, ' ', t.last_name)";
-// Get all classes with grade, section, adviser, schedule, and student count
+// Get all classes with grade, section, room, adviser, schedule, and student count
 exports.getClasses = async (req, res) => {
   try {
     const [classes] = await connection.query(`
@@ -626,6 +630,7 @@ exports.getClasses = async (req, res) => {
   gl.grade_level,
   gs.id   AS section_id,
   gs.section_name,
+  c.room  AS room,
   c.class_adviser_id AS adviser_id,
   ${ADVISER_NAME_EXPR} AS adviser_name,
   t.email_address AS adviser_email,
@@ -690,6 +695,7 @@ ORDER BY cs.start_time ASC
       gradeLevel: c.grade_level,
       sectionId: c.section_id ?? null,
       section: c.section_name ?? null,
+      room: c.room ?? null,
       adviserId: c.adviser_id,
       adviserName: c.adviser_name || "Unassigned",
       adviserEmail: c.adviser_email || null,

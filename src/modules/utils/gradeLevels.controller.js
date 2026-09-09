@@ -21,7 +21,6 @@ exports.getSectionByGrade = async (req, res) => {
       .json({ message: "Grade level ID parameter is required" });
   }
 
-  // Gagamit tayo ng JOIN para ma-filter gamit ang ID ng grade level
   const query = `
   SELECT 
     grade_level_sections.id AS id,
@@ -31,6 +30,7 @@ exports.getSectionByGrade = async (req, res) => {
   FROM grade_level_sections
   INNER JOIN grade_level ON grade_level_sections.grade_level_id = grade_level.id 
   WHERE grade_level.id = ? 
+    AND grade_level_sections.is_active = 1
   ORDER BY grade_level_sections.section_name ASC;
 `;
 

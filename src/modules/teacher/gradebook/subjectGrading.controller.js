@@ -1,4 +1,5 @@
 const connection = require('../../../../config/db');
+const { recalcStudentSubject, recalcAllStudentsForSubject } = require('../../shared/grades/gradeCache.service');
 
 async function getActiveGradingPeriodId() {
   const [rows] = await connection.execute(
@@ -296,6 +297,16 @@ const updateItem = async (req, res) => {
     const { itemId } = req.params;
     const { date, activityName, topic, topicId, format, maxItems } = req.body;
 
+    const [beforeRows] = await connection.execute(
+      `SELECT grading_period_id AS gradingPeriodId, exam_type AS examType, max_items AS maxItems
+       FROM grade_items WHERE id = ? AND subject_section_id = ?`,
+      [itemId, subjectSectionId]
+    );
+    if (beforeRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Item not found." });
+    }
+    const before = beforeRows[0];
+
     const fields = [];
     const params = [];
     if (date) { fields.push("item_date = ?"); params.push(date); }
@@ -315,6 +326,11 @@ const updateItem = async (req, res) => {
       params
     );
 
+    const maxItemsChanged = maxItems && Number(maxItems) !== Number(before.maxItems);
+    if (maxItemsChanged && ["ST1", "ST2", "TE"].includes(before.examType)) {
+      await recalcAllStudentsForSubject(subjectSectionId, before.gradingPeriodId);
+    }
+
     return res.status(200).json({ success: true });
   } catch (error) {
     console.error("Error updating grade item:", error);
@@ -327,6 +343,12 @@ const deleteItem = async (req, res) => {
     const { id: subjectSectionId } = req.subjectSection;
     const { itemId } = req.params;
 
+    const [itemRows] = await connection.execute(
+      `SELECT grading_period_id AS gradingPeriodId, exam_type AS examType
+       FROM grade_items WHERE id = ? AND subject_section_id = ?`,
+      [itemId, subjectSectionId]
+    );
+
     await connection.execute(`DELETE FROM grade_scores WHERE item_id = ?`, [itemId]);
     const [result] = await connection.execute(
       `DELETE FROM grade_items WHERE id = ? AND subject_section_id = ?`,
@@ -335,6 +357,10 @@ const deleteItem = async (req, res) => {
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ success: false, message: "Item not found." });
+    }
+
+    if (itemRows.length && ["ST1", "ST2", "TE"].includes(itemRows[0].examType)) {
+      await recalcAllStudentsForSubject(subjectSectionId, itemRows[0].gradingPeriodId);
     }
 
     return res.status(200).json({ success: true });
@@ -385,6 +411,15 @@ const upsertScore = async (req, res) => {
        ON DUPLICATE KEY UPDATE score = VALUES(score)`,
       [itemId, studentId, value]
     );
+
+    const [itemRows] = await connection.execute(
+      `SELECT subject_section_id AS subjectSectionId, grading_period_id AS gradingPeriodId, exam_type AS examType
+       FROM grade_items WHERE id = ?`,
+      [itemId]
+    );
+    if (itemRows.length && ["ST1", "ST2", "TE"].includes(itemRows[0].examType)) {
+      await recalcStudentSubject(studentId, itemRows[0].subjectSectionId, itemRows[0].gradingPeriodId);
+    }
 
     return res.status(200).json({ success: true });
   } catch (error) {

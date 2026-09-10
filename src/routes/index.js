@@ -3,36 +3,16 @@ const router = express.Router();
 
 //==================================== A D M I N =======================================
 
-//authentication
 const authenticationRoutes = require("./../modules/authentication/authentication.router.js");
-
-//loginrequency
 const loginFreqencyRoutes = require("./../modules/authentication/loginfrequency.router.js")
-
-//user accounts
 const userRecordRoutes = require("./../modules/admin/user-record/userRecord.router.js");
-
-//student records
 const studentRecordRoutes = require("./../modules/admin/student-record/studentRecord.router.js");
-
-//classes management
 const classesManagementRoutes = require("./../modules/admin/classes-management/classManagement.router.js");
-
-//section management
 const sectionManagementRoutes = require("./../modules/admin/section-management/section.router.js");
-
-//academics
-// const academicsRoutes = require("./../modules/admin/academics/academics.router.js");
-
-//subject management
 const subjectManagementRoutes = require("./../modules/admin/subject-management/subjectManagement.router.js");
 const academicYearRouters = require("./../modules/admin/subject-management/academicYear.router.js");
-
-//utilities
 const gradeLevelRoutes = require("./../modules/utils/gradeLevels.router.js");
 const calendarRoutes = require("./../modules/shared/calendar/calendar.router.js");
-
-//settings
 const settingsRoutes = require("../modules/settings/school-year-management/sy.router.js");
 const gradingPeriodsRouters = require("../modules/settings/grading-periods/gradingPeriods.router.js");
 
@@ -42,7 +22,6 @@ router.use("/user", userRecordRoutes);
 router.use("/student", studentRecordRoutes);
 router.use("/classes", classesManagementRoutes);
 router.use("/section", sectionManagementRoutes);
-// router.use("/academics", academicsRoutes);
 router.use("/subject", subjectManagementRoutes);
 router.use("/gradeLevel", gradeLevelRoutes);
 router.use("/calendar", calendarRoutes);
@@ -108,5 +87,14 @@ router.use("/weeklyHolisticEvaluation", weeklyHolisticRoutes);
 router.use("/termPerformanceProgress", termProgressReportRoutes);
 router.use("/termHolisticProgress", termHolisticReportRoutes);
 router.use("/studentProfile", studentProfilesRoutes);
+
+//=================================== P R I N C I P A L ========================================
+
+const teacherRoutes = require("./../modules/principal/teachers/teachers.router.js");
+const studentRoutes = require("./../modules/principal/students/students.router.js");
+
+router.use("/teachers", teacherRoutes);
+router.use("/student", studentRoutes);
+
 
 module.exports = router;

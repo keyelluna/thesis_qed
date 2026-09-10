@@ -92,6 +92,9 @@ exports.login = async (req, res) => {
 };
 
 exports.me = async (req, res) => {
+  if (!req.user) {
+    return res.status(200).json({ user: null }); 
+  }
   try {
     const { userId, userName, role } = req.user;
     const table = ROLE_TABLES[role];

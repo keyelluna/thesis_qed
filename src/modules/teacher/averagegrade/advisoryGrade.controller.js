@@ -1,7 +1,5 @@
 const connection = require('../../../../config/db');
 
-const ADVISORY_EXAM_TYPES = ["ST1", "ST2", "TE"];
-
 async function loadAdvisorySection(req, res, next) {
   try {
     const authId = req.user?.userId;
@@ -75,61 +73,33 @@ const getAdvisoryGradebook = async (req, res) => {
       [sectionId]
     );
 
-    const [items] = await connection.execute(
-      `SELECT id, subject_section_id AS subjectSectionId, exam_type AS examType, max_items AS maxItems
-       FROM grade_items
-       WHERE subject_section_id IN (${ssPlaceholders}) AND tab = 'exams'
-         AND exam_type IN ('ST1','ST2','TE') AND grading_period_id = ?`,
+    // Read directly from the cache instead of recomputing from raw scores
+    const [cacheRows] = await connection.execute(
+      `SELECT student_id AS studentId, subject_section_id AS subjectSectionId, average, is_complete AS isComplete
+       FROM subject_grade_cache
+       WHERE subject_section_id IN (${ssPlaceholders}) AND grading_period_id = ?`,
       [...subjectSectionIds, gradingPeriodId]
     );
 
-    let scores = [];
-    if (items.length > 0) {
-      const itemIds = items.map((i) => i.id);
-      const itemPlaceholders = itemIds.map(() => "?").join(",");
-      const [scoreRows] = await connection.execute(
-        `SELECT item_id AS itemId, student_id AS studentId, score
-         FROM grade_scores
-         WHERE item_id IN (${itemPlaceholders})`,
-        itemIds
-      );
-      scores = scoreRows;
-    }
-
-    const scoreByKey = new Map(
-      scores.map((s) => [`${s.studentId}:${s.itemId}`, s.score === null ? null : Number(s.score)])
+    const cacheByKey = new Map(
+      cacheRows.map((r) => [`${r.studentId}:${r.subjectSectionId}`, { average: r.average, isComplete: !!r.isComplete }])
     );
+
+    const [overallRows] = await connection.execute(
+      `SELECT student_id AS studentId, overall_average AS overallAverage
+       FROM advisory_overall_grades
+       WHERE section_id = ? AND grading_period_id = ?`,
+      [sectionId, gradingPeriodId]
+    );
+    const overallByStudent = new Map(overallRows.map((r) => [r.studentId, r.overallAverage]));
 
     const studentsOut = students.map((student) => {
       const grades = {};
       for (const ss of subjectSections) {
-        const subjItems = items.filter((i) => i.subjectSectionId === ss.subjectSectionId);
-        const byType = {};
-        for (const type of ADVISORY_EXAM_TYPES) {
-          const item = subjItems.find((i) => i.examType === type);
-          if (!item) {
-            byType[type] = null;
-            continue;
-          }
-          const score = scoreByKey.get(`${student.id}:${item.id}`);
-          byType[type] = score === undefined || score === null ? null : { score, max: item.maxItems };
-        }
-        const present = ADVISORY_EXAM_TYPES.filter((t) => byType[t] !== null);
-        const isComplete = present.length === ADVISORY_EXAM_TYPES.length;
-        const average = isComplete
-          ? Math.round(
-              (present.reduce((sum, t) => sum + (byType[t].score / byType[t].max) * 100, 0) /
-                ADVISORY_EXAM_TYPES.length) *
-                10
-            ) / 10
-          : null;
-
+        const cell = cacheByKey.get(`${student.id}:${ss.subjectSectionId}`) || { average: null, isComplete: false };
         grades[String(ss.subjectSectionId)] = {
-          st1: byType.ST1,
-          st2: byType.ST2,
-          te: byType.TE,
-          isComplete,
-          average,
+          isComplete: cell.isComplete,
+          average: cell.average === null ? null : Number(cell.average),
         };
       }
       return {
@@ -139,6 +109,9 @@ const getAdvisoryGradebook = async (req, res) => {
         middleName: student.middleName,
         gender: student.gender === "Female" ? "F" : "M",
         grades,
+        overallAverage: overallByStudent.has(student.id) && overallByStudent.get(student.id) !== null
+          ? Number(overallByStudent.get(student.id))
+          : null,
       };
     });
 
@@ -186,7 +159,6 @@ const getSubmissionStatus = async (req, res) => {
     return res.status(500).json({ success: false, message: "Internal server error." });
   }
 };
-
 
 const submitAdvisoryGrades = async (req, res) => {
   try {

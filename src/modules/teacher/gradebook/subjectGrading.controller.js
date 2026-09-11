@@ -1,3 +1,4 @@
+// src/modules/teacher/gradebook/subjectGrading.controller.js
 const connection = require('../../../../config/db');
 const { recalcStudentSubject, recalcAllStudentsForSubject } = require('../../shared/grades/gradeCache.service');
 
@@ -116,87 +117,6 @@ const getSubjectSectionInfo = async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching subject-section info:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
-  }
-};
-
-// --- ATTENDANCE (term-scoped) ---
-
-const getAttendance = async (req, res) => {
-  try {
-    const { id: subjectSectionId } = req.subjectSection;
-    const { allPeriods } = req.query;
-
-    let sql = `
-      SELECT student_id, DATE_FORMAT(attendance_date, '%Y-%m-%d') AS date, status
-      FROM attendance_records
-      WHERE subject_section_id = ?
-    `;
-    const params = [subjectSectionId];
-
-    let resolvedTermId = null;
-    if (allPeriods !== "true") {
-      resolvedTermId = req.query.term || (await getActiveGradingPeriodId());
-      if (resolvedTermId) {
-        sql += ` AND grading_period_id = ?`;
-        params.push(resolvedTermId);
-      }
-    }
-
-    const [rows] = await connection.execute(sql, params);
-
-    const map = {};
-    const presentCount = {};
-    for (const r of rows) {
-      const sid = String(r.student_id);
-      map[sid] = map[sid] || {};
-      map[sid][r.date] = r.status;
-      if (r.status === "P") presentCount[sid] = (presentCount[sid] || 0) + 1;
-    }
-
-    return res.status(200).json({
-      success: true,
-      data: map,
-      presentTotals: presentCount,
-      termId: resolvedTermId ? String(resolvedTermId) : null,
-    });
-  } catch (error) {
-    console.error("Error fetching attendance:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
-  }
-};
-
-const upsertAttendance = async (req, res) => {
-  try {
-    const { id: subjectSectionId } = req.subjectSection;
-    const { studentId, date, term } = req.body;
-    const status = req.body.status ?? null;
-
-    if (!studentId || !date) {
-      return res.status(400).json({ success: false, message: "studentId and date are required." });
-    }
-
-    const gradingPeriodId = term || (await getActiveGradingPeriodId());
-
-    if (status === null) {
-      await connection.execute(
-        `DELETE FROM attendance_records
-         WHERE subject_section_id = ? AND student_id = ? AND attendance_date = ?
-           AND grading_period_id <=> ?`,
-        [subjectSectionId, studentId, date, gradingPeriodId]
-      );
-    } else {
-      await connection.execute(
-        `INSERT INTO attendance_records (subject_section_id, student_id, attendance_date, status, grading_period_id)
-         VALUES (?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE status = VALUES(status)`,
-        [subjectSectionId, studentId, date, status, gradingPeriodId]
-      );
-    }
-
-    return res.status(200).json({ success: true, termId: gradingPeriodId ? String(gradingPeriodId) : null });
-  } catch (error) {
-    console.error("Error saving attendance:", error);
     return res.status(500).json({ success: false, message: "Internal server error." });
   }
 };
@@ -327,7 +247,7 @@ const updateItem = async (req, res) => {
     );
 
     const maxItemsChanged = maxItems && Number(maxItems) !== Number(before.maxItems);
-    if (maxItemsChanged && ["ST1", "ST2", "TE"].includes(before.examType)) {
+    if (maxItemsChanged) {
       await recalcAllStudentsForSubject(subjectSectionId, before.gradingPeriodId);
     }
 
@@ -344,7 +264,7 @@ const deleteItem = async (req, res) => {
     const { itemId } = req.params;
 
     const [itemRows] = await connection.execute(
-      `SELECT grading_period_id AS gradingPeriodId, exam_type AS examType
+      `SELECT grading_period_id AS gradingPeriodId
        FROM grade_items WHERE id = ? AND subject_section_id = ?`,
       [itemId, subjectSectionId]
     );
@@ -359,7 +279,7 @@ const deleteItem = async (req, res) => {
       return res.status(404).json({ success: false, message: "Item not found." });
     }
 
-    if (itemRows.length && ["ST1", "ST2", "TE"].includes(itemRows[0].examType)) {
+    if (itemRows.length) {
       await recalcAllStudentsForSubject(subjectSectionId, itemRows[0].gradingPeriodId);
     }
 
@@ -413,11 +333,11 @@ const upsertScore = async (req, res) => {
     );
 
     const [itemRows] = await connection.execute(
-      `SELECT subject_section_id AS subjectSectionId, grading_period_id AS gradingPeriodId, exam_type AS examType
+      `SELECT subject_section_id AS subjectSectionId, grading_period_id AS gradingPeriodId
        FROM grade_items WHERE id = ?`,
       [itemId]
     );
-    if (itemRows.length && ["ST1", "ST2", "TE"].includes(itemRows[0].examType)) {
+    if (itemRows.length && itemRows[0].gradingPeriodId) {
       await recalcStudentSubject(studentId, itemRows[0].subjectSectionId, itemRows[0].gradingPeriodId);
     }
 
@@ -505,8 +425,6 @@ module.exports = {
   loadSubjectSection,
   getGradingPeriods,
   getSubjectSectionInfo,
-  getAttendance,
-  upsertAttendance,
   getItems,
   addItem,
   updateItem,

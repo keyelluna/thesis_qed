@@ -132,25 +132,20 @@ const getAttendanceSummary = async (req, res) => {
 
     const sectionId = advisoryRows[0].section_id;
 
+    // Advisory attendance is recorded directly against the section in
+    // `advisory_attendance_records` (one row per student per day) — this
+    // used to incorrectly join through `attendance_records` /
+    // `subject-section`, which tracks a separate, unrelated per-subject
+    // attendance feature and had nothing to do with the advisory roster
+    // the teacher actually marks on TeacherAttendancePage.
     const [rows] = await connection.execute(
       `SELECT
-         SUM(CASE WHEN daily.final_status = 'P' THEN 1 ELSE 0 END) AS present,
-         SUM(CASE WHEN daily.final_status = 'A' THEN 1 ELSE 0 END) AS absent,
-         SUM(CASE WHEN daily.final_status = 'L' THEN 1 ELSE 0 END) AS late
-       FROM (
-         SELECT
-           a.student_id,
-           CASE
-             WHEN SUM(CASE WHEN a.status = 'A' THEN 1 ELSE 0 END) > 0 THEN 'A'
-             WHEN SUM(CASE WHEN a.status = 'L' THEN 1 ELSE 0 END) > 0 THEN 'L'
-             ELSE 'P'
-           END AS final_status
-         FROM attendance_records a
-         INNER JOIN \`subject-section\` ss ON a.subject_section_id = ss.id
-         WHERE ss.section_id = ?
-           AND a.attendance_date = CURDATE()
-         GROUP BY a.student_id
-       ) AS daily`,
+         SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) AS present,
+         SUM(CASE WHEN status = 'A' THEN 1 ELSE 0 END) AS absent,
+         SUM(CASE WHEN status = 'L' THEN 1 ELSE 0 END) AS late
+       FROM advisory_attendance_records
+       WHERE section_id = ?
+         AND attendance_date = CURDATE()`,
       [sectionId]
     );
 

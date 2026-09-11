@@ -7,9 +7,6 @@ const verifyToken = require("../../authentication/authentication.middleware");
 
 router.get("/:subjectSectionId", verifyToken, controller.loadSubjectSection, controller.getSubjectSectionInfo);
 
-router.get("/:subjectSectionId/attendance", verifyToken, controller.loadSubjectSection, controller.getAttendance);
-router.put("/:subjectSectionId/attendance", verifyToken, controller.loadSubjectSection, controller.upsertAttendance);
-
 router.get("/:subjectSectionId/items", verifyToken, controller.loadSubjectSection, controller.getItems);
 router.post("/:subjectSectionId/items", verifyToken, controller.loadSubjectSection, controller.addItem);
 router.put("/:subjectSectionId/items/:itemId", verifyToken, controller.loadSubjectSection, controller.updateItem);

@@ -28,25 +28,22 @@ router.use("/calendar", calendarRoutes);
 router.use("/sy", settingsRoutes);
 router.use("/gradingPeriods", gradingPeriodsRouters); // fixed: was "/api/gradingPeriods" -> double /api 404
 router.use("/academic-year", academicYearRouters);
-//==================================== T E A C H E R =======================================
-
-//teacher routes
+//==================================== T E A C H E R =======================================//
 const mySubjectRoutes = require("./../modules/teacher/my-subjects/mySubjects.router.js");
 const teacherDashboardRoutes = require("./../modules/teacher/dashboard/teacherDashboard.router.js");
 const subjectGradingRoutes = require("./../modules/teacher/gradebook/subjectGrading.router.js");
 const advisoryRoutes = require("./../modules/teacher/roster/advisory.router.js");
 const holisticRoutes = require("./../modules/teacher/holistic/holistics.router.js");
 const advisoryGradingRoutes = require("./../modules/teacher/averagegrade/advisoryGrade.router.js");
-
-
+const advisoryAttendanceRoutes = require("./../modules/teacher/attendance/advisoryAttendance.router.js");
 
 router.use("/mySubjects", mySubjectRoutes);
 router.use("/teacherDashboard", teacherDashboardRoutes);
 router.use("/teacherGrading", subjectGradingRoutes);
 router.use("/teacherAdvisory", advisoryRoutes);
-router.use("/teacherHolistic", holisticRoutes); 
+router.use("/teacherHolistic", holisticRoutes);
 router.use("/advisoryGrading", advisoryGradingRoutes);
-
+router.use("/teacherAttendance", advisoryAttendanceRoutes);
 //=================================== P A R E N T S ========================================
 
 //schoolyear/terms routes

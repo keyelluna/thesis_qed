@@ -3,7 +3,7 @@ const connection = require('../../../../config/db');
 
 exports.getAssignedSubjects = async (req, res) => {
   try {
-    const userId = req.user?.userId; // galing sa JWT payload (qed_authentication.id)
+    const userId = req.user?.userId;
 
     if (!userId) {
       return res.status(401).json({
@@ -25,7 +25,7 @@ exports.getAssignedSubjects = async (req, res) => {
        FROM \`subject-section\` ss
        INNER JOIN teacher_table tt ON ss.teacher_id = tt.id
        INNER JOIN elem_subjects es ON ss.subject_id = es.id
-       INNER JOIN grade_level_sections gls ON ss.section_id = gls.id
+       LEFT JOIN grade_level_sections gls ON ss.section_id = gls.id
        INNER JOIN grade_level gl ON es.grade_level_id = gl.id
        WHERE tt.user_id = ?
        ORDER BY gl.id ASC, gls.section_name ASC, es.subject_name ASC`,
@@ -46,6 +46,7 @@ exports.getAssignedSubjects = async (req, res) => {
     });
   }
 };
+
 exports.getSubjectClassList = async (req, res) => {
   try {
     const userId = req.user?.userId;
@@ -78,7 +79,7 @@ exports.getSubjectClassList = async (req, res) => {
        INNER JOIN teacher_table tt ON ss.teacher_id = tt.id
        INNER JOIN elem_subjects es ON ss.subject_id = es.id
        INNER JOIN grade_level_sections gls ON ss.section_id = gls.id
-       INNER JOIN grade_level gl ON es.grade_level_id = gl.id
+       INNER JOIN grade_level gl ON gls.grade_level_id = gl.id
        WHERE ss.id = ? AND tt.user_id = ?`,
       [subjectSectionId, userId]
     );
@@ -126,4 +127,3 @@ exports.getSubjectClassList = async (req, res) => {
     });
   }
 };
-

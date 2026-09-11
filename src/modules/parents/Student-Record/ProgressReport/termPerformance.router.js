@@ -4,11 +4,9 @@ const verifyToken = require("../../../authentication/authentication.middleware")
 const termPerformanceController = require("./termPerformance.controller");
 
 
-router.get(
-  "/:studentId/term-performance",
-  verifyToken,
-  termPerformanceController.loadParentStudent,
-  termPerformanceController.getStudentTermPerformance
-);
+router.get('/:studentId/term-performance', verifyToken, termPerformanceController.verifyStudentAccess);
+router.get('/:studentId/term-performance', verifyToken, termPerformanceController.getTermPerformance);
+
+
 
 module.exports = router;

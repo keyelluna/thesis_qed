@@ -4,23 +4,24 @@ exports.getSubjectSectionsByGrade = async (req, res) => {
   const { gradeLevel } = req.params;
 
   try {
-    const query = `
-      SELECT 
-        ss.id            AS id,
-        es.subject_name  AS subject_name,
-        es.grade_level_id AS grade_level_id,
-        gls.section_name AS section_name,
-        ss.teacher_id    AS teacher_id,
-        sy.school_year   AS school_year,
-        ss.status        AS status
-      FROM \`subject-section\` ss
-      JOIN elem_subjects es        ON es.id = ss.subject_id
-      JOIN grade_level_sections gls ON gls.id = ss.section_id
-      JOIN school_year sy          ON sy.id = ss.school_year_id
-      WHERE es.grade_level_id = ?
-  AND sy.is_active = 1
-      ORDER BY es.subject_name ASC
-    `;
+const query = `
+  SELECT 
+    ss.id             AS id,
+    es.subject_name   AS subject_name,
+    es.grade_level_id AS grade_level_id,
+    es.is_graded      AS is_graded,
+    gls.section_name  AS section_name,
+    ss.teacher_id     AS teacher_id,
+    sy.school_year    AS school_year,
+    ss.status         AS status
+  FROM \`subject-section\` ss
+  JOIN elem_subjects es        ON es.id = ss.subject_id
+  LEFT JOIN grade_level_sections gls ON gls.id = ss.section_id
+  JOIN school_year sy          ON sy.id = ss.school_year_id
+  WHERE es.grade_level_id = ?
+    AND sy.is_active = 1
+  ORDER BY es.subject_name ASC
+`;
 
     const [rows] = await connection.query(query, [gradeLevel]);
 
@@ -69,7 +70,7 @@ exports.getSubjectsByGrade = async (req, res) => {
 // ang nase-save, diretso sa elem_subjects (catalog). Hiwalay ito sa addSubjectSection,
 // na siyang nag-a-assign ng subject sa isang section+teacher+school year.
 exports.addSubject = async (req, res) => {
-  const { gradeLevelId, subjectName, schoolYear } = req.body;
+  const { gradeLevelId, subjectName, isGraded, schoolYear } = req.body;
 
   if (!gradeLevelId || !subjectName) {
     return res.status(400).json({
@@ -92,8 +93,8 @@ exports.addSubject = async (req, res) => {
     }
 
     const [result] = await connection.query(
-      `INSERT INTO elem_subjects (subject_name, grade_level_id) VALUES (?, ?)`,
-      [subjectName, gradeLevelId]
+      `INSERT INTO elem_subjects (subject_name, grade_level_id, is_graded) VALUES (?, ?, ?)`,
+      [subjectName, gradeLevelId, isGraded]
     );
 
     return res.status(201).json({
@@ -103,6 +104,7 @@ exports.addSubject = async (req, res) => {
         id: result.insertId,
         subject_name: subjectName,
         grade_level_id: gradeLevelId,
+        is_graded: isGraded,
         schoolYear: schoolYear ?? null,
         status: "Active",
       },
@@ -225,14 +227,7 @@ exports.addSubject = async (req, res) => {
 
 exports.updateSubjectSection = async (req, res) => {
   const { id } = req.params;
-  const {
-    gradeLevelId,
-    subjectName,
-    sectionName,
-    teacherId,
-    schoolYear,
-    status,
-  } = req.body;
+  const { isGraded } = req.body;
 
   if (!id) {
     return res.status(400).json({
@@ -241,24 +236,19 @@ exports.updateSubjectSection = async (req, res) => {
     });
   }
 
-  if (!gradeLevelId || !subjectName || !sectionName || !schoolYear || !status) {
+  if (typeof isGraded !== "boolean") {
     return res.status(400).json({
       success: false,
-      message: "gradeLevelId, subjectName, sectionName, schoolYear, and status are required.",
+      message: "isGraded is required.",
     });
   }
 
-  const conn = await connection.execute();
-
   try {
-    await conn.beginTransaction();
-
-    const [existingRows] = await conn.query(
-      `SELECT * FROM \`subject-section\` WHERE id = ? LIMIT 1`,
+    const [existingRows] = await connection.query(
+      `SELECT subject_id FROM \`subject-section\` WHERE id = ? LIMIT 1`,
       [id]
     );
     if (existingRows.length === 0) {
-      await conn.rollback();
       return res.status(404).json({
         success: false,
         message: "Subject assignment not found.",
@@ -266,58 +256,10 @@ exports.updateSubjectSection = async (req, res) => {
     }
     const subjectId = existingRows[0].subject_id;
 
-    const [sectionRows] = await conn.query(
-      `SELECT id FROM grade_level_sections WHERE section_name = ? AND grade_level_id = ? AND is_active = 1 LIMIT 1`,
-      [sectionName, gradeLevelId]
+    await connection.query(
+      `UPDATE elem_subjects SET is_graded = ? WHERE id = ?`,
+      [isGraded, subjectId]
     );
-    if (sectionRows.length === 0) {
-      await conn.rollback();
-      return res.status(404).json({
-        success: false,
-        message: `Section "${sectionName}" not found for this grade level.`,
-      });
-    }
-    const sectionId = sectionRows[0].id;
-
-    const [syRows] = await conn.query(
-      `SELECT id FROM school_year WHERE school_year = ? LIMIT 1`,
-      [schoolYear]
-    );
-    if (syRows.length === 0) {
-      await conn.rollback();
-      return res.status(404).json({
-        success: false,
-        message: `School year "${schoolYear}" not found.`,
-      });
-    }
-    const schoolYearId = syRows[0].id;
-
-    const [dup] = await conn.query(
-      `SELECT id FROM \`subject-section\`
-       WHERE subject_id = ? AND section_id = ? AND school_year_id = ? AND id != ? LIMIT 1`,
-      [subjectId, sectionId, schoolYearId, id]
-    );
-    if (dup.length > 0) {
-      await conn.rollback();
-      return res.status(409).json({
-        success: false,
-        message: `"${subjectName}" is already assigned to section "${sectionName}" for ${schoolYear}.`,
-      });
-    }
-
-    await conn.query(
-      `UPDATE elem_subjects SET subject_name = ? WHERE id = ?`,
-      [subjectName, subjectId]
-    );
-
-    await conn.query(
-      `UPDATE \`subject-section\`
-         SET section_id = ?, teacher_id = ?, school_year_id = ?, status = ?
-       WHERE id = ?`,
-      [sectionId, teacherId ?? 0, schoolYearId, status, id]
-    );
-
-    await conn.commit();
 
     return res.status(200).json({
       success: true,
@@ -325,21 +267,15 @@ exports.updateSubjectSection = async (req, res) => {
       data: {
         id: Number(id),
         subject_id: subjectId,
-        section_id: sectionId,
-        teacher_id: teacherId,
-        school_year_id: schoolYearId,
-        status,
+        is_graded: isGraded,
       },
     });
   } catch (error) {
-    await conn.rollback();
     console.error("Database Error:", error);
     res.status(500).json({
       success: false,
       message: "Database error occurred.",
     });
-  } finally {
-    conn.release();
   }
 };
 

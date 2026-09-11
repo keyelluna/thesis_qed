@@ -168,4 +168,61 @@ const getAttendanceSummary = async (req, res) => {
   }
 };
 
-module.exports = { getDashboardSummary, getDashboardStats, getAttendanceSummary };
+
+const getDateLabel = (dateInput) => {
+  const toDateOnly = (value) => {
+    const d = new Date(value);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+ 
+  const eventDate = toDateOnly(dateInput);
+  const today = toDateOnly(new Date());
+ 
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+ 
+  if (eventDate.getTime() === today.getTime()) return "Today";
+  if (eventDate.getTime() === tomorrow.getTime()) return "Tomorrow";
+ 
+
+  return eventDate.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+};
+ 
+const getUpcomingEvents = async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit, 10) || 5;
+ 
+    const [rows] = await connection.query(
+      `SELECT id, title, type, date, holiday_type
+       FROM school_calendar
+       WHERE date >= CURDATE()
+       ORDER BY date ASC
+       LIMIT ?`,
+      [limit]
+    );
+ 
+    const events = rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      type: row.type, // 'activity' | 'holiday'
+      holidayType: row.holiday_type, // null if 'activity'
+      date: row.date, // 'YYYY-MM-DD'
+      dateLabel: getDateLabel(row.date), // "Today" | "Tomorrow"
+    }));
+ 
+    return res.status(200).json({ success: true, data: events });
+  } catch (error) {
+    console.error("Error fetching upcoming events:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch upcoming events",
+    });
+  }
+};
+
+
+module.exports = { getDashboardSummary, getDashboardStats, getAttendanceSummary, getUpcomingEvents, getDateLabel };

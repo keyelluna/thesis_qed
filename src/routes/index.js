@@ -68,6 +68,7 @@ const weeklyHolisticRoutes = require("./../modules/parents/Student-Record/holist
 //PROGRESS REPORT
 const termProgressReportRoutes = require("./../modules/parents/Student-Record/ProgressReport/termPerformance.router.js");
 const termHolisticReportRoutes = require("./../modules/parents/Student-Record/ProgressReport/termHolistic.router.js");
+const attendanceReportRoutes = require("./../modules/parents/Student-Record/ProgressReport/attendance.router.js");
 
 //STDENT PROFILE
 const studentProfilesRoutes = require("./../modules/parents/Student-Record/StudentProfile/studentProfile.Router.js");
@@ -85,13 +86,16 @@ router.use("/classSchedule", classSchedule);
 router.use("/weeklyHolisticEvaluation", weeklyHolisticRoutes);
 router.use("/termPerformanceProgress", termProgressReportRoutes);
 router.use("/termHolisticProgress", termHolisticReportRoutes);
+router.use("/attendanceSummary", attendanceReportRoutes);
 router.use("/studentProfile", studentProfilesRoutes);
 
 //=================================== P R I N C I P A L ========================================
 
+const principalDashboardRoutes = require("./../modules/principal/dashboard/dashboard.router.js");
 const teacherRoutes = require("./../modules/principal/teachers/teachers.router.js");
 const studentRoutes = require("./../modules/principal/students/students.router.js");
 
+router.use("/dashboard", principalDashboardRoutes);
 router.use("/teachers", teacherRoutes);
 router.use("/student", studentRoutes);
 

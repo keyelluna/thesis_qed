@@ -94,6 +94,53 @@ async function verifyStudentAccess(req, res, next) {
 }
 
 /**
+ * Fetches learner meta info (name, grade & section, class adviser,
+ * school year) for the progress report header.
+ *
+ * - Grade & section come straight off elem_students (grade_level_id /
+ *   section_id), joined to their label tables.
+ * - Class adviser is resolved via classes.section_id -> class_adviser_id
+ *   -> teacher_table, since that's the same place the adviser is set for
+ *   the section (not grade_level_sections.adviser_id, which isn't kept
+ *   in sync).
+ * - School year is whichever row in school_year has is_active = 1.
+ * - Any piece can come back null (e.g. student has no section yet, or
+ *   the section has no adviser assigned) -- callers should treat missing
+ *   pieces as "not set yet" rather than an error.
+ */
+async function getStudentMeta(studentId) {
+  const [rows] = await connection.execute(
+    `SELECT
+       es.first_name AS firstName,
+       es.last_name AS lastName,
+       es.middle_name AS middleName,
+       gl.grade_level AS gradeLevel,
+       gls.section_name AS sectionName,
+       sy.school_year AS schoolYear,
+       t.first_name AS adviserFirstName,
+       t.last_name AS adviserLastName
+     FROM elem_students es
+     LEFT JOIN grade_level gl ON es.grade_level_id = gl.id
+     LEFT JOIN grade_level_sections gls ON es.section_id = gls.id
+     LEFT JOIN classes c ON c.section_id = es.section_id
+     LEFT JOIN teacher_table t ON c.class_adviser_id = t.id
+     LEFT JOIN school_year sy ON sy.is_active = 1
+     WHERE es.id = ?
+     LIMIT 1`,
+    [studentId]
+  );
+
+  const m = rows[0] || {};
+
+  return {
+    learner: [m.firstName, m.middleName, m.lastName].filter(Boolean).join(" "),
+    gradeSection: [m.gradeLevel, m.sectionName].filter(Boolean).join(" - "),
+    classAdviser: [m.adviserFirstName, m.adviserLastName].filter(Boolean).join(" "),
+    schoolYear: m.schoolYear || "",
+  };
+}
+
+/**
  * GET /api/termPerformanceProgress/:studentId/term-performance
  *
  * One entry per grading period of the active school year. A term is only
@@ -106,10 +153,16 @@ async function verifyStudentAccess(req, res, next) {
  * gradeCache.service.js on every score write). Overall/GWA per term =
  * advisory_overall_grades. Both are the same source the teacher's grade
  * sheet reads, so results match exactly.
+ *
+ * Response shape: { success, meta, data }. `meta` carries the learner's
+ * name/grade-section/adviser/school-year for the report header and is
+ * always populated regardless of which early-return path `data` takes.
  */
 const getTermPerformance = async (req, res) => {
   try {
     const { id: studentId, sectionId } = req.student;
+
+    const meta = await getStudentMeta(studentId);
 
     const [gradingPeriods] = await connection.execute(
       `SELECT gp.id, gp.term_number AS termNumber, gp.term_label AS termLabel
@@ -129,8 +182,7 @@ const getTermPerformance = async (req, res) => {
       }));
 
     if (gradingPeriods.length === 0 || sectionId === null) {
-      // No grading periods yet, or student has no section (walang subjects/grades pa).
-      return res.status(200).json({ success: true, data: shell(false) });
+      return res.status(200).json({ success: true, meta, data: shell(false) });
     }
 
     const periodIds = gradingPeriods.map((gp) => gp.id);
@@ -155,11 +207,11 @@ const getTermPerformance = async (req, res) => {
     if (subjectSections.length === 0) {
       return res.status(200).json({
         success: true,
+        meta,
         data: shell((id) => releasedPeriodIds.has(id)),
       });
     }
 
-    const subjectNameBySectionId = new Map(subjectSections.map((s) => [s.id, s.subjectName]));
     const subjectSectionIds = subjectSections.map((s) => s.id);
     const ssPlaceholders = subjectSectionIds.map(() => "?").join(",");
 
@@ -186,13 +238,21 @@ const getTermPerformance = async (req, res) => {
         .map((r) => [r.gradingPeriodId, Number(r.overallAverage)])
     );
 
-    const subjectsByPeriodId = new Map();
+    const gradeBySubjectAndPeriod = new Map();
     for (const row of cacheRows) {
-      const subjectName = subjectNameBySectionId.get(row.subjectSectionId);
-      if (!subjectName) continue;
-      const list = subjectsByPeriodId.get(row.gradingPeriodId) || [];
-      list.push({ subject: subjectName, grade: Number(row.average) });
-      subjectsByPeriodId.set(row.gradingPeriodId, list);
+      gradeBySubjectAndPeriod.set(
+        `${row.subjectSectionId}_${row.gradingPeriodId}`,
+        Number(row.average)
+      );
+    }
+
+    const subjectsByPeriodId = new Map();
+    for (const gp of gradingPeriods) {
+      const list = subjectSections.map((ss) => ({
+        subject: ss.subjectName,
+        grade: gradeBySubjectAndPeriod.get(`${ss.id}_${gp.id}`) ?? null,
+      }));
+      subjectsByPeriodId.set(gp.id, list);
     }
 
     const data = gradingPeriods.map((gp) => {
@@ -207,7 +267,7 @@ const getTermPerformance = async (req, res) => {
       };
     });
 
-    return res.status(200).json({ success: true, data });
+    return res.status(200).json({ success: true, meta, data });
   } catch (error) {
     console.error("Error fetching term performance progress:", error);
     return res.status(500).json({ success: false, message: "Internal server error." });

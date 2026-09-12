@@ -160,11 +160,35 @@ exports.createClass = async (req, res) => {
 
         // 2b. I-sync din sa subject-section — dito kumukuha ang "My Subjects"
         // ng teacher, kaya kailangan laging naka-align sa schedule.
-        await conn.query(
-          `INSERT INTO \`subject-section\` (subject_id, section_id, teacher_id, school_year_id, status)
-           VALUES (?, ?, ?, ?, 'Active')`,
-          [subjectId, sectionId, teacherId, schoolYearId],
+        //
+        // IMPORTANT: ang unique key ng `subject-section` ay
+        // (subject_id, section_id, school_year_id) — WALANG teacher_id.
+        // Kaya kahit "bagong" class ito, posibleng may existing row na
+        // (halimbawa: nagawa na dati pero nabura yung class), kaya i-check
+        // muna dito bago mag-INSERT para hindi mag-duplicate-key error.
+        const [existingSubjectSection] = await conn.query(
+          sectionId === null
+            ? `SELECT id, status FROM \`subject-section\`
+               WHERE subject_id = ? AND section_id IS NULL AND school_year_id = ?`
+            : `SELECT id, status FROM \`subject-section\`
+               WHERE subject_id = ? AND section_id = ? AND school_year_id = ?`,
+          sectionId === null
+            ? [subjectId, schoolYearId]
+            : [subjectId, sectionId, schoolYearId],
         );
+
+        if (existingSubjectSection.length === 0) {
+          await conn.query(
+            `INSERT INTO \`subject-section\` (subject_id, section_id, teacher_id, school_year_id, status)
+             VALUES (?, ?, ?, ?, 'Active')`,
+            [subjectId, sectionId, teacherId, schoolYearId],
+          );
+        } else {
+          await conn.query(
+            `UPDATE \`subject-section\` SET teacher_id = ?, status = 'Active' WHERE id = ?`,
+            [teacherId, existingSubjectSection[0].id],
+          );
+        }
       }
     }
 
@@ -334,7 +358,18 @@ exports.updateClass = async (req, res) => {
     }
 
     const matchedCurrentIds = new Set();
-    const subjectSectionKeepKeys = new Set(); // (subjectId|teacherId) na dapat manatiling Active
+    // IMPORTANT FIX: ang unique key ng `subject-section` table ay
+    // (subject_id, section_id, school_year_id) LANG — WALANG teacher_id.
+    // Kaya isa lang ang pwedeng row per subject kada section/school year,
+    // kahit sino pa ang teacher. Dating "subjectId|teacherId" ang ginagamit
+    // dito bilang key, kaya kapag pinalitan ang teacher ng isang subject,
+    // hindi na-match yung dati nang row (dahil magkaiba na ang teacherId),
+    // at sinusubukan mag-INSERT ng panibagong row — na bumabagsak sa
+    // unique constraint dahil existing na ang subject_id+section_id+
+    // school_year_id combo. Ang tamang paraan: i-key base sa subjectId
+    // lang, at kung may existing row na, i-UPDATE ang teacher_id nito
+    // imbes na mag-insert ng bago.
+    const subjectSectionKeepKeys = new Set(); // subjectId (string) na dapat manatiling Active
 
     for (const period of newSchedule) {
       const { subject, teacherId, startTime, endTime, days } = period;
@@ -380,7 +415,9 @@ exports.updateClass = async (req, res) => {
           }
         }
       } else {
-        // walang match sa existing rows — bagong period ito
+        // walang match sa existing rows — bagong period ito (kasama na
+        // dito ang kaso ng "pinalitan lang ang teacher" — magkaiba na ang
+        // scheduleKey dahil kasama ang teacherId, kaya lalabas na "bago")
         const [scheduleResult] = await conn.query(
           `INSERT INTO class_schedule (class_id, subject_name, subject_teacher_id, start_time, end_time)
            VALUES (?, ?, ?, ?, ?)`,
@@ -395,22 +432,22 @@ exports.updateClass = async (req, res) => {
         }
       }
 
-      subjectSectionKeepKeys.add(`${subjectId}|${teacherId}`);
+      subjectSectionKeepKeys.add(String(subjectId));
 
-      // 3b. i-sync ang subject-section: i-insert lang kung wala pa; kung
-      // meron na pero 'Inactive' lang, i-reactivate — hindi na delete+insert
-      // lahat kada save. Dahil na-move na natin sa 1d yung mga existing
-      // row papunta sa bagong section_id, dito na dapat sila mahanap sa
-      // halip na gumawa ng duplicate.
+      // 3b. i-sync ang subject-section: i-match base sa
+      // (subject_id, section_id, school_year_id) — tugma sa unique key ng
+      // table, hindi kasama ang teacher_id. Kung may existing row na,
+      // i-UPDATE ang teacher_id (at i-reactivate kung Inactive) imbes na
+      // mag-insert ng bago — dito na-fix ang ER_DUP_ENTRY na error.
       const [existingSubjectSection] = await conn.query(
         sectionId === null
-          ? `SELECT id, status FROM \`subject-section\`
-             WHERE subject_id = ? AND section_id IS NULL AND teacher_id = ? AND school_year_id = ?`
-          : `SELECT id, status FROM \`subject-section\`
-             WHERE subject_id = ? AND section_id = ? AND teacher_id = ? AND school_year_id = ?`,
+          ? `SELECT id, status, teacher_id FROM \`subject-section\`
+             WHERE subject_id = ? AND section_id IS NULL AND school_year_id = ?`
+          : `SELECT id, status, teacher_id FROM \`subject-section\`
+             WHERE subject_id = ? AND section_id = ? AND school_year_id = ?`,
         sectionId === null
-          ? [subjectId, teacherId, schoolYearId]
-          : [subjectId, sectionId, teacherId, schoolYearId],
+          ? [subjectId, schoolYearId]
+          : [subjectId, sectionId, schoolYearId],
       );
 
       if (existingSubjectSection.length === 0) {
@@ -419,10 +456,15 @@ exports.updateClass = async (req, res) => {
            VALUES (?, ?, ?, ?, 'Active')`,
           [subjectId, sectionId, teacherId, schoolYearId],
         );
-      } else if (existingSubjectSection[0].status !== "Active") {
-        await conn.query(`UPDATE \`subject-section\` SET status = 'Active' WHERE id = ?`, [
-          existingSubjectSection[0].id,
-        ]);
+      } else {
+        const row = existingSubjectSection[0];
+        // i-update kung nagbago ang teacher, o kung hindi pa Active
+        if (Number(row.teacher_id) !== Number(teacherId) || row.status !== "Active") {
+          await conn.query(
+            `UPDATE \`subject-section\` SET teacher_id = ?, status = 'Active' WHERE id = ?`,
+            [teacherId, row.id],
+          );
+        }
       }
     }
 
@@ -437,19 +479,21 @@ exports.updateClass = async (req, res) => {
     }
 
     // 4b. Alisin din ang mga subject-section row na wala nang katapat sa
-    // bagong schedule (subject/teacher combo na tinanggal na sa form).
+    // bagong schedule (yung subject mismo ay tinanggal na sa form).
+    // Base na lang sa subject_id ang pagkumpara dito — kasabay ng fix sa
+    // itaas, hindi na kailangan (at hindi na dapat) isama ang teacher_id.
     const [currentSubjectSections] = await conn.query(
       sectionId === null
-        ? `SELECT ss.id, ss.subject_id, ss.teacher_id FROM \`subject-section\` ss
+        ? `SELECT ss.id, ss.subject_id FROM \`subject-section\` ss
            WHERE ss.section_id IS NULL AND ss.school_year_id = ?
              AND ss.subject_id IN (SELECT id FROM elem_subjects WHERE grade_level_id = ?)`
-        : `SELECT ss.id, ss.subject_id, ss.teacher_id FROM \`subject-section\` ss
+        : `SELECT ss.id, ss.subject_id FROM \`subject-section\` ss
            WHERE ss.section_id = ? AND ss.school_year_id = ?`,
       sectionId === null ? [schoolYearId, gradeLevel] : [sectionId, schoolYearId],
     );
 
     const toDeleteSubjectSectionIds = currentSubjectSections
-      .filter((row) => !subjectSectionKeepKeys.has(`${row.subject_id}|${row.teacher_id}`))
+      .filter((row) => !subjectSectionKeepKeys.has(String(row.subject_id)))
       .map((row) => row.id);
 
     if (toDeleteSubjectSectionIds.length > 0) {
@@ -714,15 +758,81 @@ ORDER BY cs.start_time ASC
 };
 
 // Delete class
+// Delete class — kasama na ang pag-delete ng mga subject-section
+// (kasama na dito ang schedule via ON DELETE CASCADE sa class_schedule).
+// Ang subject-section ay hindi naka-FK sa classes, kaya kailangan
+// tanggalin ito ng manu-mano base sa section_id (o grade_level_id kung
+// walang section) + school_year_id, bago tanggalin ang class mismo.
 exports.deleteClass = async (req, res) => {
   const { id } = req.params;
+  let conn;
+
   try {
-    await connection.query(`DELETE FROM classes WHERE id = ?`, [id]);
+    conn = await connection.getConnection();
+    await conn.beginTransaction();
+
+    // 1. Kunin ang grade_level_id at section_id ng class bago ito tanggalin
+    const [classRows] = await conn.query(
+      `SELECT grade_level_id, section_id FROM classes WHERE id = ? LIMIT 1`,
+      [id],
+    );
+    if (classRows.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Class not found.",
+      });
+    }
+    const { grade_level_id: gradeLevelId, section_id: sectionId } = classRows[0];
+
+    // 2. Kunin ang active school year (para matukoy kung aling subject-section
+    // rows ang sa kasalukuyang school year lang dapat matanggal)
+    const [activeSY] = await conn.query(
+      `SELECT id FROM school_year WHERE is_active = 1 LIMIT 1`,
+    );
+
+    if (activeSY.length > 0) {
+      const schoolYearId = activeSY[0].id;
+
+      if (sectionId !== null) {
+        // May section ang class — tanggalin ang lahat ng subject-section
+        // na naka-link doon sa section na yun para sa active school year.
+        // Mag-cacascade ito papunta sa grade_items, grade_scores,
+        // learning_topics, interventions, intervention_alerts,
+        // attendance_records, holistic_ratings, subject_grade_cache.
+        await conn.query(
+          `DELETE FROM \`subject-section\` WHERE section_id = ? AND school_year_id = ?`,
+          [sectionId, schoolYearId],
+        );
+      } else {
+        // Walang section ang class (single-section grade level) — hanapin
+        // ang mga subject-section na section_id IS NULL pero ang subject
+        // ay kabilang sa parehong grade level ng class na ito.
+        await conn.query(
+          `DELETE ss FROM \`subject-section\` ss
+           JOIN elem_subjects es ON es.id = ss.subject_id
+           WHERE ss.section_id IS NULL
+             AND ss.school_year_id = ?
+             AND es.grade_level_id = ?`,
+          [schoolYearId, gradeLevelId],
+        );
+      }
+    }
+
+    // 3. Tanggalin ang class mismo — mag-cacascade na ito papunta sa
+    // class_schedule at class_schedule_day
+    await conn.query(`DELETE FROM classes WHERE id = ?`, [id]);
+
+    await conn.commit();
+
     res.status(200).json({ success: true, message: "Class deleted." });
   } catch (error) {
+    if (conn) await conn.rollback();
     console.error("Database Error:", error);
     res
       .status(500)
       .json({ success: false, message: "Failed to delete class." });
+  } finally {
+    if (conn) conn.release();
   }
 };

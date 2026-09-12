@@ -10,9 +10,9 @@ const connection = require("../../../../../config/db");
  *
  * Logic:
  *   - "School days" for the month = number of DISTINCT attendance_date
- *     na may record sa attendance_records (kahit anong section/subject),
- *     kasi yun ang basehan natin base sa sinabi mo (ilang beses nag-record
- *     ng attendance ang teacher sa loob ng buwan).
+ *     sa advisory_attendance_records ng student's OWN section (section_id),
+ *     dahil ito na ang homeroom/advisory-level attendance record — iisa
+ *     lang ang totoong "araw ng pasok" per section, hindi per subject.
  *   - Status counts (P/A/L/E) = specific sa student_id na hiningi,
  *     bilang ng records niya per status sa loob ng month/year na yun.
  */
@@ -61,12 +61,16 @@ exports.getMonthlyAttendance = async (req, res) => {
     const student = studentRows[0];
 
     // 1) Number of school days sa month/year na yun
-    //    = distinct attendance_date na may record (kahit anong subject_section)
+    //    = distinct attendance_date na may record sa advisory_attendance_records,
+    //    naka-scope sa section ng student (dati walang section filter, kaya
+    //    posibleng magkaiba ang bilang depende sa records ng ibang section)
     const [schoolDaysRows] = await connection.query(
       `SELECT COUNT(DISTINCT attendance_date) AS school_days
-       FROM attendance_records
-       WHERE MONTH(attendance_date) = ? AND YEAR(attendance_date) = ?`,
-      [monthNum, yearNum]
+       FROM advisory_attendance_records
+       WHERE section_id = ?
+         AND MONTH(attendance_date) = ?
+         AND YEAR(attendance_date) = ?`,
+      [student.section_id, monthNum, yearNum]
     );
 
     const schoolDays = schoolDaysRows[0].school_days || 0;
@@ -74,7 +78,7 @@ exports.getMonthlyAttendance = async (req, res) => {
     // 2) Status counts (P, A, L, E) ng specific student sa month/year na yun
     const [statusRows] = await connection.query(
       `SELECT status, COUNT(*) AS total
-       FROM attendance_records
+       FROM advisory_attendance_records
        WHERE student_id = ?
          AND MONTH(attendance_date) = ?
          AND YEAR(attendance_date) = ?
@@ -117,7 +121,7 @@ exports.getMonthlyAttendance = async (req, res) => {
     console.error("getMonthlyAttendance error:", error);
     return res.status(500).json({
       success: false,
-      message: "May error sa pag-kuha ng monthly attendance.",
+      message: "Failed to fetch monthly attendance.",
     });
   }
 };

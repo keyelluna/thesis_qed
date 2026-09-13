@@ -56,6 +56,7 @@ const linkedChildrenRoutes = require("./../modules/parents/LinkedChildren/linked
 //OVERVIEW
 const attendanceRoutes = require("./../modules/parents/Student-Record/Overview/attendance.router.js");
 const termPerformanceRoutes = require("./../modules/parents/Student-Record/Overview/studentTermPerformance.router.js");
+const holisticPerformanceRoutes = require("../modules/parents/Student-Record/Overview/holisticPerformance.router.js");
 
 //ACADEMIC
 const missedActivitiesRoutes = require("./../modules/parents/Student-Record/Academic/missedActivities.router.js");
@@ -78,6 +79,7 @@ router.use("/profile", parentsProfileRoutes);
 router.use("/linkedChildren", linkedChildrenRoutes);
 router.use("/attendance", attendanceRoutes);
 router.use("/termPerformance", termPerformanceRoutes);
+router.use("/holisticPerformance", holisticPerformanceRoutes);
 router.use("/missedActivities", missedActivitiesRoutes);
 router.use("/classSchedule", classSchedule);
 router.use("/weeklyHolisticEvaluation", weeklyHolisticRoutes);

@@ -1,14 +1,5 @@
 const connection = require('../../../../config/db');
-// ^ Adjust this relative path to match wherever your db.js actually lives,
-//   same as it's required in teacherDashboard.controller.js.
 
-// GET /api/teacherAdvisory/roster
-//
-// Returns the full student roster for the logged-in teacher's ADVISORY
-// section (classes.class_adviser_id) — NOT their taught subject-sections.
-// Uses the exact same lookup pattern as getDashboardStats' advisoryClassCount
-// and getAttendanceSummary's advisory section lookup, so the numbers will
-// always agree with what the dashboard already shows.
 const getAdvisoryRoster = async (req, res) => {
   try {
     const authId = req.user?.userId;

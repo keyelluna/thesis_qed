@@ -1,101 +1,120 @@
-// // const mysql = require("mysql2");
-
-// // const connection = mysql
-// //   .createPool({
-// //     host: process.env.DB_HOST,
-// //     user: process.env.DB_USER,
-// //     password: process.env.DB_PASSWORD,
-// //     database: process.env.DB_NAME,
-// //     dateStrings: true,
-// //     waitForConnections: true,
-// //     connectionLimit: 4, 
-// //     queueLimit: 0,
-// //   })
-// //   .promise();
-
-// // module.exports = connection;
-
-// const mysql = require("mysql2");
-
-// // Check if a global connection pool already exists
-// // if (!global.dbConnectionPool) {
-// //   global.dbConnectionPool = mysql
-// //     .createPool({
-// //       host: process.env.DB_HOST,
-// //       user: process.env.DB_USER,
-// //       password: process.env.DB_PASSWORD,
-// //       database: process.env.DB_NAME,
-// //       dateStrings: true,
-// //       waitForConnections: true,
-// //       connectionLimit: 2, // 🔑 Dropped to 2 to leave breathing room for restarts
-// //       queueLimit: 0,
-// //     })
-// //     .promise();
-// // }
-
-// // module.exports = global.dbConnectionPool;
-// const connection = mysql
-//   .createPool({
-//     host: process.env.DB_HOST,
-//     user: process.env.DB_USER,
-//     password: process.env.DB_PASSWORD,
-//     database: process.env.DB_NAME,
-//     dateStrings: true,
-//     waitForConnections: true,
-//     connectionLimit: 5, 
-//     queueLimit: 0,
-//     // enableKeepAlive: true, // <--- Add this to keep connections alive
-//     // keepAliveInitialDelay: 10000 // <--- 10 seconds
-//   })
-//   .promise();
-
-// // Gracefully close the pool so connections don't leak when the process
-// // restarts (e.g. nodemon) or is killed.
-// async function closePool(signal) {
-//   console.log(`Received ${signal}, closing MySQL pool...`);
-//   try {
-//     await connection.end();
-//     console.log("MySQL pool closed.");
-//   } catch (err) {
-//     console.error("Error closing MySQL pool:", err);
-//   } finally {
-//     process.exit(0);
-//   }
-// }
-
-// process.on("SIGINT", () => closePool("SIGINT"));   // Ctrl+C
-// process.on("SIGTERM", () => closePool("SIGTERM")); // normal kill
-// process.on("SIGUSR2", () => closePool("SIGUSR2")); // nodemon restart signal
-
-// module.exports = connection;
-
 const mysql = require("mysql2");
 
 // -----------------------------------------------------------------------
-// IMPORTANT: connectionLimit must stay comfortably BELOW your MySQL user's
-// 'max_user_connections' limit (currently 5 on the server side).
-// Setting this equal to the server cap leaves zero headroom, so any
-// leftover connection (a previous crashed process, a Workbench/CLI
-// session, an overlapping nodemon restart, etc.) immediately pushes you
-// over the limit and every query starts failing with ER_USER_LIMIT_REACHED.
+// WHY THIS FILE LOOKS THE WAY IT DOES
+//
+// Your MySQL user has max_user_connections = 5 (a hosting-plan limit, not
+// something we control). We were hitting that ceiling because:
+//   1. Nothing stopped two pools from existing in the same Node process
+//      at once (e.g. a bad hot-reload, or a require() happening twice
+//      before module caching kicked in).
+//   2. Old connections from crashed/overlapping processes were sitting
+//      idle ("Sleep") for minutes, silently eating slots that never got
+//      freed until someone manually ran KILL in phpMyAdmin.
+//
+// The fixes below address both directly:
+//   - A global singleton so only one pool can ever exist per process.
+//   - A one-time startup sweep that finds and kills THIS USER's own
+//     stale idle connections (the same manual cleanup you just did by
+//     hand), so every restart self-heals instead of accumulating leaks.
+//   - Error/connection logging so a leak is visible in logs instead of
+//     silently reproducing this exact incident.
 // -----------------------------------------------------------------------
-const connection = mysql
-  .createPool({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    dateStrings: true,
-    waitForConnections: true,
-    connectionLimit: 3, // kept below the server's max_user_connections (5) on purpose
-    queueLimit: 0,
-  })
-  .promise();
+
+const STALE_CONNECTION_SECONDS = 60; // idle longer than this = safe to kill
+const POOL_CONNECTION_LIMIT = 2; // lowered from 3 for more headroom under the 5-connection cap
+
+function createPool() {
+  const pool = mysql
+    .createPool({
+      host: process.env.DB_HOST,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      dateStrings: true,
+      waitForConnections: true,
+      connectionLimit: POOL_CONNECTION_LIMIT,
+      queueLimit: 0,
+    })
+    .promise();
+
+  // Surface pool-level failures (e.g. the DB host dropping all
+  // connections) in logs instead of failing silently until every query
+  // starts throwing with no obvious cause.
+  pool.on("error", (err) => {
+    console.error("MySQL pool error:", err);
+  });
+
+  pool.on("connection", () => {
+    console.log("MySQL pool: new connection opened.");
+  });
+
+  return pool;
+}
+
+// Only ever create one pool per process, no matter how many times this
+// module gets required or how a dev-reload tool re-executes it.
+if (!global.__mysqlPool) {
+  global.__mysqlPool = createPool();
+}
+
+const connection = global.__mysqlPool;
+
+// -----------------------------------------------------------------------
+// Startup self-cleanup: kill this user's own stale idle connections.
+//
+// MySQL allows a user to KILL their own threads without extra privileges
+// (you don't need PROCESS/CONNECTION_ADMIN to kill a connection that
+// belongs to you). This runs once, right after the pool is created, and
+// mirrors the manual "click Kill in phpMyAdmin" step — except it happens
+// automatically on every restart, so leaked connections from a previous
+// crashed process get reclaimed instead of slowly filling up the
+// 5-connection ceiling.
+// -----------------------------------------------------------------------
+async function cleanupStaleConnections() {
+  try {
+    const [rows] = await connection.query(
+      `SELECT id, time
+       FROM information_schema.processlist
+       WHERE user = ?
+         AND command = 'Sleep'
+         AND time > ?`,
+      [process.env.DB_USER, STALE_CONNECTION_SECONDS]
+    );
+
+    if (rows.length === 0) return;
+
+    console.log(
+      `Found ${rows.length} stale MySQL connection(s) for this user, cleaning up...`
+    );
+
+    for (const row of rows) {
+      try {
+        await connection.query("KILL ?", [row.id]);
+        console.log(`Killed stale connection id=${row.id} (idle ${row.time}s)`);
+      } catch (killErr) {
+        // Non-fatal: the connection may have already closed on its own,
+        // or already been reaped by another process. Don't let a race
+        // here block the app from starting.
+        console.warn(`Could not kill connection id=${row.id}:`, killErr.message);
+      }
+    }
+  } catch (err) {
+    // If this check itself fails (e.g. we're already at the connection
+    // limit and can't even run this query), just log it — don't crash
+    // the app over a best-effort cleanup step.
+    console.warn("Stale connection cleanup skipped:", err.message);
+  }
+}
+
+if (!global.__mysqlPoolCleaned) {
+  global.__mysqlPoolCleaned = true;
+  cleanupStaleConnections();
+}
 
 // Gracefully close the pool so connections don't leak when the process
 // restarts (e.g. nodemon) or is killed.
 //
-// Notes on why this differs from before:
 // - pool.end() waits for in-use connections to finish before resolving,
 //   so we always await it (with a safety timeout) rather than assuming
 //   it resolves instantly.
@@ -123,6 +142,9 @@ async function closePool(signal) {
     console.error("Error closing MySQL pool:", err);
   }
 
+  delete global.__mysqlPool;
+  delete global.__mysqlPoolCleaned;
+
   if (signal === "SIGUSR2") {
     // Hand control back to nodemon so it can proceed with the restart
     // instead of us force-exiting mid-handshake.
@@ -132,8 +154,14 @@ async function closePool(signal) {
   }
 }
 
-process.on("SIGINT", () => closePool("SIGINT"));   // Ctrl+C
-process.on("SIGTERM", () => closePool("SIGTERM")); // normal kill
-process.on("SIGUSR2", () => closePool("SIGUSR2")); // nodemon restart signal
+// Guard against attaching these listeners more than once if this module
+// somehow gets re-executed (belt-and-suspenders alongside the pool
+// singleton above).
+if (!global.__mysqlShutdownHooksAttached) {
+  global.__mysqlShutdownHooksAttached = true;
+  process.on("SIGINT", () => closePool("SIGINT")); // Ctrl+C
+  process.on("SIGTERM", () => closePool("SIGTERM")); // normal kill
+  process.on("SIGUSR2", () => closePool("SIGUSR2")); // nodemon restart signal
+}
 
 module.exports = connection;

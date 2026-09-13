@@ -1,4 +1,3 @@
-// src/modules/teacher/gradebook/subjectGrading.controller.js
 const connection = require('../../../../config/db');
 const { recalcStudentSubject, recalcAllStudentsForSubject } = require('../../shared/grades/gradeCache.service');
 
@@ -13,6 +12,17 @@ async function getActiveGradingPeriodId() {
   return rows.length > 0 ? rows[0].id : null;
 }
 
+async function getActiveTermNumber() {
+  const [rows] = await connection.execute(
+    `SELECT gp.term_number AS termNumber
+     FROM grading_periods gp
+     INNER JOIN school_year sy ON gp.school_year_id = sy.id
+     WHERE sy.is_active = 1 AND gp.is_active = 1
+     LIMIT 1`
+  );
+  return rows.length > 0 ? rows[0].termNumber : 1;
+}
+
 function getCurrentWeekStartDate() {
   const now = new Date();
   const day = now.getDay();
@@ -24,6 +34,7 @@ function getCurrentWeekStartDate() {
   const date = String(monday.getDate()).padStart(2, "0");
   return `${year}-${month}-${date}`;
 }
+
 
 async function loadSubjectSection(req, res, next) {
   try {
@@ -42,12 +53,20 @@ async function loadSubjectSection(req, res, next) {
     const teacherId = teacherRows[0].id;
 
     const { subjectSectionId } = req.params;
+
     const [ssRows] = await connection.execute(
       `SELECT ss.id, ss.section_id, es.subject_name AS subjectName,
-              gl.grade_level AS gradeLevel, gls.section_name AS sectionName
+              es.grade_level_id AS gradeLevelId,
+              gl.grade_level AS gradeLevel, gls.section_name AS sectionName,
+              c.class_adviser_id AS adviserId,
+              CONCAT(advT.first_name, ' ', advT.last_name) AS adviserName
        FROM \`subject-section\` ss
        INNER JOIN elem_subjects es ON ss.subject_id = es.id
-       INNER JOIN grade_level_sections gls ON ss.section_id = gls.id
+       LEFT JOIN grade_level_sections gls ON ss.section_id = gls.id
+       LEFT JOIN classes c
+         ON (ss.section_id IS NOT NULL AND c.section_id = ss.section_id)
+         OR (ss.section_id IS NULL AND c.section_id IS NULL AND c.grade_level_id = es.grade_level_id)
+       LEFT JOIN teacher_table advT ON c.class_adviser_id = advT.id
        INNER JOIN grade_level gl ON es.grade_level_id = gl.id
        WHERE ss.id = ? AND ss.teacher_id = ?`,
       [subjectSectionId, teacherId]
@@ -65,54 +84,51 @@ async function loadSubjectSection(req, res, next) {
   }
 }
 
-const getGradingPeriods = async (req, res) => {
-  try {
-    const [rows] = await connection.execute(
-      `SELECT gp.id, gp.term_number AS termNumber, gp.term_label AS termLabel, gp.is_active AS isActive
-       FROM grading_periods gp
-       INNER JOIN school_year sy ON gp.school_year_id = sy.id
-       WHERE sy.is_active = 1
-       ORDER BY gp.term_number ASC`
-    );
-    return res.status(200).json({
-      success: true,
-      data: rows.map((r) => ({
-        id: String(r.id),
-        termNumber: r.termNumber,
-        label: r.termLabel,
-        isActive: !!r.isActive,
-      })),
-    });
-  } catch (error) {
-    console.error("Error fetching grading periods:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
-  }
-};
-
 const getSubjectSectionInfo = async (req, res) => {
   try {
-    const { section_id, subjectName, gradeLevel, sectionName } = req.subjectSection;
+    const {
+      section_id,
+      gradeLevelId,
+      subjectName,
+      gradeLevel,
+      sectionName,
+      adviserId,
+      adviserName,
+    } = req.subjectSection;
 
-    const [students] = await connection.execute(
-      `SELECT id, gender,
-              CONCAT(last_name, ', ', first_name, ' ', COALESCE(middle_name, '')) AS name
-       FROM elem_students
-       WHERE section_id = ?
-       ORDER BY last_name ASC, first_name ASC`,
-      [section_id]
-    );
+    const [students] = section_id
+      ? await connection.execute(
+          `SELECT id, gender,
+                  CONCAT(last_name, ', ', first_name, ' ', COALESCE(middle_name, '')) AS name
+           FROM elem_students
+           WHERE section_id = ?
+           ORDER BY last_name ASC, first_name ASC`,
+          [section_id]
+        )
+      : await connection.execute(
+          `SELECT id, gender,
+                  CONCAT(last_name, ', ', first_name, ' ', COALESCE(middle_name, '')) AS name
+           FROM elem_students
+           WHERE grade_level_id = ? AND is_deleted = 0
+           ORDER BY last_name ASC, first_name ASC`,
+          [gradeLevelId]
+        );
+
+    const isOwnAdvisory = !!(adviserId && adviserId === req.teacherId);
 
     return res.status(200).json({
       success: true,
       data: {
         subjectName,
         gradeLevel,
-        sectionName,
+        sectionName: sectionName || null,
         roster: students.map((s) => ({
           id: String(s.id),
           name: s.name.trim(),
           gender: s.gender === "Female" ? "F" : "M",
         })),
+        isOwnAdvisory,
+        adviserName: adviserName || null,
       },
     });
   } catch (error) {
@@ -316,13 +332,23 @@ const getScores = async (req, res) => {
   }
 };
 
+
 const upsertScore = async (req, res) => {
   try {
+    const { id: subjectSectionId } = req.subjectSection;
     const { studentId, itemId } = req.body;
     const value = req.body.value ?? null;
 
     if (!studentId || !itemId) {
       return res.status(400).json({ success: false, message: "studentId and itemId are required." });
+    }
+
+    const [itemCheck] = await connection.execute(
+      `SELECT id FROM grade_items WHERE id = ? AND subject_section_id = ?`,
+      [itemId, subjectSectionId]
+    );
+    if (itemCheck.length === 0) {
+      return res.status(403).json({ success: false, message: "This item does not belong to your class." });
     }
 
     await connection.execute(
@@ -392,38 +418,104 @@ const getHolistic = async (req, res) => {
   }
 };
 
+
 const upsertHolistic = async (req, res) => {
   try {
-    const { id: subjectSectionId } = req.subjectSection;
-    const { studentId, axis, value, termNumber } = req.body;
+    const { id: subjectSectionId, section_id: sectionId } = req.subjectSection;
+    const { studentId, axis, value, weekStartDate: requestedWeekStartDate, termNumber: requestedTermNumber } = req.body;
 
     if (!studentId || !axis || !value) {
       return res.status(400).json({ success: false, message: "studentId, axis, and value are required." });
     }
 
-    if ([0, 6].includes(new Date().getDay())) {
+    const weekStartDate =
+      requestedWeekStartDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedWeekStartDate)
+        ? requestedWeekStartDate
+        : getCurrentWeekStartDate();
+
+    const termNumber = Math.min(3, Math.max(1, Number(requestedTermNumber) || (await getActiveTermNumber())));
+
+    if (weekStartDate === getCurrentWeekStartDate() && [0, 6].includes(new Date().getDay())) {
       return res.status(423).json({ success: false, message: "Weekly holistic records are locked for the weekend. Recording opens Monday." });
     }
-    const weekStartDate = getCurrentWeekStartDate();
-    const safeTermNumber = Math.min(3, Math.max(1, Number(termNumber) || 1));
+
+    if (sectionId) {
+      const [studentCheck] = await connection.execute(
+        `SELECT id FROM elem_students WHERE id = ? AND section_id = ?`,
+        [studentId, sectionId]
+      );
+      if (studentCheck.length === 0) {
+        return res.status(403).json({ success: false, message: "This student is not enrolled in your class." });
+      }
+    }
 
     await connection.execute(
       `INSERT INTO holistic_ratings (subject_section_id, student_id, week_start_date, term_number, axis, rating)
        VALUES (?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE rating = VALUES(rating)`,
-      [subjectSectionId, studentId, weekStartDate, safeTermNumber, axis, value]
+      [subjectSectionId, studentId, weekStartDate, termNumber, axis, value]
     );
 
-    return res.status(200).json({ success: true, weekStartDate });
+    return res.status(200).json({ success: true, weekStartDate, termNumber });
   } catch (error) {
     console.error("Error saving holistic rating:", error);
     return res.status(500).json({ success: false, message: "Internal server error." });
   }
 };
 
+
+const getGradeSubmissionStatus = async (req, res) => {
+  try {
+    const { id: subjectSectionId } = req.subjectSection;
+    const { gradingPeriodId } = req.query;
+
+    if (!gradingPeriodId) {
+      return res.status(400).json({ success: false, message: "gradingPeriodId is required." });
+    }
+
+    const [rows] = await connection.execute(
+      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt
+       FROM subject_grade_submissions
+       WHERE subject_section_id = ? AND grading_period_id = ?`,
+      [subjectSectionId, gradingPeriodId]
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: { submitted: rows.length > 0, submittedAt: rows[0]?.submittedAt ?? null },
+    });
+  } catch (error) {
+    console.error("Error fetching subject grade submission status:", error);
+    return res.status(500).json({ success: false, message: "Internal server error." });
+  }
+};
+
+const submitSubjectGrades = async (req, res) => {
+  try {
+    const { id: subjectSectionId } = req.subjectSection;
+    const teacherId = req.teacherId;
+    const { gradingPeriodId } = req.body;
+
+    if (!gradingPeriodId) {
+      return res.status(400).json({ success: false, message: "gradingPeriodId is required." });
+    }
+
+    await connection.execute(
+      `INSERT INTO subject_grade_submissions (subject_section_id, grading_period_id, submitted_by)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE submitted_by = VALUES(submitted_by), submitted_at = CURRENT_TIMESTAMP`,
+      [subjectSectionId, gradingPeriodId, teacherId]
+    );
+
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("Error submitting subject grades:", error);
+    return res.status(500).json({ success: false, message: "Internal server error." });
+  }
+};
+
 module.exports = {
   loadSubjectSection,
-  getGradingPeriods,
   getSubjectSectionInfo,
   getItems,
   addItem,
@@ -433,4 +525,6 @@ module.exports = {
   upsertScore,
   getHolistic,
   upsertHolistic,
+  getGradeSubmissionStatus,
+  submitSubjectGrades,
 };

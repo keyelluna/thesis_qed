@@ -179,15 +179,31 @@ const getHolistic = async (req, res) => {
 
 const upsertHolistic = async (req, res) => {
   try {
-    const { id: subjectSectionId } = req.subjectSection;
+    const { id: subjectSectionId, section_id: sectionId } = req.subjectSection;
     const { studentId, axis, value, weekStartDate: requestedWeekStartDate, termNumber: requestedTermNumber } = req.body;
 
     if (!studentId || !axis || !value) {
       return res.status(400).json({ success: false, message: "studentId, axis, and value are required." });
     }
 
-    const weekStartDate = requestedWeekStartDate || getCurrentWeekStartDate();
-    const termNumber = requestedTermNumber || (await getActiveTermNumber());
+    const weekStartDate =
+      requestedWeekStartDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedWeekStartDate)
+        ? requestedWeekStartDate
+        : getCurrentWeekStartDate();
+
+    const termNumber = Math.min(3, Math.max(1, Number(requestedTermNumber) || (await getActiveTermNumber())));
+
+    if (weekStartDate === getCurrentWeekStartDate() && [0, 6].includes(new Date().getDay())) {
+      return res.status(423).json({ success: false, message: "Weekly holistic records are locked for the weekend. Recording opens Monday." });
+    }
+
+    const [studentCheck] = await connection.execute(
+      `SELECT id FROM elem_students WHERE id = ? AND section_id = ?`,
+      [studentId, sectionId]
+    );
+    if (studentCheck.length === 0) {
+      return res.status(403).json({ success: false, message: "This student is not enrolled in your class." });
+    }
 
     await connection.execute(
       `INSERT INTO holistic_ratings (subject_section_id, student_id, week_start_date, term_number, axis, rating)

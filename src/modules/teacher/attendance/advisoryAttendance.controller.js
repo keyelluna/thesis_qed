@@ -28,13 +28,15 @@ async function loadAdvisorySection(req, res, next) {
     const teacherId = teacherRows[0].id;
 
     const [classRows] = await connection.execute(
-      `SELECT c.section_id, gls.section_name AS sectionName, gl.grade_level AS gradeLevel
+      `SELECT c.id AS classId, c.section_id, gls.section_name AS sectionName,
+              gl.grade_level AS gradeLevel
        FROM classes c
-       INNER JOIN grade_level_sections gls ON c.section_id = gls.id
+       LEFT JOIN grade_level_sections gls ON c.section_id = gls.id
        INNER JOIN grade_level gl ON c.grade_level_id = gl.id
        WHERE c.class_adviser_id = ?`,
       [teacherId]
     );
+
     if (classRows.length === 0) {
       return res.status(404).json({ success: false, message: "You are not the adviser of any section yet." });
     }
@@ -49,22 +51,32 @@ async function loadAdvisorySection(req, res, next) {
 }
 
 // GET /api/teacherAttendance/advisory-section
-// Returns the shape the frontend's AdvisorySection type expects:
-// { sectionId, sectionName, gradeLevel, roster, terms }
 const getAdvisorySectionInfo = async (req, res) => {
   try {
-    const { section_id: sectionId, sectionName, gradeLevel } = req.advisorySection;
+    const { classId, section_id: sectionId, sectionName, gradeLevel } = req.advisorySection;
 
-    const [roster] = await connection.execute(
-      `SELECT s.id,
-              CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
-              s.gender AS gender
-       FROM elem_students s
-       WHERE s.section_id = ?
-         AND s.is_deleted = 0
-       ORDER BY s.last_name ASC, s.first_name ASC`,
-      [sectionId]
-    );
+    const [roster] = sectionId
+      ? await connection.execute(
+          `SELECT s.id,
+                  CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
+                  s.gender AS gender
+           FROM elem_students s
+           WHERE s.section_id = ?
+             AND s.is_deleted = 0
+           ORDER BY s.last_name ASC, s.first_name ASC`,
+          [sectionId]
+        )
+      : await connection.execute(
+          `SELECT s.id,
+                  CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
+                  s.gender AS gender
+           FROM elem_students s
+           WHERE s.grade_level_id = (SELECT grade_level_id FROM classes WHERE id = ?)
+             AND s.section_id IS NULL
+             AND s.is_deleted = 0
+           ORDER BY s.last_name ASC, s.first_name ASC`,
+          [classId]
+        );
 
     const [terms] = await connection.execute(
       `SELECT gp.id,
@@ -80,8 +92,9 @@ const getAdvisorySectionInfo = async (req, res) => {
     );
 
     return res.status(200).json({
-      sectionId: String(sectionId),
-      sectionName,
+      classId: String(classId),
+      sectionId: sectionId ? String(sectionId) : null,
+      sectionName: sectionName?.trim() || gradeLevel, 
       gradeLevel,
       roster: roster.map((r) => ({ id: String(r.id), name: r.name, gender: r.gender })),
       terms: terms.map((t) => ({ ...t, id: String(t.id), isActive: !!t.isActive })),
@@ -94,15 +107,15 @@ const getAdvisorySectionInfo = async (req, res) => {
 
 const getAdvisoryAttendance = async (req, res) => {
   try {
-    const { section_id: sectionId } = req.advisorySection;
+    const { classId } = req.advisorySection;
     const { term, allPeriods } = req.query;
 
     let sql = `
       SELECT student_id, DATE_FORMAT(attendance_date, '%Y-%m-%d') AS date, status
       FROM advisory_attendance_records
-      WHERE section_id = ?
+      WHERE class_id = ?
     `;
-    const params = [sectionId];
+    const params = [classId];
 
     let resolvedTermId = null;
     if (allPeriods !== "true") {
@@ -138,7 +151,7 @@ const getAdvisoryAttendance = async (req, res) => {
 
 const upsertAdvisoryAttendance = async (req, res) => {
   try {
-    const { section_id: sectionId } = req.advisorySection;
+    const { classId, section_id: sectionId } = req.advisorySection;
     const { teacherId } = req;
     const { studentId, date, term } = req.body;
     const status = req.body.status ?? null;
@@ -152,16 +165,16 @@ const upsertAdvisoryAttendance = async (req, res) => {
     if (status === null) {
       await connection.execute(
         `DELETE FROM advisory_attendance_records
-         WHERE section_id = ? AND student_id = ? AND attendance_date = ?`,
-        [sectionId, studentId, date]
+         WHERE class_id = ? AND student_id = ? AND attendance_date = ?`,
+        [classId, studentId, date]
       );
     } else {
       await connection.execute(
         `INSERT INTO advisory_attendance_records
-           (section_id, grading_period_id, student_id, attendance_date, status, recorded_by)
-         VALUES (?, ?, ?, ?, ?, ?)
+           (section_id, class_id, grading_period_id, student_id, attendance_date, status, recorded_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE status = VALUES(status), grading_period_id = VALUES(grading_period_id), recorded_by = VALUES(recorded_by)`,
-        [sectionId, gradingPeriodId, studentId, date, status, teacherId]
+        [sectionId ?? null, classId, gradingPeriodId, studentId, date, status, teacherId]
       );
     }
 

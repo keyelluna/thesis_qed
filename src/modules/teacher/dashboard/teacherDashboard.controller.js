@@ -70,26 +70,68 @@ const getDashboardStats = async (req, res) => {
       [teacherId]
     );
 
-    const [totalStudentsRows] = await connection.execute(
-      `SELECT COUNT(DISTINCT st.id) AS totalStudents
-       FROM elem_students st
-       INNER JOIN \`subject-section\` ss ON st.section_id = ss.section_id
-       WHERE ss.teacher_id = ? AND ss.status = 'Active'`,
+    const [classRows] = await connection.execute(
+      `SELECT c.section_id, c.grade_level_id
+       FROM classes c
+       WHERE c.class_adviser_id = ?
+       LIMIT 1`,
       [teacherId]
     );
 
-    const [advisoryCountRows] = await connection.execute(
-      `SELECT COUNT(*) AS advisoryClassCount
-       FROM elem_students st
-       INNER JOIN classes c
-         ON st.section_id = c.section_id AND st.grade_level_id = c.grade_level_id
-       WHERE c.class_adviser_id = ?`,
-      [teacherId]
+    let advisoryClassCount = 0;
+    if (classRows.length > 0) {
+      const { section_id: sectionId, grade_level_id: gradeLevelId } = classRows[0];
+      const [advisoryCountRows] = sectionId
+        ? await connection.execute(
+            `SELECT COUNT(*) AS advisoryClassCount
+             FROM elem_students
+             WHERE section_id = ? AND is_deleted = 0`,
+            [sectionId]
+          )
+        : await connection.execute(
+            `SELECT COUNT(*) AS advisoryClassCount
+             FROM elem_students
+             WHERE grade_level_id = ? AND section_id IS NULL AND is_deleted = 0`,
+            [gradeLevelId]
+          );
+      advisoryClassCount = advisoryCountRows[0].advisoryClassCount;
+    }
+
+
+    const [totalStudentsRows] = await connection.execute(
+      `SELECT COUNT(DISTINCT student_id) AS totalStudents
+       FROM (
+         -- Students reached via subject-sections this teacher teaches
+         SELECT st.id AS student_id
+         FROM \`subject-section\` ss
+         INNER JOIN elem_subjects sub ON sub.id = ss.subject_id
+         INNER JOIN elem_students st
+           ON st.is_deleted = 0
+          AND (
+                (ss.section_id IS NOT NULL AND st.section_id = ss.section_id)
+             OR (ss.section_id IS NULL AND st.section_id IS NULL AND st.grade_level_id = sub.grade_level_id)
+              )
+         WHERE ss.teacher_id = ? AND ss.status = 'Active'
+
+         UNION
+
+         -- Students reached via this teacher's advisory roster
+         SELECT st.id AS student_id
+         FROM classes c
+         INNER JOIN elem_students st
+           ON st.is_deleted = 0
+          AND (
+                (c.section_id IS NOT NULL AND st.section_id = c.section_id)
+             OR (c.section_id IS NULL AND st.section_id IS NULL AND st.grade_level_id = c.grade_level_id)
+              )
+         WHERE c.class_adviser_id = ?
+       ) combined`,
+      [teacherId, teacherId]
     );
 
     return res.status(200).json({
       success: true,
-      advisoryClassCount: advisoryCountRows[0].advisoryClassCount,
+      advisoryClassCount,
       totalStudents: totalStudentsRows[0].totalStudents,
       totalClasses: totalClassesRows[0].totalClasses,
     });
@@ -122,7 +164,7 @@ const getAttendanceSummary = async (req, res) => {
     const teacherId = teacherRows[0].id;
 
     const [advisoryRows] = await connection.execute(
-      `SELECT section_id FROM classes WHERE class_adviser_id = ? LIMIT 1`,
+      `SELECT id FROM classes WHERE class_adviser_id = ? LIMIT 1`,
       [teacherId]
     );
 
@@ -130,23 +172,17 @@ const getAttendanceSummary = async (req, res) => {
       return res.status(200).json({ success: true, present: 0, absent: 0, late: 0 });
     }
 
-    const sectionId = advisoryRows[0].section_id;
+    const classId = advisoryRows[0].id;
 
-    // Advisory attendance is recorded directly against the section in
-    // `advisory_attendance_records` (one row per student per day) — this
-    // used to incorrectly join through `attendance_records` /
-    // `subject-section`, which tracks a separate, unrelated per-subject
-    // attendance feature and had nothing to do with the advisory roster
-    // the teacher actually marks on TeacherAttendancePage.
     const [rows] = await connection.execute(
       `SELECT
          SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) AS present,
          SUM(CASE WHEN status = 'A' THEN 1 ELSE 0 END) AS absent,
          SUM(CASE WHEN status = 'L' THEN 1 ELSE 0 END) AS late
        FROM advisory_attendance_records
-       WHERE section_id = ?
+       WHERE class_id = ?
          AND attendance_date = CURDATE()`,
-      [sectionId]
+      [classId]
     );
 
     const row = rows[0] || {};

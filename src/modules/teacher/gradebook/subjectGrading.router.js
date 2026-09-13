@@ -45,4 +45,17 @@ router.put(
   topicController.updateInterventionStatus
 );
 
+router.get(
+  "/:subjectSectionId/submission",
+  verifyToken,
+  controller.loadSubjectSection,
+  controller.getGradeSubmissionStatus   
+);
+router.post(
+  "/:subjectSectionId/submission",
+  verifyToken,
+  controller.loadSubjectSection,
+  controller.submitSubjectGrades      
+);
+
 module.exports = router;

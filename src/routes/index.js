@@ -26,8 +26,9 @@ router.use("/subject", subjectManagementRoutes);
 router.use("/gradeLevel", gradeLevelRoutes);
 router.use("/calendar", calendarRoutes);
 router.use("/sy", settingsRoutes);
-router.use("/gradingPeriods", gradingPeriodsRouters); // fixed: was "/api/gradingPeriods" -> double /api 404
+router.use("/gradingPeriods", gradingPeriodsRouters); 
 router.use("/academic-year", academicYearRouters);
+
 //==================================== T E A C H E R =======================================//
 const mySubjectRoutes = require("./../modules/teacher/my-subjects/mySubjects.router.js");
 const teacherDashboardRoutes = require("./../modules/teacher/dashboard/teacherDashboard.router.js");
@@ -46,34 +47,19 @@ router.use("/advisoryGrading", advisoryGradingRoutes);
 router.use("/teacherAttendance", advisoryAttendanceRoutes);
 //=================================== P A R E N T S ========================================
 
-//schoolyear/terms routes
 const schoolyearTermRoutes = require("../modules/parents/getSchoolYear/schoolYear.router.js");
-//dashboard routes
 const parentsProfileRoutes = require("../modules/parents/parentsProfile/parentsProfile.router.js");
-//linked children routes
 const linkedChildrenRoutes = require("./../modules/parents/LinkedChildren/linkedChildren.router.js");
-
-//OVERVIEW
 const attendanceRoutes = require("./../modules/parents/Student-Record/Overview/attendance.router.js");
 const termPerformanceRoutes = require("./../modules/parents/Student-Record/Overview/studentTermPerformance.router.js");
 const holisticPerformanceRoutes = require("../modules/parents/Student-Record/Overview/holisticPerformance.router.js");
-
-//ACADEMIC
 const missedActivitiesRoutes = require("./../modules/parents/Student-Record/Academic/missedActivities.router.js");
 const classSchedule = require("./../modules/parents/Student-Record/Academic/classSchedule.router.js");
-
-//HOLISTIC
 const weeklyHolisticRoutes = require("./../modules/parents/Student-Record/holistic/weeklyHolistic.router.js");
-
-//PROGRESS REPORT
-const termProgressReportRoutes = require("./../modules/parents/Student-Record/ProgressReport/termPerformance.router.js");
+const termProgressReportRoutes = require("../modules/parents/Student-Record/ProgressReport/termPerformance.router.js");
 const termHolisticReportRoutes = require("./../modules/parents/Student-Record/ProgressReport/termHolistic.router.js");
 const attendanceReportRoutes = require("./../modules/parents/Student-Record/ProgressReport/attendance.router.js");
-
-//STDENT PROFILE
 const studentProfilesRoutes = require("./../modules/parents/Student-Record/StudentProfile/studentProfile.Router.js");
-
-
 
 router.use("/sy_term", schoolyearTermRoutes);
 router.use("/profile", parentsProfileRoutes);
@@ -94,10 +80,12 @@ router.use("/studentProfile", studentProfilesRoutes);
 const principalDashboardRoutes = require("./../modules/principal/dashboard/dashboard.router.js");
 const teacherRoutes = require("./../modules/principal/teachers/teachers.router.js");
 const studentRoutes = require("./../modules/principal/students/students.router.js");
+const reportsRoutes = require("./../modules/principal/Reports/reports.router.js");
 
 router.use("/dashboard", principalDashboardRoutes);
 router.use("/teachers", teacherRoutes);
 router.use("/student", studentRoutes);
+router.use("/reports", reportsRoutes);
 
 
 module.exports = router;

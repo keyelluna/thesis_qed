@@ -1,10 +1,17 @@
-
 const express = require("express");
 const router = express.Router();
-const verifyToken = require("../../../authentication/authentication.middleware");
+const verifyToken = require("../../../authentication/optionalAuth.middleware");
 const studentProfilesController = require("./studentProfiles.controller");
 
-router.get("/:studentId", verifyToken, studentProfilesController.getStudentProfile);
-router.put("/:studentId", verifyToken, studentProfilesController.updateStudentProfile);
+router.get(
+  "/:studentId",
+  verifyToken,
+  studentProfilesController.getStudentProfile,
+);
+router.put(
+  "/:studentId",
+  verifyToken,
+  studentProfilesController.updateStudentProfile,
+);
 
 module.exports = router;

@@ -32,4 +32,5 @@ router.get(
   academicPerformanceController.getPerformanceTrend,
 );
 
+router.get("/active-term", academicPerformanceController.getActiveTerm);
 module.exports = router;

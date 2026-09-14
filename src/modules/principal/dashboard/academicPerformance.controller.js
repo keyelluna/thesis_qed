@@ -216,3 +216,58 @@ exports.getPerformanceTrend = async (req, res) => {
       .json({ success: false, message: "Internal server error." });
   }
 };
+
+function deriveTermStatus(startDate, endDate) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const start = new Date(startDate);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(endDate);
+  end.setHours(0, 0, 0, 0);
+
+  if (today < start) return "Upcoming";
+  if (today > end) return "Completed";
+  return "Active";
+}
+
+exports.getActiveTerm = async (_req, res) => {
+  try {
+    const [rows] = await connection.query(
+      `SELECT gp.id, gp.school_year_id, gp.term_number, gp.term_label,
+              gp.start_date, gp.end_date, gp.is_active,
+              sy.school_year
+       FROM grading_periods gp
+       INNER JOIN school_year sy ON sy.id = gp.school_year_id
+       WHERE gp.is_active = 1
+       LIMIT 1`
+    );
+
+    const row = rows[0];
+    if (!row) {
+      return res.status(404).json({
+        status: "fail",
+        message: "No active term found.",
+      });
+    }
+
+    res.status(200).json({
+      status: "success",
+      message: "Active term fetched successfully.",
+      data: {
+        id: row.id,
+        schoolYearId: row.school_year_id,
+        schoolYear: row.school_year,
+        termNumber: row.term_number,
+        name: row.term_label,
+        startDate: row.start_date,
+        endDate: row.end_date,
+        status: deriveTermStatus(row.start_date, row.end_date),
+      },
+    });
+  } catch (error) {
+    console.error("Database Error:", error);
+    res.status(500).json({ status: "error", message: "Database error occurred." });
+  }
+};

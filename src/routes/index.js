@@ -47,6 +47,7 @@ router.use("/advisoryGrading", advisoryGradingRoutes);
 router.use("/teacherAttendance", advisoryAttendanceRoutes);
 //=================================== P A R E N T S ========================================
 
+const dashboardRoutes = require("../modules/parents/Dashboard/dashboard.router.js")
 const schoolyearTermRoutes = require("../modules/parents/getSchoolYear/schoolYear.router.js");
 const parentsProfileRoutes = require("../modules/parents/parentsProfile/parentsProfile.router.js");
 const linkedChildrenRoutes = require("./../modules/parents/LinkedChildren/linkedChildren.router.js");
@@ -61,6 +62,7 @@ const termHolisticReportRoutes = require("./../modules/parents/Student-Record/Pr
 const attendanceReportRoutes = require("./../modules/parents/Student-Record/ProgressReport/attendance.router.js");
 const studentProfilesRoutes = require("./../modules/parents/Student-Record/StudentProfile/studentProfile.Router.js");
 
+router.use("/dashboard", dashboardRoutes);
 router.use("/sy_term", schoolyearTermRoutes);
 router.use("/profile", parentsProfileRoutes);
 router.use("/linkedChildren", linkedChildrenRoutes);

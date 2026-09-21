@@ -1,4 +1,6 @@
 const connection = require("../../../../config/db");
+const { getSingleTermVisibility} = require('../../parents/Student-Record/ProgressReport/progressVisibility.controller');
+const { notifyGradeVisibility} = require('../../notification/notification.service')
 
 
 async function loadAdvisorySection(req, res, next) {
@@ -448,9 +450,6 @@ const setGradeVisibility = async (req, res) => {
 
     let targetIds = Array.isArray(studentIds) ? studentIds.map(Number) : [];
 
-    // "Select all" — re-derive the full roster server-side rather than
-    // trusting a client-sent full list, so a stale list can't
-    // accidentally miss (or wrongly include) a student.
     if (applyToAll) {
       const [rosterRows] = await connection.execute(
         sectionId
@@ -467,9 +466,6 @@ const setGradeVisibility = async (req, res) => {
         .json({ success: false, message: "No students selected." });
     }
 
-    // Verify every targeted student actually belongs to THIS advisory —
-    // prevents a teacher from toggling visibility for students outside
-    // their own advisory class via a crafted studentIds payload.
     const idPlaceholders = targetIds.map(() => "?").join(",");
     const [validRows] = await connection.execute(
       sectionId
@@ -499,6 +495,20 @@ const setGradeVisibility = async (req, res) => {
        ON DUPLICATE KEY UPDATE is_visible = VALUES(is_visible), updated_by = VALUES(updated_by), updated_at = CURRENT_TIMESTAMP`,
       params,
     );
+
+    // --- Grade visibility notification  ---
+    if (visible) {
+      for (const studentId of validIds) {
+        try {
+          const status = await getSingleTermVisibility(studentId, gradingPeriodId);
+          if (status?.available) {
+            await notifyGradeVisibility({ studentId, gradingPeriodId });
+          }
+        } catch (notifErr) {
+          console.error(`Grade visibility notification error (student ${studentId}):`, notifErr);
+        }
+      }
+    }
 
     return res
       .status(200)

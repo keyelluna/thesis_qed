@@ -1,6 +1,12 @@
 const express = require("express");
 const router = express.Router();
 
+// ============================ S Y S T E M   R O U T E S =============================
+
+const notificationRoutes = require("../modules/notification/notification.router.js");
+
+router.use('/notification', notificationRoutes);
+
 //==================================== A D M I N =======================================
 
 const authenticationRoutes = require("./../modules/authentication/authentication.router.js");

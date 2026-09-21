@@ -1,4 +1,5 @@
 const connection = require('../../../../config/db');
+const { notifyAbsence } = require('../../notification/notification.service');
 
 async function getActiveGradingPeriodId() {
   const [rows] = await connection.execute(
@@ -176,6 +177,15 @@ const upsertAdvisoryAttendance = async (req, res) => {
          ON DUPLICATE KEY UPDATE status = VALUES(status), grading_period_id = VALUES(grading_period_id), recorded_by = VALUES(recorded_by)`,
         [sectionId ?? null, classId, gradingPeriodId, studentId, date, status, teacherId]
       );
+
+      // --- Absence notification (absent only) ---
+      if (status === "A") {
+        try {
+          await notifyAbsence({ studentId, date });
+        } catch (notifErr) {
+          console.error("Absence notification error:", notifErr);
+        }
+      }
     }
 
     return res.status(200).json({ success: true, termId: gradingPeriodId ? String(gradingPeriodId) : null });

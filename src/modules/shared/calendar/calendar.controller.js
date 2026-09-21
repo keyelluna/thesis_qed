@@ -22,19 +22,38 @@ function resolveHolidayType(input) {
   return HOLIDAY_TYPE_MAP[input] || null;
 }
 
-// Walang created_by / created_at column sa table, kaya null na lang
-// palagi ang ibabalik natin para dito sa response (para tugma pa rin
-// sa DTO shape na inaasahan ng frontend).
-
-// =======================
-// ACTIVITIES
-// =======================
-
 // GET /activities
-exports.getActivities = async (req, res) => {
+exports.getAllActivities = async (req, res) => {
   try {
     const [rows] = await connection.query(
       "SELECT id, title, date FROM school_calendar WHERE type = 'activity' ORDER BY date ASC"
+    );
+
+    const data = rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      date: row.date,
+      createdBy: null,
+      createdAt: null,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      message: "Activities fetched successfully",
+      data,
+    });
+  } catch (error) {
+    console.error("Error fetching activities:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch activities" });
+  }
+};
+
+exports.getActivities = async (req, res) => {
+  try {
+    const [rows] = await connection.query(
+      "SELECT id, title, date FROM school_calendar WHERE type = 'activity' AND date >= CURRENT_DATE ORDER BY date ASC"
     );
 
     const data = rows.map((row) => ({
@@ -179,6 +198,34 @@ exports.deleteActivity = async (req, res) => {
 
 // GET /holidays
 exports.getHolidays = async (req, res) => {
+  try {
+    const [rows] = await connection.query(
+      "SELECT id, title, date, holiday_type FROM school_calendar WHERE type = 'holiday' AND date >= CURRENT_DATE ORDER BY date ASC"
+    );
+
+    const data = rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      date: row.date,
+      type: row.holiday_type ?? null,
+      createdBy: null,
+      createdAt: null,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      message: "Holidays fetched successfully",
+      data,
+    });
+  } catch (error) {
+    console.error("Error fetching holidays:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch holidays" });
+  }
+};
+
+exports.getAllHolidays = async (req, res) => {
   try {
     const [rows] = await connection.query(
       "SELECT id, title, date, holiday_type FROM school_calendar WHERE type = 'holiday' ORDER BY date ASC"

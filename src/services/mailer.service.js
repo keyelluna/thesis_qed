@@ -1,9 +1,13 @@
-// services/mailer.service.js
+const fs = require("fs");
+const path = require("path");
 const { Resend } = require("resend");
-
 const resend = new Resend(process.env.RESEND_API_KEY);
-
 const DEV_EMAIL_OVERRIDE = "kimlourenluna.dev@gmail.com";
+const APP_BASE_URL = "http://localhost:5173";
+
+const logoPath = path.join(__dirname, "../assets/images/QED_Logo.png");
+const logoBase64 = fs.readFileSync(logoPath).toString("base64");
+const LOGO_CID = "qed-logo";
 
 const ROLE_LABELS = {
   ADMIN: "Administrator",
@@ -15,13 +19,20 @@ const ROLE_LABELS = {
 /**
  * Sends login credentials to a newly created user.
  * @param {Object} params
- * @param {string} params.to - recipient email
+ * @param {string} params.to
  * @param {string} params.firstName
  * @param {string} params.userName
- * @param {string} params.password - plain text, only ever available at creation time
+ * @param {string} params.password
  * @param {string} params.role
  */
-async function sendCredentialsEmail({ to, firstName, userName, password, role }) {
+
+async function sendCredentialsEmail({
+  to,
+  firstName,
+  userName,
+  password,
+  role,
+}) {
   if (!to) {
     console.warn("sendCredentialsEmail: no recipient email, skipping send.");
     return { skipped: true };
@@ -85,12 +96,14 @@ async function sendCredentialsEmail({ to, firstName, userName, password, role })
 /**
  * Sends a password reset OTP code to the user.
  * @param {Object} params
- * @param {string} params.to - recipient email
- * @param {string} params.otp - 6-digit OTP code
+ * @param {string} params.to
+ * @param {string} params.otp
  */
 async function sendPasswordResetOtpEmail({ to, otp }) {
   if (!to) {
-    console.warn("sendPasswordResetOtpEmail: no recipient email, skipping send.");
+    console.warn(
+      "sendPasswordResetOtpEmail: no recipient email, skipping send.",
+    );
     return { skipped: true };
   }
 
@@ -141,4 +154,89 @@ async function sendPasswordResetOtpEmail({ to, otp }) {
   }
 }
 
-module.exports = { sendCredentialsEmail, sendPasswordResetOtpEmail };
+/**
+ * Sends a grade-availability notice to a parent.
+ * @param {Object} params
+ * @param {string} params.to - recipient email
+ * @param {string} params.studentId
+ * @param {string} params.studentFirstName
+ * @param {string} params.termLabel
+ */
+async function sendGradeVisibilityEmail({
+  to,
+  studentId,
+  studentFirstName,
+  termLabel,
+}) {
+  if (!to) {
+    console.warn(
+      "sendGradeVisibilityEmail: no recipient email, skipping send.",
+    );
+    return { skipped: true };
+  }
+
+  const actualRecipient = DEV_EMAIL_OVERRIDE || to;
+  if (DEV_EMAIL_OVERRIDE) {
+    console.log(
+      `[DEV MODE] Grade visibility email intended for ${to} is being redirected to ${DEV_EMAIL_OVERRIDE} (no verified domain yet).`,
+    );
+  }
+
+  const progressReportPath = `/parent/students/${studentId}?tab=progressReport`;
+  const ctaUrl = `${APP_BASE_URL}/login?redirect=${encodeURIComponent(progressReportPath)}`;
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: "QED School <onboarding@resend.dev>",
+      to: [actualRecipient],
+      subject: "Grades Now Available to View",
+      html: `
+        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+          <img
+            src="cid:${LOGO_CID}"
+            alt="QED School"
+           style="width:120px; max-width:120px; display:block; margin:0 auto 16px;"
+          />
+          <h2 style="color:#8B0D0D;">Grades Released</h2>
+          <p>${studentFirstName}'s grades for <strong>${termLabel}</strong> are now available to view in the QED parent portal.</p>
+          <div style="margin: 24px 0; text-align: center;">
+            <a href="${ctaUrl}" style="display:inline-block; background:#8B0D0D; color:#ffffff; text-decoration:none; font-weight:bold; padding:12px 28px; border-radius:8px; font-size:14px;">View Progress Report</a>
+          </div>
+          <p style="color:#6B7280; font-size:13px;">
+            If you're not yet logged in, you'll be asked to log in first, then taken straight to the report.
+          </p>
+          ${
+            DEV_EMAIL_OVERRIDE
+              ? `<p style="color:#6B7280; font-size:11px; margin-top:16px; border-top:1px solid #E5E7EB; padding-top:8px;">
+                  [DEV MODE] This was actually meant for: ${to}
+                </p>`
+              : ""
+          }
+        </div>
+      `,
+      attachments: [
+        {
+          filename: "QED_Logo.png",
+          content: logoBase64,
+          contentId: LOGO_CID,
+        },
+      ],
+    });
+
+    if (error) {
+      console.error("Resend send error:", error);
+      return { sent: false, error };
+    }
+
+    return { sent: true, data };
+  } catch (err) {
+    console.error("sendGradeVisibilityEmail failed:", err);
+    return { sent: false, error: err };
+  }
+}
+
+module.exports = {
+  sendCredentialsEmail,
+  sendPasswordResetOtpEmail,
+  sendGradeVisibilityEmail,
+};

@@ -1,5 +1,6 @@
 const connection = require('../../../../config/db');
 const { loadSubjectSection } = require('../gradebook/subjectGrading.controller');
+const { notifyWeeklyEvaluationIfComplete } = require('../../notification/notification.service');
 
 async function getActiveTermNumber() {
   const [rows] = await connection.execute(
@@ -197,12 +198,14 @@ const upsertHolistic = async (req, res) => {
       return res.status(423).json({ success: false, message: "Weekly holistic records are locked for the weekend. Recording opens Monday." });
     }
 
-    const [studentCheck] = await connection.execute(
-      `SELECT id FROM elem_students WHERE id = ? AND section_id = ?`,
-      [studentId, sectionId]
-    );
-    if (studentCheck.length === 0) {
-      return res.status(403).json({ success: false, message: "This student is not enrolled in your class." });
+    if (sectionId) {
+      const [studentCheck] = await connection.execute(
+        `SELECT id FROM elem_students WHERE id = ? AND section_id = ?`,
+        [studentId, sectionId]
+      );
+      if (studentCheck.length === 0) {
+        return res.status(403).json({ success: false, message: "This student is not enrolled in your class." });
+      }
     }
 
     await connection.execute(
@@ -211,6 +214,13 @@ const upsertHolistic = async (req, res) => {
        ON DUPLICATE KEY UPDATE rating = VALUES(rating)`,
       [subjectSectionId, studentId, weekStartDate, termNumber, axis, value]
     );
+
+    // --- Weekly evaluation notification ---
+    try {
+      await notifyWeeklyEvaluationIfComplete({ studentId, weekStartDate, termNumber });
+    } catch (notifErr) {
+      console.error("Weekly evaluation notification error:", notifErr);
+    }
 
     return res.status(200).json({ success: true, weekStartDate, termNumber });
   } catch (error) {

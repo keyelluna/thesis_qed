@@ -50,6 +50,13 @@ router.put(
   controller.upsertScore,
 );
 
+router.post(
+  "/:subjectSectionId/items/:itemId/notify-missing",
+  verifyToken,
+  controller.loadSubjectSection,
+  controller.notifyMissing,
+);
+
 router.get(
   "/:subjectSectionId/holistic",
   verifyToken,

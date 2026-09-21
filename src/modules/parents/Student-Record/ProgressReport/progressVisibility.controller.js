@@ -138,4 +138,5 @@ async function getStudentTermPerformance(req, res) {
 module.exports = {
   getVisibilityStatus,
   getStudentTermPerformance,
+  getSingleTermVisibility
 };

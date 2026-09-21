@@ -1,5 +1,6 @@
 const connection = require('../../../../config/db');
 const { recalcStudentSubject, recalcAllStudentsForSubject } = require('../../shared/grades/gradeCache.service');
+const { notifyMissedActivity, notifyMissingForItem } = require('../../notification/notification.service');
 
 async function getActiveGradingPeriodId() {
   const [rows] = await connection.execute(
@@ -337,7 +338,7 @@ const upsertScore = async (req, res) => {
   try {
     const { id: subjectSectionId } = req.subjectSection;
     const { studentId, itemId } = req.body;
-    const value = req.body.value ?? null;
+    const value = req.body.value === undefined || req.body.value === "" ? null : req.body.value;
 
     if (!studentId || !itemId) {
       return res.status(400).json({ success: false, message: "studentId and itemId are required." });
@@ -367,9 +368,45 @@ const upsertScore = async (req, res) => {
       await recalcStudentSubject(studentId, itemRows[0].subjectSectionId, itemRows[0].gradingPeriodId);
     }
 
+          // --- Missed activity notification ---
+    try {
+      if (value !== null) {
+        await connection.execute(
+          `DELETE FROM notifications
+           WHERE student_id = ? AND grade_item_id = ? AND title = 'Missed Activity'`,
+          [studentId, itemId]
+        );
+      }
+
+      await notifyMissingForItem(itemId);
+    } catch (notifErr) {
+      console.error("Notification error:", notifErr);
+    }
+
     return res.status(200).json({ success: true });
   } catch (error) {
     console.error("Error saving score:", error);
+    return res.status(500).json({ success: false, message: "Internal server error." });
+  }
+};
+
+const notifyMissing = async (req, res) => {
+  try {
+    const { id: subjectSectionId } = req.subjectSection;
+    const { itemId } = req.params;
+
+    const [itemCheck] = await connection.execute(
+      `SELECT id FROM grade_items WHERE id = ? AND subject_section_id = ?`,
+      [itemId, subjectSectionId]
+    );
+    if (itemCheck.length === 0) {
+      return res.status(403).json({ success: false, message: "This item does not belong to your class." });
+    }
+
+    const result = await notifyMissingForItem(itemId);
+    return res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    console.error("Error notifying missing:", error);
     return res.status(500).json({ success: false, message: "Internal server error." });
   }
 };
@@ -523,6 +560,7 @@ module.exports = {
   deleteItem,
   getScores,
   upsertScore,
+  notifyMissing,
   getHolistic,
   upsertHolistic,
   getGradeSubmissionStatus,

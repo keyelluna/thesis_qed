@@ -69,8 +69,8 @@ exports.login = async (req, res) => {
     return res
       .cookie("token", token, {
         httpOnly: true,
-        secure: true, // required — "none" won't work without secure
-        sameSite: "none",
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
         maxAge: 60 * 60 * 1000,
       })
       .status(200)
@@ -93,7 +93,7 @@ exports.login = async (req, res) => {
 
 exports.me = async (req, res) => {
   if (!req.user) {
-    return res.status(200).json({ user: null }); 
+    return res.status(200).json({ user: null });
   }
   try {
     const { userId, userName, role } = req.user;
@@ -214,8 +214,8 @@ exports.logout = async (req, res) => {
   try {
     res
       .clearCookie("token", {
-        httpOnly: true,
-        secure: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
         sameSite: "none",
       })
       .status(200)

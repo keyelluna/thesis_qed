@@ -68,7 +68,7 @@ const termHolisticReportRoutes = require("./../modules/parents/Student-Record/Pr
 const attendanceReportRoutes = require("./../modules/parents/Student-Record/ProgressReport/attendance.router.js");
 const studentProfilesRoutes = require("./../modules/parents/Student-Record/StudentProfile/studentProfile.Router.js");
 
-router.use("/dashboard", dashboardRoutes);
+router.use("/parent-dashboard", dashboardRoutes);
 router.use("/sy_term", schoolyearTermRoutes);
 router.use("/profile", parentsProfileRoutes);
 router.use("/linkedChildren", linkedChildrenRoutes);
@@ -90,7 +90,7 @@ const teacherRoutes = require("./../modules/principal/teachers/teachers.router.j
 const studentRoutes = require("./../modules/principal/students/students.router.js");
 const reportsRoutes = require("./../modules/principal/Reports/reports.router.js");
 
-router.use("/dashboard", principalDashboardRoutes);
+router.use("/principal-dashboard", principalDashboardRoutes);
 router.use("/teachers", teacherRoutes);
 router.use("/student", studentRoutes);
 router.use("/reports", reportsRoutes);

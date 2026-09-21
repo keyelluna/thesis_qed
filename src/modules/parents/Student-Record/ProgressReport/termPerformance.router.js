@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
-const verifyToken = require("../../../authentication/authentication.middleware");
+// const verifyToken = require("../../../authentication/authentication.middleware");
+const verifyToken = require("../../../authentication/optionalAuth.middleware");
 const termPerformanceController = require("./termPerformance.controller");
 const progressVisibilityController = require("./progressVisibility.controller");
 

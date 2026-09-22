@@ -89,11 +89,13 @@ const principalDashboardRoutes = require("./../modules/principal/dashboard/dashb
 const teacherRoutes = require("./../modules/principal/teachers/teachers.router.js");
 const studentRoutes = require("./../modules/principal/students/students.router.js");
 const reportsRoutes = require("./../modules/principal/Reports/reports.router.js");
+const gradeSheetsRoutes = require('./../modules/principal/Gradesheets/gradesheet.router.js')
 
 router.use("/principal-dashboard", principalDashboardRoutes);
 router.use("/teachers", teacherRoutes);
 router.use("/student", studentRoutes);
 router.use("/reports", reportsRoutes);
+router.use("/gradesheets", gradeSheetsRoutes);
 
 
 module.exports = router;

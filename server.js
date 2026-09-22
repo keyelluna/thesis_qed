@@ -7,7 +7,6 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const moment = require('moment');
 
-const db = require('./config/db.js');
 const apiRoutes = require('./src/routes/index.js');
 const { initSocket } = require('./socket.js');
 

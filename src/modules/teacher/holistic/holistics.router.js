@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const controller = require("./holistics.controller");
-const verifyToken = require("../../authentication/optionalAuth.middleware");
+const verifyToken = require("../../authentication/authentication.middleware");
 
 router.get("/overview", verifyToken, controller.getHolisticOverview);
 router.get(

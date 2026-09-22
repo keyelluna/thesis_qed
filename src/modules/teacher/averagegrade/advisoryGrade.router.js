@@ -9,7 +9,7 @@ const {
   getGradeVisibility,
   setGradeVisibility,
 } = require("./advisoryGrade.controller.js");
-const verifyToken = require("../../authentication/optionalAuth.middleware.js");
+const verifyToken = require("../../authentication/authentication.middleware.js");
 
 router.get(
   "/gradebook",

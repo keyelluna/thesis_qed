@@ -7,7 +7,7 @@ const {
   getAttendanceSummary,
   getUpcomingEvents,
 } = require("./teacherDashboard.controller");
-const verifyToken = require("../../authentication/optionalAuth.middleware");
+const verifyToken = require("../../authentication/authentication.middleware");
 
 router.get("/summary", verifyToken, getDashboardSummary);
 router.get("/stats", verifyToken, getDashboardStats);

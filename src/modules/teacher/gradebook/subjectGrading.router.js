@@ -3,7 +3,7 @@ const router = express.Router();
 
 const controller = require("./subjectGrading.controller");
 const topicController = require("./topicTagging.controller");
-const verifyToken = require("../../authentication/optionalAuth.middleware");
+const verifyToken = require("../../authentication/authentication.middleware");
 
 router.get(
   "/:subjectSectionId",

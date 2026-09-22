@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const authentication = require("./authentication.controller");
-const verifyToken = require("./optionalAuth.middleware");
+const verifyToken = require("./authentication.middleware");
 
 //saving authentication
 router.post("/register", authentication.register);

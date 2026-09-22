@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const controller = require("./gradingPeriods.controller");
-const verifyToken = require("../../authentication/optionalAuth.middleware");
+const verifyToken = require("../../authentication/authentication.middleware");
 
 router.get("/", verifyToken, controller.getGradingPeriods);
 router.post("/", verifyToken, controller.createGradingPeriod);

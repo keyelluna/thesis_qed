@@ -55,6 +55,12 @@ const termPerformanceRoutes = require("./../modules/parents/Student-Record/Overv
 const holisticPerformanceRoutes = require("../modules/parents/Student-Record/Overview/holisticPerformance.router.js");
 const missedActivitiesRoutes = require("./../modules/parents/Student-Record/Academic/missedActivities.router.js");
 const classSchedule = require("./../modules/parents/Student-Record/Academic/classSchedule.router.js");
+const interventionNotifRoutes = require("./../modules/parents/Student-Record/Academic/interventionNotif.router.js");
+const coursewareRoutes = require("./../modules/parents/Student-Record/Academic/courseware.router.js");
+const petQuizRoutes = require("./../modules/parents/Student-Record/Academic/petquiz.router.js");
+
+
+//HOLISTIC
 const weeklyHolisticRoutes = require("./../modules/parents/Student-Record/holistic/weeklyHolistic.router.js");
 const termProgressReportRoutes = require("../modules/parents/Student-Record/ProgressReport/termPerformance.router.js");
 const termHolisticReportRoutes = require("./../modules/parents/Student-Record/ProgressReport/termHolistic.router.js");
@@ -69,11 +75,15 @@ router.use("/termPerformance", termPerformanceRoutes);
 router.use("/holisticPerformance", holisticPerformanceRoutes);
 router.use("/missedActivities", missedActivitiesRoutes);
 router.use("/classSchedule", classSchedule);
+router.use("/lowGradeTopics", interventionNotifRoutes);
 router.use("/weeklyHolisticEvaluation", weeklyHolisticRoutes);
 router.use("/termPerformanceProgress", termProgressReportRoutes);
 router.use("/termHolisticProgress", termHolisticReportRoutes);
 router.use("/attendanceSummary", attendanceReportRoutes);
 router.use("/studentProfile", studentProfilesRoutes);
+router.use("/courseware", coursewareRoutes);
+router.use("/pet", petQuizRoutes);
+
 
 //=================================== P R I N C I P A L ========================================
 

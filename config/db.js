@@ -1,7 +1,53 @@
 const mysql = require("mysql2");
 
+<<<<<<< HEAD
 const STALE_CONNECTION_SECONDS = 60; 
 const POOL_CONNECTION_LIMIT = 2; 
+=======
+// -----------------------------------------------------------------------
+// WHY THIS FILE LOOKS THE WAY IT DOES
+//
+// Your MySQL user has max_user_connections = 5 (a hosting-plan limit, not
+// something we control). We were hitting that ceiling because:
+//   1. Nothing stopped two pools from existing in the same Node process
+//      at once (e.g. a bad hot-reload, or a require() happening twice
+//      before module caching kicked in).
+//   2. Old connections from crashed/overlapping processes were sitting
+//      idle ("Sleep") for minutes, silently eating slots that never got
+//      freed until someone manually ran KILL in phpMyAdmin.
+//
+// The fixes below address both directly:
+//   - A global singleton so only one pool can ever exist per process.
+//   - A one-time startup sweep that finds and kills THIS USER's own
+//     stale idle connections (the same manual cleanup you just did by
+//     hand), so every restart self-heals instead of accumulating leaks.
+//   - Error/connection logging so a leak is visible in logs instead of
+//     silently reproducing this exact incident.
+//
+// ALSO ADDED (ECONNRESET fix):
+//   - TCP keep-alive with an early first probe, so the host/network is
+//     less likely to silently drop a quiet connection.
+//   - A one-time retry for SELECT queries that fail because a pooled
+//     connection was already dead (ECONNRESET etc.). mysql2 discards the
+//     dead connection, so the retry runs on a fresh one. Writes are never
+//     retried, to avoid running an INSERT/UPDATE twice.
+// -----------------------------------------------------------------------
+
+const STALE_CONNECTION_SECONDS = 60; // idle longer than this = safe to kill
+const POOL_CONNECTION_LIMIT = 2; // lowered from 3 for more headroom under the 5-connection cap
+>>>>>>> d15e8f0cbc56e99e49754dfc5788d5b61866cb31
+
+// Errors that mean "the connection was already dead", not "the query is bad".
+const DEAD_CONNECTION_CODES = new Set([
+  "ECONNRESET",
+  "PROTOCOL_CONNECTION_LOST",
+  "EPIPE",
+]);
+
+function isSelectQuery(firstArg) {
+  const sql = typeof firstArg === "string" ? firstArg : firstArg && firstArg.sql;
+  return typeof sql === "string" && /^\s*select\b/i.test(sql);
+}
 
 function createPool() {
   const pool = mysql
@@ -15,6 +61,10 @@ function createPool() {
       waitForConnections: true,
       connectionLimit: POOL_CONNECTION_LIMIT,
       queueLimit: 0,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10000, // first keep-alive probe after 10s idle
+      connectTimeout: 10000, // fail fast if the DB host can't be reached
+      charset: 'utf8mb4' 
     })
     .promise();
 
@@ -39,6 +89,18 @@ function createPool() {
   pool.on("connection", () => {
     console.log("MySQL pool: new connection opened.");
   });
+
+  // Retry a SELECT once if it failed because the pooled connection was dead.
+  const rawQuery = pool.query.bind(pool);
+  pool.query = async (...args) => {
+    try {
+      return await rawQuery(...args);
+    } catch (err) {
+      if (!DEAD_CONNECTION_CODES.has(err.code) || !isSelectQuery(args[0])) throw err;
+      console.warn(`MySQL ${err.code} on a SELECT, retrying once on a fresh connection...`);
+      return rawQuery(...args);
+    }
+  };
 
   return pool;
 }

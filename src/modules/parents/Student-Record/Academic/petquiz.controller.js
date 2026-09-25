@@ -1,5 +1,5 @@
 const connection = require("../../../../../config/db");
-const geminiService = require("../../../shared/ai/gemini.service");
+const groqService = require("../../../shared/ai/groq.service");
 const { verifyParentAccess } = require("./petstate.controller");
 
 const VALID_DIFFICULTIES = ["Easy", "Medium", "Hard"];
@@ -256,7 +256,7 @@ exports.getQuiz = async (req, res) => {
       const objectives = [
         `Understand and correctly apply concepts related to ${topicName}${gradeLevel ? ` at the ${gradeLevel} level` : ""}`,
       ];
-      const questions = await geminiService.generateQuiz(
+      const questions = await groqService.generateQuiz(
         topicName,
         subjectName,
         objectives,
@@ -266,7 +266,7 @@ exports.getQuiz = async (req, res) => {
 
       const [setResult] = await connection.query(
         `INSERT INTO ai_practice_sets (topic_id, title, difficulty, grade_level, model_used) VALUES (?, ?, ?, ?, ?)`,
-        [topicId, topicName, difficulty, gradeLevel, "gemini"]
+        [topicId, topicName, difficulty, gradeLevel, "groq"]
       );
       practiceSetId = setResult.insertId;
       title = topicName;
@@ -590,13 +590,13 @@ exports.markTopicMastered = async (req, res) => {
 // Returns the bonus games for a topic, written for the student's grade:
 //   match  -> 5 pairs for the matching game
 //   memory -> the first 4 of the same pairs (8 cards = a clean 4x2 grid)
-// Generated once per topic + grade with Gemini (quiz keys), then cached in
+// Generated once per topic + grade with Groq (quiz keys), then cached in
 // ai_bonus_games. Refuses (410) once the intervention is archived.
 // -----------------------------------------------------------------------
 const MEMORY_PAIR_COUNT = 4;
 
 // Requests for the same topic + grade that arrive while one is already
-// generating wait for it, instead of each calling Gemini.
+// generating wait for it, instead of each calling Groq.
 const generatingBonus = new Map();
 
 function parseStoredPairs(raw) {
@@ -632,11 +632,11 @@ async function getOrCreateBonusPairs(topicId, gradeLevel) {
     }
 
     const { topic_name: topicName, subject_name: subjectName } = topicRows[0];
-    const pairs = await geminiService.generateMatchPairs(topicName, subjectName, gradeLevel);
+    const pairs = await groqService.generateMatchPairs(topicName, subjectName, gradeLevel);
 
     await connection.query(
       `INSERT INTO ai_bonus_games (topic_id, grade_level, pairs, model_used) VALUES (?, ?, ?, ?)`,
-      [topicId, gradeLevel, JSON.stringify(pairs), "gemini"]
+      [topicId, gradeLevel, JSON.stringify(pairs), "groq"]
     );
     return pairs;
   })().finally(() => generatingBonus.delete(key));

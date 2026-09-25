@@ -1,5 +1,5 @@
-const connection = require('../../../../config/db');
-const { notifyAbsence } = require('../../notification/notification.service');
+const connection = require("../../../../config/db");
+const { notifyAbsence } = require("../../notification/notification.service");
 
 async function getActiveGradingPeriodId() {
   const [rows] = await connection.execute(
@@ -7,24 +7,31 @@ async function getActiveGradingPeriodId() {
      FROM grading_periods gp
      INNER JOIN school_year sy ON gp.school_year_id = sy.id
      WHERE sy.is_active = 1 AND gp.is_active = 1
-     LIMIT 1`
+     LIMIT 1`,
   );
   return rows.length > 0 ? rows[0].id : null;
 }
 
-async function loadAdvisorySection(req, res, next) {
+// Loads every class this teacher advises. Used by the list endpoint,
+// and to verify ownership when a specific :classId is requested.
+async function loadAdvisoryClasses(req, res, next) {
   try {
     const authId = req.user?.userId;
     if (!authId) {
-      return res.status(401).json({ success: false, message: "Unauthorized: walang user ID na nakuha mula sa token." });
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized: walang user ID na nakuha mula sa token.",
+      });
     }
 
     const [teacherRows] = await connection.execute(
       `SELECT id FROM teacher_table WHERE user_id = ?`,
-      [authId]
+      [authId],
     );
     if (teacherRows.length === 0) {
-      return res.status(404).json({ success: false, message: "Teacher record not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Teacher record not found." });
     }
     const teacherId = teacherRows[0].id;
 
@@ -35,49 +42,48 @@ async function loadAdvisorySection(req, res, next) {
        LEFT JOIN grade_level_sections gls ON c.section_id = gls.id
        INNER JOIN grade_level gl ON c.grade_level_id = gl.id
        WHERE c.class_adviser_id = ?`,
-      [teacherId]
+      [teacherId],
     );
 
-    if (classRows.length === 0) {
-      return res.status(404).json({ success: false, message: "You are not the adviser of any section yet." });
-    }
-
     req.teacherId = teacherId;
-    req.advisorySection = classRows[0];
+    req.advisoryClasses = classRows; // full list, possibly empty
     next();
   } catch (error) {
-    console.error("Error verifying advisory section access:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    console.error("Error loading advisory classes:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 }
 
-// GET /api/teacherAttendance/advisory-section
-const getAdvisorySectionInfo = async (req, res) => {
-  try {
-    const { classId, section_id: sectionId, sectionName, gradeLevel } = req.advisorySection;
+// For routes like /:classId — picks the requested class out of this
+// teacher's advisory classes, or 403s if it isn't theirs.
+function requireOwnedClass(req, res, next) {
+  const { classId } = req.params;
+  const match = req.advisoryClasses.find(
+    (c) => String(c.classId) === String(classId),
+  );
 
-    const [roster] = sectionId
-      ? await connection.execute(
-          `SELECT s.id,
-                  CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
-                  s.gender AS gender
-           FROM elem_students s
-           WHERE s.section_id = ?
-             AND s.is_deleted = 0
-           ORDER BY s.last_name ASC, s.first_name ASC`,
-          [sectionId]
-        )
-      : await connection.execute(
-          `SELECT s.id,
-                  CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
-                  s.gender AS gender
-           FROM elem_students s
-           WHERE s.grade_level_id = (SELECT grade_level_id FROM classes WHERE id = ?)
-             AND s.section_id IS NULL
-             AND s.is_deleted = 0
-           ORDER BY s.last_name ASC, s.first_name ASC`,
-          [classId]
-        );
+  if (!match) {
+    return res
+      .status(403)
+      .json({ success: false, message: "You are not the adviser of this class." });
+  }
+
+  req.advisorySection = match;
+  next();
+}
+
+// GET /api/teacherAttendance/advisory-sections
+const getAdvisorySectionsList = async (req, res) => {
+  try {
+    const classes = req.advisoryClasses;
+    if (classes.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "You are not the adviser of any section yet.",
+      });
+    }
 
     const [terms] = await connection.execute(
       `SELECT gp.id,
@@ -89,20 +95,56 @@ const getAdvisorySectionInfo = async (req, res) => {
        INNER JOIN school_year sy ON gp.school_year_id = sy.id
        WHERE sy.is_active = 1
        ORDER BY gp.start_date ASC`,
-      []
+      [],
+    );
+    const formattedTerms = terms.map((t) => ({
+      ...t,
+      id: String(t.id),
+      isActive: !!t.isActive,
+    }));
+
+    const sections = await Promise.all(
+      classes.map(async ({ classId, section_id: sectionId, sectionName, gradeLevel }) => {
+        const [roster] = sectionId
+          ? await connection.execute(
+              `SELECT s.id,
+                      CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
+                      s.gender AS gender
+               FROM elem_students s
+               WHERE s.section_id = ?
+                 AND s.is_deleted = 0
+               ORDER BY s.last_name ASC, s.first_name ASC`,
+              [sectionId],
+            )
+          : await connection.execute(
+              `SELECT s.id,
+                      CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
+                      s.gender AS gender
+               FROM elem_students s
+               WHERE s.grade_level_id = (SELECT grade_level_id FROM classes WHERE id = ?)
+                 AND s.section_id IS NULL
+                 AND s.is_deleted = 0
+               ORDER BY s.last_name ASC, s.first_name ASC`,
+              [classId],
+            );
+
+        return {
+          classId: String(classId),
+          sectionId: sectionId ? String(sectionId) : null,
+          sectionName: sectionName?.trim() || gradeLevel,
+          gradeLevel,
+          roster: roster.map((r) => ({ id: String(r.id), name: r.name, gender: r.gender })),
+          terms: formattedTerms,
+        };
+      }),
     );
 
-    return res.status(200).json({
-      classId: String(classId),
-      sectionId: sectionId ? String(sectionId) : null,
-      sectionName: sectionName?.trim() || gradeLevel, 
-      gradeLevel,
-      roster: roster.map((r) => ({ id: String(r.id), name: r.name, gender: r.gender })),
-      terms: terms.map((t) => ({ ...t, id: String(t.id), isActive: !!t.isActive })),
-    });
+    return res.status(200).json(sections);
   } catch (error) {
-    console.error("Error fetching advisory section info:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    console.error("Error fetching advisory sections list:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
 
@@ -146,7 +188,9 @@ const getAdvisoryAttendance = async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching advisory attendance:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
 
@@ -158,7 +202,9 @@ const upsertAdvisoryAttendance = async (req, res) => {
     const status = req.body.status ?? null;
 
     if (!studentId || !date) {
-      return res.status(400).json({ success: false, message: "studentId and date are required." });
+      return res
+        .status(400)
+        .json({ success: false, message: "studentId and date are required." });
     }
 
     const gradingPeriodId = term || (await getActiveGradingPeriodId());
@@ -167,7 +213,7 @@ const upsertAdvisoryAttendance = async (req, res) => {
       await connection.execute(
         `DELETE FROM advisory_attendance_records
          WHERE class_id = ? AND student_id = ? AND attendance_date = ?`,
-        [classId, studentId, date]
+        [classId, studentId, date],
       );
     } else {
       await connection.execute(
@@ -175,10 +221,9 @@ const upsertAdvisoryAttendance = async (req, res) => {
            (section_id, class_id, grading_period_id, student_id, attendance_date, status, recorded_by)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE status = VALUES(status), grading_period_id = VALUES(grading_period_id), recorded_by = VALUES(recorded_by)`,
-        [sectionId ?? null, classId, gradingPeriodId, studentId, date, status, teacherId]
+        [sectionId ?? null, classId, gradingPeriodId, studentId, date, status, teacherId],
       );
 
-      // --- Absence notification (absent only) ---
       if (status === "A") {
         try {
           await notifyAbsence({ studentId, date });
@@ -188,16 +233,22 @@ const upsertAdvisoryAttendance = async (req, res) => {
       }
     }
 
-    return res.status(200).json({ success: true, termId: gradingPeriodId ? String(gradingPeriodId) : null });
+    return res.status(200).json({
+      success: true,
+      termId: gradingPeriodId ? String(gradingPeriodId) : null,
+    });
   } catch (error) {
     console.error("Error saving advisory attendance:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
 
 module.exports = {
-  loadAdvisorySection,
-  getAdvisorySectionInfo,
+  loadAdvisoryClasses,
+  requireOwnedClass,
+  getAdvisorySectionsList,
   getAdvisoryAttendance,
   upsertAdvisoryAttendance,
 };

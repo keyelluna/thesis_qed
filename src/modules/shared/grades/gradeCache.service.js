@@ -167,38 +167,126 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
   );
 }
 
-async function recalcOverallAverage(studentId, gradingPeriodId) {
+// Resolves the advisory class a student belongs to, whether it has a real
+// section or is a single-section-per-grade-level class, plus the class's
+// adviser teacher id. Mirrors the `advisoryScope` helper in
+// advisoryGrading.controller.js so the "own advisory subject" rule used
+// here always matches the one used to render the gradebook.
+//
+// NOTE: this no longer returns scopeColumn/scopeValue. advisory_overall_grades
+// has both `section_id` and `grade_level_id` columns (each nullable), so we
+// always pass both explicitly instead of building the column list dynamically.
+async function getStudentAdvisoryContext(studentId) {
   const [studentRows] = await connection.execute(
-    `SELECT section_id AS sectionId FROM elem_students WHERE id = ?`,
+    `SELECT section_id AS sectionId, grade_level_id AS gradeLevelId
+     FROM elem_students WHERE id = ? AND is_deleted = 0`,
     [studentId]
   );
-  if (studentRows.length === 0 || studentRows[0].sectionId === null) return;
-  const sectionId = studentRows[0].sectionId;
+  if (studentRows.length === 0) return null;
+  const { sectionId, gradeLevelId } = studentRows[0];
 
-  const [subjectSections] = await connection.execute(
-    `SELECT id FROM \`subject-section\` WHERE section_id = ? AND status = 'Active'`,
-    [sectionId]
+  const [classRows] = await connection.execute(
+    sectionId
+      ? `SELECT class_adviser_id AS adviserTeacherId FROM classes WHERE section_id = ?`
+      : `SELECT class_adviser_id AS adviserTeacherId FROM classes WHERE section_id IS NULL AND grade_level_id = ?`,
+    [sectionId || gradeLevelId]
   );
+  const adviserTeacherId = classRows.length ? classRows[0].adviserTeacherId : null;
+
+  return {
+    sectionId,     // null for sectionless classes
+    gradeLevelId,  // always present
+    adviserTeacherId,
+  };
+}
+
+// Same subject-section resolution logic as getAdvisoryGradebook: for a
+// real section this includes both section-specific and grade-level-wide
+// subject-sections; for a section-less class it's grade-level-wide only.
+async function getActiveSubjectSectionsForScope(context) {
+  const { sectionId, gradeLevelId } = context;
+  const [rows] = sectionId
+    ? await connection.execute(
+        `SELECT ss.id, ss.teacher_id AS teacherId
+         FROM \`subject-section\` ss
+         INNER JOIN elem_subjects es ON ss.subject_id = es.id
+         WHERE ss.status = 'Active'
+           AND (
+             ss.section_id = ?
+             OR (ss.section_id IS NULL AND es.grade_level_id = ?)
+           )`,
+        [sectionId, gradeLevelId]
+      )
+    : await connection.execute(
+        `SELECT ss.id, ss.teacher_id AS teacherId
+         FROM \`subject-section\` ss
+         INNER JOIN elem_subjects es ON ss.subject_id = es.id
+         WHERE ss.status = 'Active' AND ss.section_id IS NULL AND es.grade_level_id = ?`,
+        [gradeLevelId]
+      );
+  return rows;
+}
+
+async function recalcOverallAverage(studentId, gradingPeriodId) {
+  const context = await getStudentAdvisoryContext(studentId);
+  if (!context) return;
+
+  const subjectSections = await getActiveSubjectSectionsForScope(context);
   if (subjectSections.length === 0) return;
 
   const ssIds = subjectSections.map((s) => s.id);
   const placeholders = ssIds.map(() => "?").join(",");
+
   const [cacheRows] = await connection.execute(
-    `SELECT average FROM subject_grade_cache
-     WHERE student_id = ? AND grading_period_id = ? AND subject_section_id IN (${placeholders})
-       AND average IS NOT NULL`,
+    `SELECT subject_section_id AS subjectSectionId, average, is_complete AS isComplete
+     FROM subject_grade_cache
+     WHERE student_id = ? AND grading_period_id = ? AND subject_section_id IN (${placeholders})`,
     [studentId, gradingPeriodId, ...ssIds]
   );
+  const cacheBySs = new Map(cacheRows.map((r) => [r.subjectSectionId, r]));
 
-  const overallAverage = cacheRows.length
-    ? Math.round((cacheRows.reduce((s, r) => s + Number(r.average), 0) / cacheRows.length) * 100) / 100
+  const [submissionRows] = await connection.execute(
+    `SELECT subject_section_id AS subjectSectionId
+     FROM subject_grade_submissions
+     WHERE subject_section_id IN (${placeholders}) AND grading_period_id = ?`,
+    [...ssIds, gradingPeriodId]
+  );
+  const submittedSsIds = new Set(submissionRows.map((r) => r.subjectSectionId));
+
+  const countedAverages = [];
+  for (const ss of subjectSections) {
+    const cell = cacheBySs.get(ss.id);
+    if (!cell || cell.average === null) continue;
+
+    const isOwnAdvisorySubject =
+      context.adviserTeacherId !== null && ss.teacherId === context.adviserTeacherId;
+    const isSubmitted = isOwnAdvisorySubject ? !!cell.isComplete : submittedSsIds.has(ss.id);
+    if (isSubmitted) countedAverages.push(Number(cell.average));
+  }
+
+  const overallAverage = countedAverages.length
+    ? Math.round((countedAverages.reduce((a, b) => a + b, 0) / countedAverages.length) * 100) / 100
     : null;
 
+  // FIX: no dynamic column name. Always insert both section_id and
+  // grade_level_id explicitly — whichever doesn't apply is passed as null.
+  // This removes the "Unknown column 'grade_level_id'" failure that was
+  // silently killing this insert for every sectionless (grade 3-6) student.
   await connection.execute(
-    `INSERT INTO advisory_overall_grades (student_id, section_id, grading_period_id, overall_average)
-     VALUES (?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE overall_average = VALUES(overall_average), section_id = VALUES(section_id)`,
-    [studentId, sectionId, gradingPeriodId, overallAverage]
+    `INSERT INTO advisory_overall_grades
+       (student_id, section_id, grade_level_id, grading_period_id, overall_average)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       overall_average = VALUES(overall_average),
+       section_id = VALUES(section_id),
+       grade_level_id = VALUES(grade_level_id)`,
+    [
+      studentId,
+      context.sectionId || null,
+      context.sectionId ? null : context.gradeLevelId,
+      gradingPeriodId,
+      overallAverage,
+    ]
   );
 }
 
@@ -207,17 +295,28 @@ async function recalcStudentSubject(studentId, subjectSectionId, gradingPeriodId
   await recalcOverallAverage(studentId, gradingPeriodId);
 }
 
+// Recalculates every enrolled student for one subject-section, whether
+// that subject-section belongs to a real section or is grade-level-wide.
 async function recalcAllStudentsForSubject(subjectSectionId, gradingPeriodId) {
-  const [ssRow] = await connection.execute(
-    `SELECT section_id AS sectionId FROM \`subject-section\` WHERE id = ?`,
+  const [ssRows] = await connection.execute(
+    `SELECT ss.section_id AS sectionId, es.grade_level_id AS gradeLevelId
+     FROM \`subject-section\` ss
+     INNER JOIN elem_subjects es ON ss.subject_id = es.id
+     WHERE ss.id = ?`,
     [subjectSectionId]
   );
-  if (ssRow.length === 0) return;
+  if (ssRows.length === 0) return;
+  const { sectionId, gradeLevelId } = ssRows[0];
 
-  const [students] = await connection.execute(
-    `SELECT id FROM elem_students WHERE section_id = ? AND is_deleted = 0`,
-    [ssRow[0].sectionId]
-  );
+  const [students] = sectionId
+    ? await connection.execute(
+        `SELECT id FROM elem_students WHERE section_id = ? AND is_deleted = 0`,
+        [sectionId]
+      )
+    : await connection.execute(
+        `SELECT id FROM elem_students WHERE grade_level_id = ? AND section_id IS NULL AND is_deleted = 0`,
+        [gradeLevelId]
+      );
 
   for (const s of students) {
     await recalcSubjectAverage(s.id, subjectSectionId, gradingPeriodId);
@@ -228,4 +327,5 @@ async function recalcAllStudentsForSubject(subjectSectionId, gradingPeriodId) {
 module.exports = {
   recalcStudentSubject,
   recalcAllStudentsForSubject,
+  recalcOverallAverage,
 };

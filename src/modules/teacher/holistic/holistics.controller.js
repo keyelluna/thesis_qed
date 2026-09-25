@@ -229,6 +229,8 @@ const upsertHolistic = async (req, res) => {
   }
 };
 
+const STUDENT_NAME_SQL = `CONCAT(st.last_name, ', ', st.first_name, ' ', COALESCE(st.middle_name, ''))`;
+
 const getHolisticOverview = async (req, res) => {
   try {
     const authId = req.user?.userId;
@@ -250,28 +252,78 @@ const getHolisticOverview = async (req, res) => {
     }
     const teacherId = teacherRows[0].id;
 
-    const [myStudents] = await connection.execute(
+    // ---- 1. Students in sections where this teacher teaches a subject ----
+    const [taughtStudents] = await connection.execute(
       `SELECT DISTINCT st.id,
-              CONCAT(st.last_name, ', ', st.first_name, ' ', COALESCE(st.middle_name, '')) AS name,
+              ${STUDENT_NAME_SQL} AS name,
               st.section_id
        FROM elem_students st
        INNER JOIN \`subject-section\` ss ON st.section_id = ss.section_id
-       WHERE ss.teacher_id = ? AND ss.status = 'Active'
-       ORDER BY st.last_name ASC, st.first_name ASC`,
+       WHERE ss.teacher_id = ? AND ss.status = 'Active' AND st.is_deleted = 0`,
       [teacherId]
+    );
+
+    // ---- 2. Students in classes this teacher ADVISES ----
+    // Mirrors the Attendance page's roster logic, so every advisory
+    // section shows up here even if the teacher teaches no subject in it.
+    // A class with no section_id falls back to grade level + unassigned
+    // students, exactly like getAdvisorySectionsList.
+    const [advisoryClasses] = await connection.execute(
+      `SELECT id AS classId, section_id, grade_level_id
+       FROM classes WHERE class_adviser_id = ?`,
+      [teacherId]
+    );
+
+    const advisoryStudents = [];
+    for (const cls of advisoryClasses) {
+      const [rows] = cls.section_id
+        ? await connection.execute(
+            `SELECT st.id, ${STUDENT_NAME_SQL} AS name, st.section_id
+             FROM elem_students st
+             WHERE st.section_id = ? AND st.is_deleted = 0`,
+            [cls.section_id]
+          )
+        : await connection.execute(
+            `SELECT st.id, ${STUDENT_NAME_SQL} AS name, st.section_id
+             FROM elem_students st
+             WHERE st.grade_level_id = ? AND st.section_id IS NULL AND st.is_deleted = 0`,
+            [cls.grade_level_id]
+          );
+      advisoryStudents.push(...rows);
+    }
+    const advisoryStudentIds = new Set(advisoryStudents.map((s) => String(s.id)));
+
+    // ---- 3. Merge both lists (dedupe by id) ----
+    const studentsById = new Map();
+    for (const s of [...taughtStudents, ...advisoryStudents]) {
+      studentsById.set(String(s.id), s);
+    }
+    const myStudents = Array.from(studentsById.values()).sort((a, b) =>
+      String(a.name).localeCompare(String(b.name))
     );
 
     if (myStudents.length === 0) {
       return res.status(200).json({ success: true, data: [] });
     }
 
-    const [advisoryRows] = await connection.execute(
-      `SELECT section_id FROM classes WHERE class_adviser_id = ?`,
-      [teacherId]
-    );
-    const advisorySectionIds = new Set(advisoryRows.map((r) => r.section_id));
+    const isAdvisoryStudent = (student) => advisoryStudentIds.has(String(student.id));
 
-    const studentSectionIds = [...new Set(myStudents.map((s) => s.section_id))];
+    const emptyResults = () =>
+      myStudents.map((student) => ({
+        studentId: String(student.id),
+        studentName: student.name.trim(),
+        isAdvisory: isAdvisoryStudent(student),
+        subjects: [],
+        overall: null,
+      }));
+
+    const studentSectionIds = [...new Set(myStudents.map((s) => s.section_id).filter((id) => id !== null && id !== undefined))];
+
+    // Nobody is in a real section (e.g. only unassigned advisory students)
+    if (studentSectionIds.length === 0) {
+      return res.status(200).json({ success: true, data: emptyResults() });
+    }
+
     const sectionPlaceholders = studentSectionIds.map(() => "?").join(",");
 
     const [allSectionSubjects] = await connection.execute(
@@ -296,14 +348,7 @@ const getHolisticOverview = async (req, res) => {
 
     const allSubjectSectionIds = [...new Set(allSectionSubjects.map((r) => r.id))];
     if (allSubjectSectionIds.length === 0) {
-      const results = myStudents.map((student) => ({
-        studentId: String(student.id),
-        studentName: student.name.trim(),
-        isAdvisory: advisorySectionIds.has(student.section_id),
-        subjects: [],
-        overall: null,
-      }));
-      return res.status(200).json({ success: true, data: results });
+      return res.status(200).json({ success: true, data: emptyResults() });
     }
 
     const subjectPlaceholders = allSubjectSectionIds.map(() => "?").join(",");
@@ -323,7 +368,7 @@ const getHolisticOverview = async (req, res) => {
     }
 
     const results = myStudents.map((student) => {
-      const isAdvisory = advisorySectionIds.has(student.section_id);
+      const isAdvisory = isAdvisoryStudent(student);
       const mySubjects = mySubjectSectionsBySection.get(student.section_id) || [];
 
       const subjects = mySubjects.map((subj) => {
@@ -449,7 +494,12 @@ const getStudentHolisticProfile = async (req, res) => {
       `SELECT section_id FROM classes WHERE class_adviser_id = ?`,
       [teacherId]
     );
-    const isAdvisory = advisoryRows.some((r) => r.section_id === student.section_id);
+    // Compare as strings so a number-vs-string mismatch can't make an
+    // advisory student look non-advisory (that would list only the subjects
+    // this teacher teaches instead of everything the student takes).
+    const isAdvisory = advisoryRows.some(
+      (r) => r.section_id != null && String(r.section_id) === String(student.section_id)
+    );
 
     let subjectRows;
     if (isAdvisory) {
@@ -585,10 +635,177 @@ const getStudentHolisticProfile = async (req, res) => {
   }
 };
 
+const DOMAIN_AXES = ["cognitive", "emotional", "behavioral", "social"];
+
+// rows: [{ week, axis, rating }] -> [{ weekStartDate, cognitive, ... }]
+// Averages every rating of an axis within a week. Because each student has
+// one rating per axis per week per subject, this equals "average across
+// students", and pooling subjects (overall) is a true pooled average, not
+// an average of averages.
+function buildWeekPoints(rows) {
+  const byWeek = new Map();
+  for (const r of rows) {
+    if (!byWeek.has(r.week)) byWeek.set(r.week, {});
+    const bucket = byWeek.get(r.week);
+    if (!bucket[r.axis]) bucket[r.axis] = [];
+    bucket[r.axis].push(Number(r.rating));
+  }
+  return Array.from(byWeek.keys())
+    .sort()
+    .map((week) => {
+      const bucket = byWeek.get(week);
+      const point = { weekStartDate: week };
+      for (const axis of DOMAIN_AXES) {
+        const vals = bucket[axis];
+        point[axis] = vals && vals.length
+          ? Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10
+          : null;
+      }
+      return point;
+    });
+}
+
+const getDomainTrends = async (req, res) => {
+  try {
+    const authId = req.user?.userId;
+    if (!authId) {
+      return res.status(401).json({ success: false, message: "Unauthorized." });
+    }
+
+    const { termNumber } = req.query;
+    if (!termNumber) {
+      return res.status(400).json({ success: false, message: "termNumber is required." });
+    }
+
+    const [teacherRows] = await connection.execute(
+      `SELECT id FROM teacher_table WHERE user_id = ?`,
+      [authId]
+    );
+    if (teacherRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Teacher record not found." });
+    }
+    const teacherId = teacherRows[0].id;
+
+    // Every class this teacher advises (same shape the Attendance page uses)
+    const [classes] = await connection.execute(
+      `SELECT c.id AS classId, c.section_id AS sectionId,
+              gls.section_name AS sectionName, gl.grade_level AS gradeLevel
+       FROM classes c
+       LEFT JOIN grade_level_sections gls ON c.section_id = gls.id
+       INNER JOIN grade_level gl ON c.grade_level_id = gl.id
+       WHERE c.class_adviser_id = ?`,
+      [teacherId]
+    );
+
+    if (classes.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: { termNumber: Number(termNumber), sections: [] },
+      });
+    }
+
+    const sectionIds = [...new Set(classes.map((c) => c.sectionId).filter((id) => id !== null && id !== undefined))];
+
+    let subjectRows = [];
+    let studentRows = [];
+    let ratingRows = [];
+
+    if (sectionIds.length > 0) {
+      const sectionPh = sectionIds.map(() => "?").join(",");
+
+      // Every ACTIVE subject in the section, whoever teaches it
+      [subjectRows] = await connection.execute(
+        `SELECT ss.id, ss.section_id AS sectionId, es.subject_name AS subjectName
+         FROM \`subject-section\` ss
+         INNER JOIN elem_subjects es ON ss.subject_id = es.id
+         WHERE ss.section_id IN (${sectionPh}) AND ss.status = 'Active'
+         ORDER BY es.subject_name ASC`,
+        sectionIds
+      );
+
+      [studentRows] = await connection.execute(
+        `SELECT id, section_id AS sectionId
+         FROM elem_students
+         WHERE section_id IN (${sectionPh}) AND is_deleted = 0`,
+        sectionIds
+      );
+
+      if (subjectRows.length > 0) {
+        const subjectIds = subjectRows.map((s) => s.id);
+        const subjectPh = subjectIds.map(() => "?").join(",");
+        [ratingRows] = await connection.execute(
+          `SELECT subject_section_id AS subjectSectionId, student_id AS studentId, axis, rating,
+                  DATE_FORMAT(week_start_date, '%Y-%m-%d') AS week
+           FROM holistic_ratings
+           WHERE subject_section_id IN (${subjectPh}) AND term_number = ?`,
+          [...subjectIds, termNumber]
+        );
+      }
+    }
+
+    const studentIdsBySection = new Map();
+    for (const s of studentRows) {
+      const key = String(s.sectionId);
+      if (!studentIdsBySection.has(key)) studentIdsBySection.set(key, new Set());
+      studentIdsBySection.get(key).add(String(s.id));
+    }
+
+    const ratingsBySubject = new Map();
+    for (const r of ratingRows) {
+      const key = String(r.subjectSectionId);
+      if (!ratingsBySubject.has(key)) ratingsBySubject.set(key, []);
+      ratingsBySubject.get(key).push(r);
+    }
+
+    const sections = classes.map((cls) => {
+      const hasSection = cls.sectionId !== null && cls.sectionId !== undefined;
+      const sectionSubjects = hasSection
+        ? subjectRows.filter((s) => String(s.sectionId) === String(cls.sectionId))
+        : [];
+      const enrolled = hasSection
+        ? studentIdsBySection.get(String(cls.sectionId)) || new Set()
+        : new Set();
+
+      const pooledRows = [];
+      const subjects = sectionSubjects.map((subj) => {
+        // Only count ratings for students currently enrolled in this section
+        const rows = (ratingsBySubject.get(String(subj.id)) || []).filter((r) =>
+          enrolled.has(String(r.studentId))
+        );
+        pooledRows.push(...rows);
+        return {
+          subjectSectionId: String(subj.id),
+          subjectName: subj.subjectName,
+          studentCount: new Set(rows.map((r) => String(r.studentId))).size,
+          weeks: buildWeekPoints(rows),
+        };
+      });
+
+      return {
+        classId: String(cls.classId),
+        sectionId: hasSection ? String(cls.sectionId) : null,
+        sectionName: cls.sectionName?.trim() || cls.gradeLevel,
+        gradeLevel: cls.gradeLevel,
+        subjects,
+        overallWeeks: buildWeekPoints(pooledRows),
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: { termNumber: Number(termNumber), sections },
+    });
+  } catch (error) {
+    console.error("Error fetching domain trends:", error);
+    return res.status(500).json({ success: false, message: "Internal server error." });
+  }
+};
+
 module.exports = {
   loadSubjectSection,
   getHolistic,
   upsertHolistic,
   getHolisticOverview,
   getStudentHolisticProfile,
+  getDomainTrends,
 };

@@ -4,22 +4,27 @@ const router = express.Router();
 const controller = require("./advisoryAttendance.controller");
 const verifyToken = require("../../authentication/authentication.middleware");
 
+// Must come before "/:classId" or Express will match this path as a classId.
 router.get(
-  "/advisory-section",
+  "/advisory-sections",
   verifyToken,
-  controller.loadAdvisorySection,
-  controller.getAdvisorySectionInfo,
+  controller.loadAdvisoryClasses,
+  controller.getAdvisorySectionsList,
 );
+
 router.get(
   "/:classId",
   verifyToken,
-  controller.loadAdvisorySection,
+  controller.loadAdvisoryClasses,
+  controller.requireOwnedClass,
   controller.getAdvisoryAttendance,
 );
+
 router.post(
   "/:classId",
   verifyToken,
-  controller.loadAdvisorySection,
+  controller.loadAdvisoryClasses,
+  controller.requireOwnedClass,
   controller.upsertAdvisoryAttendance,
 );
 

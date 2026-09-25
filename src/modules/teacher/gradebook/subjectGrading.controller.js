@@ -1,6 +1,11 @@
-const connection = require('../../../../config/db');
-const { recalcStudentSubject, recalcAllStudentsForSubject } = require('../../shared/grades/gradeCache.service');
-const { notifyMissedActivity, notifyMissingForItem } = require('../../notification/notification.service');
+const connection = require("../../../../config/db");
+const {
+  recalcStudentSubject,
+  recalcAllStudentsForSubject,
+} = require("../../shared/grades/gradeCache.service");
+const {
+  notifyMissedActivity, notifyMissingForItem, notifyLowGradeScore
+} = require("../../notification/notification.service");
 
 async function getActiveGradingPeriodId() {
   const [rows] = await connection.execute(
@@ -8,7 +13,7 @@ async function getActiveGradingPeriodId() {
      FROM grading_periods gp
      INNER JOIN school_year sy ON gp.school_year_id = sy.id
      WHERE sy.is_active = 1 AND gp.is_active = 1
-     LIMIT 1`
+     LIMIT 1`,
   );
   return rows.length > 0 ? rows[0].id : null;
 }
@@ -19,7 +24,7 @@ async function getActiveTermNumber() {
      FROM grading_periods gp
      INNER JOIN school_year sy ON gp.school_year_id = sy.id
      WHERE sy.is_active = 1 AND gp.is_active = 1
-     LIMIT 1`
+     LIMIT 1`,
   );
   return rows.length > 0 ? rows[0].termNumber : 1;
 }
@@ -36,20 +41,26 @@ function getCurrentWeekStartDate() {
   return `${year}-${month}-${date}`;
 }
 
-
 async function loadSubjectSection(req, res, next) {
   try {
     const authId = req.user?.userId;
     if (!authId) {
-      return res.status(401).json({ success: false, message: "Unauthorized: walang user ID na nakuha mula sa token." });
+      return res
+        .status(401)
+        .json({
+          success: false,
+          message: "Unauthorized: walang user ID na nakuha mula sa token.",
+        });
     }
 
     const [teacherRows] = await connection.execute(
       `SELECT id FROM teacher_table WHERE user_id = ?`,
-      [authId]
+      [authId],
     );
     if (teacherRows.length === 0) {
-      return res.status(404).json({ success: false, message: "Teacher record not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Teacher record not found." });
     }
     const teacherId = teacherRows[0].id;
 
@@ -70,10 +81,15 @@ async function loadSubjectSection(req, res, next) {
        LEFT JOIN teacher_table advT ON c.class_adviser_id = advT.id
        INNER JOIN grade_level gl ON es.grade_level_id = gl.id
        WHERE ss.id = ? AND ss.teacher_id = ?`,
-      [subjectSectionId, teacherId]
+      [subjectSectionId, teacherId],
     );
     if (ssRows.length === 0) {
-      return res.status(403).json({ success: false, message: "You don't have access to this class." });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          message: "You don't have access to this class.",
+        });
     }
 
     req.teacherId = teacherId;
@@ -81,7 +97,9 @@ async function loadSubjectSection(req, res, next) {
     next();
   } catch (error) {
     console.error("Error verifying subject-section access:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 }
 
@@ -104,7 +122,7 @@ const getSubjectSectionInfo = async (req, res) => {
            FROM elem_students
            WHERE section_id = ?
            ORDER BY last_name ASC, first_name ASC`,
-          [section_id]
+          [section_id],
         )
       : await connection.execute(
           `SELECT id, gender,
@@ -112,7 +130,7 @@ const getSubjectSectionInfo = async (req, res) => {
            FROM elem_students
            WHERE grade_level_id = ? AND is_deleted = 0
            ORDER BY last_name ASC, first_name ASC`,
-          [gradeLevelId]
+          [gradeLevelId],
         );
 
     const isOwnAdvisory = !!(adviserId && adviserId === req.teacherId);
@@ -134,7 +152,9 @@ const getSubjectSectionInfo = async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching subject-section info:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
 
@@ -177,19 +197,32 @@ const getItems = async (req, res) => {
         ...r,
         id: String(r.id),
         topicId: r.topicId !== null ? String(r.topicId) : null,
-        gradingPeriodId: r.gradingPeriodId !== null ? String(r.gradingPeriodId) : null,
+        gradingPeriodId:
+          r.gradingPeriodId !== null ? String(r.gradingPeriodId) : null,
       })),
     });
   } catch (error) {
     console.error("Error fetching grade items:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
 
 const addItem = async (req, res) => {
   try {
     const { id: subjectSectionId } = req.subjectSection;
-    const { tab, date, activityName, topic, format, maxItems, topicId, term, examType } = req.body;
+    const {
+      tab,
+      date,
+      activityName,
+      topic,
+      format,
+      maxItems,
+      topicId,
+      term,
+      examType,
+    } = req.body;
 
     if (!tab || !date || !topic || !maxItems) {
       return res.status(400).json({
@@ -208,7 +241,15 @@ const addItem = async (req, res) => {
          AND grading_period_id <=> ? AND topic_id <=> ? AND activity_name = ? AND max_items = ?
          AND created_at >= (NOW() - INTERVAL 5 SECOND)
        LIMIT 1`,
-      [subjectSectionId, tab, date, gradingPeriodId, topicId || null, safeActivityName, maxItems]
+      [
+        subjectSectionId,
+        tab,
+        date,
+        gradingPeriodId,
+        topicId || null,
+        safeActivityName,
+        maxItems,
+      ],
     );
     if (dupe.length > 0) {
       return res.status(201).json({ success: true, id: String(dupe[0].id) });
@@ -218,13 +259,26 @@ const addItem = async (req, res) => {
       `INSERT INTO grade_items
          (subject_section_id, grading_period_id, tab, item_date, activity_name, topic, topic_id, format, exam_type, max_items)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [subjectSectionId, gradingPeriodId, tab, date, safeActivityName, topic, topicId || null, safeFormat, examType || null, maxItems]
+      [
+        subjectSectionId,
+        gradingPeriodId,
+        tab,
+        date,
+        safeActivityName,
+        topic,
+        topicId || null,
+        safeFormat,
+        examType || null,
+        maxItems,
+      ],
     );
 
     return res.status(201).json({ success: true, id: String(result.insertId) });
   } catch (error) {
     console.error("Error creating grade item:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
 
@@ -237,41 +291,69 @@ const updateItem = async (req, res) => {
     const [beforeRows] = await connection.execute(
       `SELECT grading_period_id AS gradingPeriodId, exam_type AS examType, max_items AS maxItems
        FROM grade_items WHERE id = ? AND subject_section_id = ?`,
-      [itemId, subjectSectionId]
+      [itemId, subjectSectionId],
     );
     if (beforeRows.length === 0) {
-      return res.status(404).json({ success: false, message: "Item not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Item not found." });
     }
     const before = beforeRows[0];
 
     const fields = [];
     const params = [];
-    if (date) { fields.push("item_date = ?"); params.push(date); }
-    if (activityName) { fields.push("activity_name = ?"); params.push(activityName); }
-    if (topic) { fields.push("topic = ?"); params.push(topic); }
-    if (topicId !== undefined) { fields.push("topic_id = ?"); params.push(topicId || null); }
-    if (format) { fields.push("format = ?"); params.push(format); }
-    if (maxItems) { fields.push("max_items = ?"); params.push(maxItems); }
+    if (date) {
+      fields.push("item_date = ?");
+      params.push(date);
+    }
+    if (activityName) {
+      fields.push("activity_name = ?");
+      params.push(activityName);
+    }
+    if (topic) {
+      fields.push("topic = ?");
+      params.push(topic);
+    }
+    if (topicId !== undefined) {
+      fields.push("topic_id = ?");
+      params.push(topicId || null);
+    }
+    if (format) {
+      fields.push("format = ?");
+      params.push(format);
+    }
+    if (maxItems) {
+      fields.push("max_items = ?");
+      params.push(maxItems);
+    }
 
     if (fields.length === 0) {
-      return res.status(400).json({ success: false, message: "Nothing to update." });
+      return res
+        .status(400)
+        .json({ success: false, message: "Nothing to update." });
     }
 
     params.push(itemId, subjectSectionId);
     await connection.execute(
       `UPDATE grade_items SET ${fields.join(", ")} WHERE id = ? AND subject_section_id = ?`,
-      params
+      params,
     );
 
-    const maxItemsChanged = maxItems && Number(maxItems) !== Number(before.maxItems);
+    const maxItemsChanged =
+      maxItems && Number(maxItems) !== Number(before.maxItems);
     if (maxItemsChanged) {
-      await recalcAllStudentsForSubject(subjectSectionId, before.gradingPeriodId);
+      await recalcAllStudentsForSubject(
+        subjectSectionId,
+        before.gradingPeriodId,
+      );
     }
 
     return res.status(200).json({ success: true });
   } catch (error) {
     console.error("Error updating grade item:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
 
@@ -283,27 +365,36 @@ const deleteItem = async (req, res) => {
     const [itemRows] = await connection.execute(
       `SELECT grading_period_id AS gradingPeriodId
        FROM grade_items WHERE id = ? AND subject_section_id = ?`,
-      [itemId, subjectSectionId]
+      [itemId, subjectSectionId],
     );
 
-    await connection.execute(`DELETE FROM grade_scores WHERE item_id = ?`, [itemId]);
+    await connection.execute(`DELETE FROM grade_scores WHERE item_id = ?`, [
+      itemId,
+    ]);
     const [result] = await connection.execute(
       `DELETE FROM grade_items WHERE id = ? AND subject_section_id = ?`,
-      [itemId, subjectSectionId]
+      [itemId, subjectSectionId],
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, message: "Item not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Item not found." });
     }
 
     if (itemRows.length) {
-      await recalcAllStudentsForSubject(subjectSectionId, itemRows[0].gradingPeriodId);
+      await recalcAllStudentsForSubject(
+        subjectSectionId,
+        itemRows[0].gradingPeriodId,
+      );
     }
 
     return res.status(200).json({ success: true });
   } catch (error) {
     console.error("Error deleting grade item:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
 
@@ -316,7 +407,7 @@ const getScores = async (req, res) => {
        FROM grade_scores gs
        INNER JOIN grade_items gi ON gs.item_id = gi.id
        WHERE gi.subject_section_id = ?`,
-      [subjectSectionId]
+      [subjectSectionId],
     );
 
     const map = {};
@@ -329,10 +420,11 @@ const getScores = async (req, res) => {
     return res.status(200).json({ success: true, data: map });
   } catch (error) {
     console.error("Error fetching scores:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
-
 
 const upsertScore = async (req, res) => {
   try {
@@ -360,7 +452,7 @@ const upsertScore = async (req, res) => {
     );
 
     const [itemRows] = await connection.execute(
-      `SELECT subject_section_id AS subjectSectionId, grading_period_id AS gradingPeriodId
+      `SELECT subject_section_id AS subjectSectionId, grading_period_id AS gradingPeriodId, topic_id AS topicId
        FROM grade_items WHERE id = ?`,
       [itemId]
     );
@@ -368,14 +460,17 @@ const upsertScore = async (req, res) => {
       await recalcStudentSubject(studentId, itemRows[0].subjectSectionId, itemRows[0].gradingPeriodId);
     }
 
-          // --- Missed activity notification ---
-    try {
+     try {
       if (value !== null) {
         await connection.execute(
           `DELETE FROM notifications
            WHERE student_id = ? AND grade_item_id = ? AND title = 'Missed Activity'`,
           [studentId, itemId]
         );
+
+        if (itemRows.length && itemRows[0].topicId) {
+          await notifyLowGradeScore({ studentId, itemId });
+        }
       }
 
       await notifyMissingForItem(itemId);
@@ -397,24 +492,33 @@ const notifyMissing = async (req, res) => {
 
     const [itemCheck] = await connection.execute(
       `SELECT id FROM grade_items WHERE id = ? AND subject_section_id = ?`,
-      [itemId, subjectSectionId]
+      [itemId, subjectSectionId],
     );
     if (itemCheck.length === 0) {
-      return res.status(403).json({ success: false, message: "This item does not belong to your class." });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          message: "This item does not belong to your class.",
+        });
     }
 
     const result = await notifyMissingForItem(itemId);
     return res.status(200).json({ success: true, ...result });
   } catch (error) {
     console.error("Error notifying missing:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
 
 const getHolistic = async (req, res) => {
   try {
     const { id: subjectSectionId } = req.subjectSection;
-    const requestedWeek = /^\d{4}-\d{2}-\d{2}$/.test(req.query.weekStartDate || "")
+    const requestedWeek = /^\d{4}-\d{2}-\d{2}$/.test(
+      req.query.weekStartDate || "",
+    )
       ? req.query.weekStartDate
       : getCurrentWeekStartDate();
     const termNumber = Math.min(3, Math.max(1, Number(req.query.term) || 1));
@@ -423,7 +527,7 @@ const getHolistic = async (req, res) => {
       `SELECT student_id, axis, rating, DATE_FORMAT(week_start_date, '%Y-%m-%d') AS weekStartDate
        FROM holistic_ratings
        WHERE subject_section_id = ? AND week_start_date = ? AND term_number = ?`,
-      [subjectSectionId, requestedWeek, termNumber]
+      [subjectSectionId, requestedWeek, termNumber],
     );
 
     const map = {};
@@ -438,10 +542,16 @@ const getHolistic = async (req, res) => {
       data: map,
       weekStartDate: requestedWeek,
       termNumber,
-      locked: requestedWeek < getCurrentWeekStartDate() || [0, 6].includes(new Date().getDay()),
+      locked:
+        requestedWeek < getCurrentWeekStartDate() ||
+        [0, 6].includes(new Date().getDay()),
     });
   } catch (error) {
-    console.error("Error fetching holistic ratings:", error.code, error.sqlMessage || error.message);
+    console.error(
+      "Error fetching holistic ratings:",
+      error.code,
+      error.sqlMessage || error.message,
+    );
 
     if (error.code === "ER_NO_SUCH_TABLE") {
       return res.status(200).json({
@@ -451,38 +561,68 @@ const getHolistic = async (req, res) => {
       });
     }
 
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
-
 
 const upsertHolistic = async (req, res) => {
   try {
     const { id: subjectSectionId, section_id: sectionId } = req.subjectSection;
-    const { studentId, axis, value, weekStartDate: requestedWeekStartDate, termNumber: requestedTermNumber } = req.body;
+    const {
+      studentId,
+      axis,
+      value,
+      weekStartDate: requestedWeekStartDate,
+      termNumber: requestedTermNumber,
+    } = req.body;
 
     if (!studentId || !axis || !value) {
-      return res.status(400).json({ success: false, message: "studentId, axis, and value are required." });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "studentId, axis, and value are required.",
+        });
     }
 
     const weekStartDate =
-      requestedWeekStartDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedWeekStartDate)
+      requestedWeekStartDate &&
+      /^\d{4}-\d{2}-\d{2}$/.test(requestedWeekStartDate)
         ? requestedWeekStartDate
         : getCurrentWeekStartDate();
 
-    const termNumber = Math.min(3, Math.max(1, Number(requestedTermNumber) || (await getActiveTermNumber())));
+    const termNumber = Math.min(
+      3,
+      Math.max(1, Number(requestedTermNumber) || (await getActiveTermNumber())),
+    );
 
-    if (weekStartDate === getCurrentWeekStartDate() && [0, 6].includes(new Date().getDay())) {
-      return res.status(423).json({ success: false, message: "Weekly holistic records are locked for the weekend. Recording opens Monday." });
+    if (
+      weekStartDate === getCurrentWeekStartDate() &&
+      [0, 6].includes(new Date().getDay())
+    ) {
+      return res
+        .status(423)
+        .json({
+          success: false,
+          message:
+            "Weekly holistic records are locked for the weekend. Recording opens Monday.",
+        });
     }
 
     if (sectionId) {
       const [studentCheck] = await connection.execute(
         `SELECT id FROM elem_students WHERE id = ? AND section_id = ?`,
-        [studentId, sectionId]
+        [studentId, sectionId],
       );
       if (studentCheck.length === 0) {
-        return res.status(403).json({ success: false, message: "This student is not enrolled in your class." });
+        return res
+          .status(403)
+          .json({
+            success: false,
+            message: "This student is not enrolled in your class.",
+          });
       }
     }
 
@@ -490,16 +630,17 @@ const upsertHolistic = async (req, res) => {
       `INSERT INTO holistic_ratings (subject_section_id, student_id, week_start_date, term_number, axis, rating)
        VALUES (?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE rating = VALUES(rating)`,
-      [subjectSectionId, studentId, weekStartDate, termNumber, axis, value]
+      [subjectSectionId, studentId, weekStartDate, termNumber, axis, value],
     );
 
     return res.status(200).json({ success: true, weekStartDate, termNumber });
   } catch (error) {
     console.error("Error saving holistic rating:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
-
 
 const getGradeSubmissionStatus = async (req, res) => {
   try {
@@ -507,23 +648,30 @@ const getGradeSubmissionStatus = async (req, res) => {
     const { gradingPeriodId } = req.query;
 
     if (!gradingPeriodId) {
-      return res.status(400).json({ success: false, message: "gradingPeriodId is required." });
+      return res
+        .status(400)
+        .json({ success: false, message: "gradingPeriodId is required." });
     }
 
     const [rows] = await connection.execute(
       `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt
        FROM subject_grade_submissions
        WHERE subject_section_id = ? AND grading_period_id = ?`,
-      [subjectSectionId, gradingPeriodId]
+      [subjectSectionId, gradingPeriodId],
     );
 
     return res.status(200).json({
       success: true,
-      data: { submitted: rows.length > 0, submittedAt: rows[0]?.submittedAt ?? null },
+      data: {
+        submitted: rows.length > 0,
+        submittedAt: rows[0]?.submittedAt ?? null,
+      },
     });
   } catch (error) {
     console.error("Error fetching subject grade submission status:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
 
@@ -534,20 +682,24 @@ const submitSubjectGrades = async (req, res) => {
     const { gradingPeriodId } = req.body;
 
     if (!gradingPeriodId) {
-      return res.status(400).json({ success: false, message: "gradingPeriodId is required." });
+      return res
+        .status(400)
+        .json({ success: false, message: "gradingPeriodId is required." });
     }
 
     await connection.execute(
       `INSERT INTO subject_grade_submissions (subject_section_id, grading_period_id, submitted_by)
        VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE submitted_by = VALUES(submitted_by), submitted_at = CURRENT_TIMESTAMP`,
-      [subjectSectionId, gradingPeriodId, teacherId]
+      [subjectSectionId, gradingPeriodId, teacherId],
     );
 
     return res.status(200).json({ success: true });
   } catch (error) {
     console.error("Error submitting subject grades:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error." });
   }
 };
 

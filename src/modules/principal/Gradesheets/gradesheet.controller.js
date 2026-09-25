@@ -19,10 +19,34 @@ const getGradingPeriods = async (req, res) => {
        ORDER BY gp.term_number`,
     );
 
+    let submittedRows = [];
+    if (sectionId) {
+      [submittedRows] = await connection.query(
+        `SELECT DISTINCT grading_period_id
+         FROM grade_submissions
+         WHERE section_id = ?`,
+        [sectionId],
+      );
+    } else if (gradeLevelId) {
+      [submittedRows] = await connection.query(
+        `SELECT DISTINCT sgs.grading_period_id
+         FROM subject_grade_submissions sgs
+         INNER JOIN \`subject-section\` ss ON ss.id = sgs.subject_section_id
+         INNER JOIN elem_subjects es ON es.id = ss.subject_id
+         WHERE ss.section_id IS NULL AND es.grade_level_id = ?`,
+        [gradeLevelId],
+      );
+    }
+    const submittedIds = new Set(submittedRows.map((r) => r.grading_period_id));
+
+    const periodsWithStatus = periods.map((p) => ({
+      ...p,
+      is_submitted: submittedIds.has(p.id),
+    }));
+
     let defaultGradingPeriodId = null;
 
     if (sectionId) {
-      // May nakatalagang section — tingnan ang pinaka-huling advisory submission
       const [[latest]] = await connection.query(
         `SELECT grading_period_id
          FROM grade_submissions
@@ -33,7 +57,6 @@ const getGradingPeriods = async (req, res) => {
       );
       if (latest) defaultGradingPeriodId = latest.grading_period_id;
     } else if (gradeLevelId) {
-      // Walang section (hal. Grade 5/6 na walang sectioning) — tingnan sa subject_grade_submissions
       const [[latest]] = await connection.query(
         `SELECT sgs.grading_period_id
          FROM subject_grade_submissions sgs
@@ -47,15 +70,16 @@ const getGradingPeriods = async (req, res) => {
       if (latest) defaultGradingPeriodId = latest.grading_period_id;
     }
 
-    // Fallback: kung wala pang submission, gamitin ang active term, tapos unang term
     if (!defaultGradingPeriodId) {
       const activePeriod = periods.find((p) => p.is_active);
-      defaultGradingPeriodId = activePeriod ? activePeriod.id : (periods[0]?.id ?? null);
+      defaultGradingPeriodId = activePeriod
+        ? activePeriod.id
+        : (periods[0]?.id ?? null);
     }
 
     return res.status(200).json({
       success: true,
-      data: periods,
+      data: periodsWithStatus,
       defaultGradingPeriodId,
     });
   } catch (error) {
@@ -66,36 +90,51 @@ const getGradingPeriods = async (req, res) => {
   }
 };
 
-const getSectionsForGrade = async (gradeLevelId, gradingPeriodId) => {
+// NOTE: hindi na kumukuha ng gradingPeriodId param — kunin na lang ang PINAKA-LATEST
+// submission ng bawat section, anuman ang term, para hindi na-re-lock ang card pag
+// lumipat na ng active term.
+const getSectionsForGrade = async (gradeLevelId) => {
   const [sections] = await connection.query(
     `SELECT
         gls.id AS section_id,
         gls.section_name,
         (SELECT COUNT(*) FROM elem_students es
           WHERE es.section_id = gls.id AND es.is_deleted = 0) AS student_count,
-        gs.id IS NOT NULL AS is_submitted,
+        latest_gs.id IS NOT NULL AS is_submitted,
+        latest_gs.grading_period_id AS grading_period_id,
         CONCAT(t.first_name, ' ', t.last_name) AS adviser_name
      FROM grade_level_sections gls
-     LEFT JOIN grade_submissions gs
-       ON gs.section_id = gls.id AND gs.grading_period_id = ?
+     LEFT JOIN (
+        SELECT gs1.*
+        FROM grade_submissions gs1
+        INNER JOIN (
+          SELECT section_id, MAX(submitted_at) AS max_submitted_at
+          FROM grade_submissions
+          GROUP BY section_id
+        ) latest
+          ON latest.section_id = gs1.section_id
+         AND latest.max_submitted_at = gs1.submitted_at
+     ) latest_gs ON latest_gs.section_id = gls.id
      LEFT JOIN classes c
        ON c.section_id = gls.id
      LEFT JOIN teacher_table t
        ON t.id = c.class_adviser_id AND t.is_deleted = 0
      WHERE gls.grade_level_id = ?
      ORDER BY gls.section_name`,
-    [gradingPeriodId, gradeLevelId],
+    [gradeLevelId],
   );
   return sections;
 };
 
-const mapSection = (s, gradingPeriodId) => ({
+// Hindi na kumukuha ng gradingPeriodId param — galing na ito sa row mismo
+// (yung actual period ng latest submission ng section).
+const mapSection = (s) => ({
   sectionId: s.section_id,
   section: s.section_name,
   studentCount: s.student_count,
   adviserName: s.adviser_name ?? null,
   isSubmitted: Boolean(s.is_submitted),
-  gradingPeriodId,
+  gradingPeriodId: s.grading_period_id ?? null,
 });
 
 const getGradeLevelAdviser = async (gradeLevelId) => {
@@ -202,13 +241,13 @@ const getSectionGrade = async (req, res) => {
     const report = [];
 
     for (const grade of gradeLevels) {
-      const sections = await getSectionsForGrade(grade.id, gradingPeriodId);
+      const sections = await getSectionsForGrade(grade.id);
 
       if (sections.length > 0) {
         report.push({
           gradeLevelId: grade.id,
           gradeLevel: grade.grade_level,
-          sections: sections.map((s) => mapSection(s, gradingPeriodId)),
+          sections: sections.map((s) => mapSection(s)),
         });
       } else {
         report.push({
@@ -231,7 +270,6 @@ const getSectionGrade = async (req, res) => {
       .json({ message: "Failed to fetch enrollment report." });
   }
 };
-
 const getPrincipalSectionGradebook = async (req, res) => {
   try {
     const { sectionId, gradeLevelId, gradingPeriodId } = req.query;

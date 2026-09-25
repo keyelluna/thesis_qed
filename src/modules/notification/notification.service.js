@@ -283,6 +283,62 @@ const notifyGradeVisibility = async ({ studentId, gradingPeriodId }) => {
   return sent;
 };
 
+const notifyLowGradeScore = async ({ studentId, itemId }) => {
+  const [rows] = await db.query(
+    `SELECT
+       gi.max_items AS maxItems,
+       gs.score AS score,
+       lt.topic_name AS topicName,
+       lt.developing_threshold_percent AS threshold,
+       es.first_name AS firstName,
+       pt.user_id AS userId
+     FROM grade_items gi
+     INNER JOIN grade_scores gs ON gs.item_id = gi.id AND gs.student_id = ?
+     INNER JOIN learning_topics lt ON lt.id = gi.topic_id
+     INNER JOIN elem_students es ON es.id = ?
+     INNER JOIN parent_student ps ON ps.student_id = es.id
+     INNER JOIN parent_table pt ON pt.id = ps.parent_id AND pt.is_deleted = 0
+     WHERE gi.id = ? AND gs.score IS NOT NULL`,
+    [studentId, studentId, itemId]
+  );
+
+  if (rows.length === 0) return 0; 
+
+  const { maxItems, score, topicName, threshold } = rows[0];
+  if (!maxItems) return 0;
+
+  const percentage = (Number(score) / Number(maxItems)) * 100;
+  if (percentage > threshold) return 0;
+
+  const refKey = `lowgrade:${itemId}:${studentId}`;
+  let sent = 0;
+
+  for (const row of rows) {
+    if (!row.userId) continue;
+
+    const [existing] = await db.query(
+      `SELECT id FROM notifications
+       WHERE user_id = ? AND student_id = ? AND ref_key = ?
+       LIMIT 1`,
+      [row.userId, studentId, refKey]
+    );
+    if (existing.length) continue; 
+
+    await sendNotification({
+      userId: row.userId,
+      studentId,
+      gradeItemId: itemId,
+      refKey,
+      title: 'Low Score Alert',
+      message: `${row.firstName} scored ${percentage.toFixed(0)}% in "${topicName}", which needs improvement.`,
+      type: 'warning',
+    });
+    sent++;
+  }
+
+  return sent;
+};
+
 module.exports = {
   sendNotification,
   notifyMissedActivity,
@@ -290,4 +346,5 @@ module.exports = {
   notifyWeeklyEvaluationIfComplete,
   notifyAbsence,
   notifyGradeVisibility,
+  notifyLowGradeScore,
 };

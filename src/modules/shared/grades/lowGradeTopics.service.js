@@ -42,8 +42,8 @@ exports.getLowGradeTopicsForStudent = async (studentId) => {
        GROUP BY lt.id, lt.topic_name, lt.mastery_threshold_percent,
                 lt.developing_threshold_percent, es.subject_name
      ) t
-     WHERE t.average_percent < t.developing_threshold
-        OR t.latest_percent < t.developing_threshold
+     WHERE t.average_percent <= t.developing_threshold
+        OR t.latest_percent <= t.developing_threshold
      ORDER BY LEAST(t.average_percent, COALESCE(t.latest_percent, t.average_percent)) ASC`,
     [studentId, studentId, studentId]
   );

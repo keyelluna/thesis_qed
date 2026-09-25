@@ -1,9 +1,13 @@
 const connection = require("../../../../config/db");
-const { getSingleTermVisibility} = require('../../parents/Student-Record/ProgressReport/progressVisibility.controller');
-const { notifyGradeVisibility} = require('../../notification/notification.service')
+const { getSingleTermVisibility } = require('../../parents/Student-Record/ProgressReport/progressVisibility.controller');
+const { notifyGradeVisibility } = require('../../notification/notification.service')
 
-
-async function loadAdvisorySection(req, res, next) {
+// FIX: renamed from loadAdvisorySection. Now fetches ALL advisory classes
+// for this teacher instead of just one, and lets the caller pick which
+// one to operate on via ?classId= (query) or body.classId. If no classId
+// is given, it defaults to the first section — so teachers with a single
+// advisory class see no behavior change at all.
+async function loadAdvisorySections(req, res, next) {
   try {
     const authId = req.user?.userId;
     if (!authId) {
@@ -25,14 +29,16 @@ async function loadAdvisorySection(req, res, next) {
     const teacherId = teacherRows[0].id;
 
     const [classRows] = await connection.execute(
-      `SELECT c.section_id, c.grade_level_id AS gradeLevelId,
+      `SELECT c.id AS classId, c.section_id, c.grade_level_id AS gradeLevelId,
               gls.section_name AS sectionName, gl.grade_level AS gradeLevel
        FROM classes c
        LEFT JOIN grade_level_sections gls ON c.section_id = gls.id
        INNER JOIN grade_level gl ON c.grade_level_id = gl.id
-       WHERE c.class_adviser_id = ?`,
+       WHERE c.class_adviser_id = ?
+       ORDER BY gl.grade_level ASC, gls.section_name ASC`,
       [teacherId],
     );
+
     if (classRows.length === 0) {
       return res.status(404).json({
         success: false,
@@ -41,7 +47,23 @@ async function loadAdvisorySection(req, res, next) {
     }
 
     req.teacherId = teacherId;
-    req.advisorySection = classRows[0];
+    req.advisorySections = classRows; // full list, used by getAdvisorySections
+
+    const requestedClassId = req.query.classId ?? req.body?.classId;
+    let selected = classRows[0];
+
+    if (requestedClassId) {
+      const match = classRows.find((c) => String(c.classId) === String(requestedClassId));
+      if (!match) {
+        return res.status(403).json({
+          success: false,
+          message: "That section is not one of your advisory classes.",
+        });
+      }
+      selected = match;
+    }
+
+    req.advisorySection = selected;
     next();
   } catch (error) {
     console.error("Error verifying advisory section access:", error);
@@ -49,6 +71,30 @@ async function loadAdvisorySection(req, res, next) {
       .status(500)
       .json({ success: false, message: "Internal server error." });
   }
+}
+
+// NEW: lets the frontend know how many advisory classes this teacher has,
+// so it can show a section picker only when there's more than one.
+const getAdvisorySections = async (req, res) => {
+  return res.status(200).json({
+    success: true,
+    data: req.advisorySections.map((c) => ({
+      classId: String(c.classId),
+      sectionName: c.sectionName ?? null,
+      gradeLevel: c.gradeLevel,
+    })),
+  });
+};
+
+// Helper: builds the WHERE fragment + param for "this class", whether it
+// has a real section or is keyed by grade level only. Every query below
+// that touches section-scoped tables uses this instead of assuming
+// section_id is always present.
+function advisoryScope(advisorySection) {
+  const { section_id: sectionId, gradeLevelId } = advisorySection;
+  return sectionId
+    ? { column: "section_id", value: sectionId }
+    : { column: "grade_level_id", value: gradeLevelId };
 }
 
 
@@ -158,18 +204,19 @@ const getAdvisoryGradebook = async (req, res) => {
     );
 
 
+    // Overall average looked up for BOTH sectioned and section-less
+    // (single-section-per-grade-level) advisory classes.
     const overallByStudent = new Map();
-    if (sectionId) {
-      const [overallRows] = await connection.execute(
-        `SELECT student_id AS studentId, overall_average AS overallAverage
-         FROM advisory_overall_grades
-         WHERE section_id = ? AND grading_period_id = ?`,
-        [sectionId, gradingPeriodId],
-      );
-      overallRows.forEach((r) =>
-        overallByStudent.set(r.studentId, r.overallAverage),
-      );
-    }
+    const scope = advisoryScope(req.advisorySection);
+    const [overallRows] = await connection.execute(
+      `SELECT student_id AS studentId, overall_average AS overallAverage
+       FROM advisory_overall_grades
+       WHERE ${scope.column} = ? AND grading_period_id = ?`,
+      [scope.value, gradingPeriodId],
+    );
+    overallRows.forEach((r) =>
+      overallByStudent.set(r.studentId, r.overallAverage),
+    );
 
     const studentsOut = students.map((student) => {
       const grades = {};
@@ -232,9 +279,6 @@ const getAdvisoryGradebook = async (req, res) => {
             s.subjectSectionId,
           );
           if (isOwnAdvisorySubject) {
-            // No submission row to read for this one — "submitted"
-            // (for the column header's purposes) just means every
-            // enrolled student's cache entry is complete.
             const allComplete = students.every(
               (student) =>
                 cacheByKey.get(`${student.id}:${s.subjectSectionId}`)
@@ -275,7 +319,6 @@ const getAdvisoryGradebook = async (req, res) => {
 
 const getSubmissionStatus = async (req, res) => {
   try {
-    const { section_id: sectionId } = req.advisorySection;
     const { gradingPeriodId } = req.query;
 
     if (!gradingPeriodId) {
@@ -284,17 +327,13 @@ const getSubmissionStatus = async (req, res) => {
         .json({ success: false, message: "gradingPeriodId is required." });
     }
 
-    if (!sectionId) {
-      return res
-        .status(200)
-        .json({ success: true, data: { submitted: false, submittedAt: null } });
-    }
+    const scope = advisoryScope(req.advisorySection);
 
     const [rows] = await connection.execute(
       `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt
        FROM grade_submissions
-       WHERE section_id = ? AND grading_period_id = ?`,
-      [sectionId, gradingPeriodId],
+       WHERE ${scope.column} = ? AND grading_period_id = ?`,
+      [scope.value, gradingPeriodId],
     );
 
     return res.status(200).json({
@@ -314,9 +353,8 @@ const getSubmissionStatus = async (req, res) => {
 
 const submitAdvisoryGrades = async (req, res) => {
   try {
-    const { section_id: sectionId } = req.advisorySection;
-    const { teacherId } = req;
     const { gradingPeriodId } = req.body;
+    const teacherId = req.teacherId;
 
     if (!gradingPeriodId) {
       return res
@@ -324,19 +362,13 @@ const submitAdvisoryGrades = async (req, res) => {
         .json({ success: false, message: "gradingPeriodId is required." });
     }
 
-    if (!sectionId) {
-      return res.status(409).json({
-        success: false,
-        message:
-          "This advisory class has no section on record yet, so grades can't be submitted. Please contact an admin to assign a section.",
-      });
-    }
+    const scope = advisoryScope(req.advisorySection);
 
     await connection.execute(
-      `INSERT INTO grade_submissions (section_id, grading_period_id, submitted_by)
+      `INSERT INTO grade_submissions (${scope.column}, grading_period_id, submitted_by)
        VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE submitted_by = VALUES(submitted_by), submitted_at = CURRENT_TIMESTAMP`,
-      [sectionId, gradingPeriodId, teacherId],
+      [scope.value, gradingPeriodId, teacherId],
     );
 
     return res.status(200).json({ success: true });
@@ -411,8 +443,6 @@ const getGradeVisibility = async (req, res) => {
           lastName: s.lastName,
           middleName: s.middleName,
           gender: s.gender === "Female" ? "F" : "M",
-          // No row in parent_student means the student has no linked
-          // parent/guardian account yet — surfaced as null, not an error.
           parentName: s.parentFirstName
             ? `${s.parentLastName}, ${s.parentFirstName}${s.parentMiddleName ? ` ${s.parentMiddleName.charAt(0)}.` : ""}`
             : null,
@@ -496,7 +526,6 @@ const setGradeVisibility = async (req, res) => {
       params,
     );
 
-    // --- Grade visibility notification  ---
     if (visible) {
       for (const studentId of validIds) {
         try {
@@ -522,7 +551,8 @@ const setGradeVisibility = async (req, res) => {
 };
 
 module.exports = {
-  loadAdvisorySection,
+  loadAdvisorySections,
+  getAdvisorySections,
   getAdvisoryGradebook,
   getSubmissionStatus,
   submitAdvisoryGrades,

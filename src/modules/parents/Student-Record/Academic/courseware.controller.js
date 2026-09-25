@@ -1,5 +1,5 @@
 const connection = require("../../../../../config/db");
-const geminiService = require("../../../shared/ai/gemini.service");
+const groqService = require("../../../shared/ai/groq.service");
 const youtubeService = require("../../../shared/ai/youtube.service");
 
 exports.getCourseware = async (req, res) => {
@@ -60,7 +60,7 @@ exports.getCourseware = async (req, res) => {
     }
     const { topic_name: topicName, description, subject_name: subjectName } = topicRows[0];
 
-    const { objectives, youtubeQueries } = await geminiService.generateObjectivesAndQueries(
+    const { objectives, youtubeQueries } = await groqService.generateObjectivesAndQueries(
       topicName,
       subjectName,
       description
@@ -82,7 +82,7 @@ exports.getCourseware = async (req, res) => {
       });
     }
 
-    const { summary, selectedVideoUrls } = await geminiService.organizeVideoResources(
+    const { summary, selectedVideoUrls } = await groqService.organizeVideoResources(
       topicName,
       objectives,
       uniqueVideos
@@ -100,7 +100,7 @@ exports.getCourseware = async (req, res) => {
 
     await connection.query(
       `INSERT INTO ai_reviewer_documents (topic_id, title, content, model_used) VALUES (?, ?, ?, ?)`,
-      [topicId, topicName, documentContent, "gemini"]
+      [topicId, topicName, documentContent, "groq"]
     );
 
     for (const v of selectedVideos) {
@@ -124,7 +124,7 @@ exports.getCourseware = async (req, res) => {
 
 // --- Response shape normalizers -------------------------------------------
 // Both the cached branch (raw DB rows, snake_case) and the freshly-generated
-// branch (youtube/gemini service output, different key names) must produce
+// branch (youtube/groq service output, different key names) must produce
 // the SAME shape here, so the frontend never has to branch on `cached`.
 
 function normalizeDocument(doc) {

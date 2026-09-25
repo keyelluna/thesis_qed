@@ -2,40 +2,22 @@ const express = require("express");
 const router = express.Router();
 
 const {
-  loadAdvisorySection,
+  loadAdvisorySections,
+  getAdvisorySections,
   getAdvisoryGradebook,
   getSubmissionStatus,
   submitAdvisoryGrades,
   getGradeVisibility,
   setGradeVisibility,
-} = require("./advisoryGrade.controller.js");
-const verifyToken = require("../../authentication/authentication.middleware.js");
+} = require("./advisoryGrade.controller");
 
-router.get(
-  "/gradebook",
-  verifyToken,
-  loadAdvisorySection,
-  getAdvisoryGradebook,
-);
-router.get(
-  "/submission",
-  verifyToken,
-  loadAdvisorySection,
-  getSubmissionStatus,
-);
-router.post(
-  "/submission",
-  verifyToken,
-  loadAdvisorySection,
-  submitAdvisoryGrades,
-);
+const verifyToken = require("../../authentication/authentication.middleware");
 
-router.get("/visibility", verifyToken, loadAdvisorySection, getGradeVisibility);
-router.post(
-  "/visibility",
-  verifyToken,
-  loadAdvisorySection,
-  setGradeVisibility,
-);
+router.get("/sections", verifyToken, loadAdvisorySections, getAdvisorySections);
+router.get("/gradebook", verifyToken, loadAdvisorySections, getAdvisoryGradebook);
+router.get("/submission", verifyToken, loadAdvisorySections, getSubmissionStatus);
+router.post("/submission", verifyToken, loadAdvisorySections, submitAdvisoryGrades);
+router.get("/visibility", verifyToken, loadAdvisorySections, getGradeVisibility);
+router.post("/visibility", verifyToken, loadAdvisorySections, setGradeVisibility);
 
 module.exports = router;

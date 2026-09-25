@@ -29,11 +29,9 @@ const getGradingPeriods = async (req, res) => {
       );
     } else if (gradeLevelId) {
       [submittedRows] = await connection.query(
-        `SELECT DISTINCT sgs.grading_period_id
-         FROM subject_grade_submissions sgs
-         INNER JOIN \`subject-section\` ss ON ss.id = sgs.subject_section_id
-         INNER JOIN elem_subjects es ON es.id = ss.subject_id
-         WHERE ss.section_id IS NULL AND es.grade_level_id = ?`,
+        `SELECT DISTINCT grading_period_id
+         FROM grade_submissions
+         WHERE grade_level_id = ? AND section_id IS NULL`,
         [gradeLevelId],
       );
     }
@@ -58,12 +56,10 @@ const getGradingPeriods = async (req, res) => {
       if (latest) defaultGradingPeriodId = latest.grading_period_id;
     } else if (gradeLevelId) {
       const [[latest]] = await connection.query(
-        `SELECT sgs.grading_period_id
-         FROM subject_grade_submissions sgs
-         INNER JOIN \`subject-section\` ss ON ss.id = sgs.subject_section_id
-         INNER JOIN elem_subjects es ON es.id = ss.subject_id
-         WHERE ss.section_id IS NULL AND es.grade_level_id = ?
-         ORDER BY sgs.submitted_at DESC
+        `SELECT grading_period_id
+         FROM grade_submissions
+         WHERE grade_level_id = ? AND section_id IS NULL
+         ORDER BY submitted_at DESC
          LIMIT 1`,
         [gradeLevelId],
       );
@@ -90,9 +86,6 @@ const getGradingPeriods = async (req, res) => {
   }
 };
 
-// NOTE: hindi na kumukuha ng gradingPeriodId param — kunin na lang ang PINAKA-LATEST
-// submission ng bawat section, anuman ang term, para hindi na-re-lock ang card pag
-// lumipat na ng active term.
 const getSectionsForGrade = async (gradeLevelId) => {
   const [sections] = await connection.query(
     `SELECT
@@ -126,8 +119,6 @@ const getSectionsForGrade = async (gradeLevelId) => {
   return sections;
 };
 
-// Hindi na kumukuha ng gradingPeriodId param — galing na ito sa row mismo
-// (yung actual period ng latest submission ng section).
 const mapSection = (s) => ({
   sectionId: s.section_id,
   section: s.section_name,
@@ -157,6 +148,18 @@ const getGradeLevelStudentCount = async (gradeLevelId) => {
     [gradeLevelId],
   );
   return countRow.student_count;
+};
+
+const getGradeLevelSubmission = async (gradeLevelId) => {
+  const [[row]] = await connection.query(
+    `SELECT grading_period_id
+     FROM grade_submissions
+     WHERE grade_level_id = ? AND section_id IS NULL
+     ORDER BY submitted_at DESC
+     LIMIT 1`,
+    [gradeLevelId],
+  );
+  return row ? row.grading_period_id : null;
 };
 
 const getSectionGrade = async (req, res) => {
@@ -250,14 +253,15 @@ const getSectionGrade = async (req, res) => {
           sections: sections.map((s) => mapSection(s)),
         });
       } else {
+        const latestPeriodId = await getGradeLevelSubmission(grade.id);
         report.push({
           gradeLevelId: grade.id,
           gradeLevel: grade.grade_level,
           section: null,
           studentCount: await getGradeLevelStudentCount(grade.id),
           adviserName: await getGradeLevelAdviser(grade.id),
-          isSubmitted: false, // tingnan ang note sa baba
-          gradingPeriodId,
+          isSubmitted: latestPeriodId !== null,
+          gradingPeriodId: latestPeriodId ?? gradingPeriodId,
         });
       }
     }
@@ -270,6 +274,7 @@ const getSectionGrade = async (req, res) => {
       .json({ message: "Failed to fetch enrollment report." });
   }
 };
+
 const getPrincipalSectionGradebook = async (req, res) => {
   try {
     const { sectionId, gradeLevelId, gradingPeriodId } = req.query;
@@ -384,7 +389,6 @@ const getPrincipalSectionGradebook = async (req, res) => {
       ]),
     );
 
-    // --- Adviser info + section-level submission ---
     let adviserTeacherId = null;
     let adviserSubmitted = false;
 
@@ -400,13 +404,19 @@ const getPrincipalSectionGradebook = async (req, res) => {
     if (sectionId) {
       const [gsRows] = await connection.execute(
         `SELECT 1 FROM grade_submissions
-     WHERE section_id = ? AND grading_period_id = ? LIMIT 1`,
+         WHERE section_id = ? AND grading_period_id = ? LIMIT 1`,
         [sectionId, gradingPeriodId],
+      );
+      adviserSubmitted = gsRows.length > 0;
+    } else {
+      const [gsRows] = await connection.execute(
+        `SELECT 1 FROM grade_submissions
+         WHERE grade_level_id = ? AND section_id IS NULL AND grading_period_id = ? LIMIT 1`,
+        [gradeLevelId, gradingPeriodId],
       );
       adviserSubmitted = gsRows.length > 0;
     }
 
-    // Isang beses lang i-compute kung submitted ang bawat subject
     const subjectSubmitted = new Map();
     for (const ss of subjectSections) {
       const isOwnAdvisory =
@@ -422,15 +432,21 @@ const getPrincipalSectionGradebook = async (req, res) => {
       subjectSubmitted.get(ss.subjectSectionId),
     );
 
-    // Overall average
     const overallByStudent = new Map();
-    if (sectionId && allSubjectsSubmitted) {
-      const [overallRows] = await connection.execute(
-        `SELECT student_id AS studentId, overall_average AS overallAverage
-     FROM advisory_overall_grades
-     WHERE section_id = ? AND grading_period_id = ?`,
-        [sectionId, gradingPeriodId],
-      );
+    if (allSubjectsSubmitted) {
+      const [overallRows] = sectionId
+        ? await connection.execute(
+            `SELECT student_id AS studentId, overall_average AS overallAverage
+             FROM advisory_overall_grades
+             WHERE section_id = ? AND grading_period_id = ?`,
+            [sectionId, gradingPeriodId],
+          )
+        : await connection.execute(
+            `SELECT student_id AS studentId, overall_average AS overallAverage
+             FROM advisory_overall_grades
+             WHERE grade_level_id = ? AND section_id IS NULL AND grading_period_id = ?`,
+            [gradeLevelId, gradingPeriodId],
+          );
       overallRows.forEach((r) =>
         overallByStudent.set(r.studentId, r.overallAverage),
       );
@@ -460,7 +476,6 @@ const getPrincipalSectionGradebook = async (req, res) => {
 
         grades[String(ss.subjectSectionId)] = {
           status,
-          // Hindi ipapadala ang grade hangga't hindi submitted
           average:
             status === "submitted" && cell.average !== null
               ? Number(cell.average)

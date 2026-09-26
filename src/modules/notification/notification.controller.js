@@ -5,7 +5,7 @@ exports.getNotifications = async (req, res, next) => {
     const { userId } = req.params;
 
     const [notifs] = await connection.query(
-      `SELECT n.id, n.user_id, n.title, n.message, n.type, n.student_id,
+      `SELECT n.id, n.user_id, n.title, n.message, n.type, n.student_id, n.ref_key,
               n.is_read, n.created_at,
               CONCAT(s.first_name, ' ', s.last_name) AS student_name
        FROM notifications n

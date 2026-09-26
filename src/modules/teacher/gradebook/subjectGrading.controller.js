@@ -4,7 +4,7 @@ const {
   recalcAllStudentsForSubject,
 } = require("../../shared/grades/gradeCache.service");
 const {
-  notifyMissedActivity, notifyMissingForItem, notifyLowGradeScore
+  notifyMissedActivity, notifyMissingForItem, notifyLowGradeScore, notifySubjectGradeSubmission
 } = require("../../notification/notification.service");
 
 async function getActiveGradingPeriodId() {
@@ -693,6 +693,12 @@ const submitSubjectGrades = async (req, res) => {
        ON DUPLICATE KEY UPDATE submitted_by = VALUES(submitted_by), submitted_at = CURRENT_TIMESTAMP`,
       [subjectSectionId, gradingPeriodId, teacherId],
     );
+
+    await notifySubjectGradeSubmission({
+      subjectSectionId,
+      gradingPeriodId,
+      submittedBy: teacherId,
+    });
 
     return res.status(200).json({ success: true });
   } catch (error) {

@@ -16,6 +16,7 @@ const studentRecordRoutes = require("./../modules/admin/student-record/studentRe
 const classesManagementRoutes = require("./../modules/admin/classes-management/classManagement.router.js");
 const sectionManagementRoutes = require("./../modules/admin/section-management/section.router.js");
 const subjectManagementRoutes = require("./../modules/admin/subject-management/subjectManagement.router.js");
+const subjectGradeTemplateRoutes = require("./../modules/admin/subject-management/subjectGradeTemplate.router.js");
 const academicYearRouters = require("./../modules/admin/subject-management/academicYear.router.js");
 const gradeLevelRoutes = require("./../modules/utils/gradeLevels.router.js");
 const calendarRoutes = require("./../modules/shared/calendar/calendar.router.js");
@@ -29,6 +30,7 @@ router.use("/student", studentRecordRoutes);
 router.use("/classes", classesManagementRoutes);
 router.use("/section", sectionManagementRoutes);
 router.use("/subject", subjectManagementRoutes);
+router.use("/subject", subjectGradeTemplateRoutes);
 router.use("/gradeLevel", gradeLevelRoutes);
 router.use("/calendar", calendarRoutes);
 router.use("/sy", settingsRoutes);

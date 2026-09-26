@@ -165,7 +165,7 @@ const getItems = async (req, res) => {
 
     let sql = `
       SELECT id, tab, DATE_FORMAT(item_date, '%Y-%m-%d') AS date,
-             activity_name AS activityName, topic, topic_id AS topicId,
+             activity_name AS activityName, topic, topic_id AS topicId, template_domain_id AS templateDomainId,
              grading_period_id AS gradingPeriodId, format, exam_type AS examType,
              max_items AS maxItems
       FROM grade_items
@@ -220,6 +220,7 @@ const addItem = async (req, res) => {
       format,
       maxItems,
       topicId,
+      templateDomainId,
       term,
       examType,
     } = req.body;
@@ -231,6 +232,28 @@ const addItem = async (req, res) => {
       });
     }
 
+    const [templateRows] = await connection.execute(
+      `SELECT t.structure_json AS structureJson
+         FROM \`subject-section\` ss
+         JOIN subject_grade_templates t ON t.subject_id = ss.subject_id AND t.is_active = 1
+        WHERE ss.id = ? LIMIT 1`,
+      [subjectSectionId],
+    );
+    let structure;
+    try {
+      const raw = templateRows[0]?.structureJson;
+      structure = typeof raw === "string" ? JSON.parse(raw) : raw;
+    } catch {
+      structure = null;
+    }
+    const group = tab === "writtenWorks" ? structure?.ww : tab === "performanceTask" ? structure?.pt : null;
+    if (group?.domains?.length > 1 && !templateDomainId) {
+      return res.status(400).json({ success: false, message: "A template domain is required for this assessment item." });
+    }
+    if (templateDomainId && !group?.domains?.some((domain) => domain.id === templateDomainId)) {
+      return res.status(400).json({ success: false, message: "Choose a valid template domain for this assessment item." });
+    }
+
     const safeActivityName = activityName || topic;
     const safeFormat = format || "Activity";
     const gradingPeriodId = term || (await getActiveGradingPeriodId());
@@ -238,7 +261,7 @@ const addItem = async (req, res) => {
     const [dupe] = await connection.execute(
       `SELECT id FROM grade_items
        WHERE subject_section_id = ? AND tab = ? AND item_date = ?
-         AND grading_period_id <=> ? AND topic_id <=> ? AND activity_name = ? AND max_items = ?
+         AND grading_period_id <=> ? AND topic_id <=> ? AND template_domain_id <=> ? AND activity_name = ? AND max_items = ?
          AND created_at >= (NOW() - INTERVAL 5 SECOND)
        LIMIT 1`,
       [
@@ -247,6 +270,7 @@ const addItem = async (req, res) => {
         date,
         gradingPeriodId,
         topicId || null,
+        templateDomainId || null,
         safeActivityName,
         maxItems,
       ],
@@ -257,8 +281,8 @@ const addItem = async (req, res) => {
 
     const [result] = await connection.execute(
       `INSERT INTO grade_items
-         (subject_section_id, grading_period_id, tab, item_date, activity_name, topic, topic_id, format, exam_type, max_items)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (subject_section_id, grading_period_id, tab, item_date, activity_name, topic, topic_id, template_domain_id, format, exam_type, max_items)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         subjectSectionId,
         gradingPeriodId,
@@ -267,6 +291,7 @@ const addItem = async (req, res) => {
         safeActivityName,
         topic,
         topicId || null,
+        templateDomainId || null,
         safeFormat,
         examType || null,
         maxItems,
@@ -685,6 +710,52 @@ const submitSubjectGrades = async (req, res) => {
       return res
         .status(400)
         .json({ success: false, message: "gradingPeriodId is required." });
+    }
+
+    // Submission is the point where this subject's official Term Grades are
+    // released to the adviser/principal. Validate server-side so a direct API
+    // call cannot publish incomplete scores or untransmuted Initial Grades.
+    const [templateRows] = await connection.execute(
+      `SELECT structure_json AS structureJson
+       FROM subject_grade_templates t
+       INNER JOIN \`subject-section\` ss ON ss.subject_id = t.subject_id
+       WHERE ss.id = ? AND t.is_active = 1 LIMIT 1`,
+      [subjectSectionId],
+    );
+    let transmutationTable = [];
+    try {
+      const structure = typeof templateRows[0]?.structureJson === "string"
+        ? JSON.parse(templateRows[0].structureJson)
+        : templateRows[0]?.structureJson;
+      transmutationTable = structure?.transmutationTable || [];
+    } catch {
+      transmutationTable = [];
+    }
+    if (!transmutationTable.length) {
+      return res.status(400).json({
+        success: false,
+        message: "An active approved template with transmutation rules is required before submitting Term Grades.",
+      });
+    }
+
+    const [incompleteRows] = await connection.execute(
+      `SELECT COUNT(*) AS incompleteCount
+       FROM elem_students s
+       INNER JOIN \`subject-section\` ss ON ss.id = ?
+       INNER JOIN elem_subjects es ON es.id = ss.subject_id
+       LEFT JOIN subject_grade_cache c
+         ON c.student_id = s.id AND c.subject_section_id = ss.id AND c.grading_period_id = ?
+       WHERE s.is_deleted = 0
+         AND ((ss.section_id IS NOT NULL AND s.section_id = ss.section_id)
+           OR (ss.section_id IS NULL AND s.section_id IS NULL AND s.grade_level_id = es.grade_level_id))
+         AND (c.is_complete IS NULL OR c.is_complete = 0 OR c.average IS NULL)`,
+      [subjectSectionId, gradingPeriodId],
+    );
+    if (Number(incompleteRows[0]?.incompleteCount || 0) > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Every enrolled student must have complete scores and an official Term Grade before submission.",
+      });
     }
 
     await connection.execute(

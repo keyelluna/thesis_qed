@@ -16,9 +16,18 @@ function isSelectQuery(firstArg) {
 }
 
 function createPool() {
+  // Clever Cloud injects MYSQL_ADDON_PORT; local deployments can use DB_PORT.
+  // mysql2 otherwise silently defaults to 3306, which may not match the addon.
+  const configuredPort = process.env.DB_PORT || process.env.MYSQL_ADDON_PORT;
+  const databasePort = configuredPort ? Number(configuredPort) : 3306;
+  if (!Number.isInteger(databasePort) || databasePort < 1 || databasePort > 65535) {
+    throw new Error("DB_PORT or MYSQL_ADDON_PORT must be a valid TCP port number.");
+  }
+
   const pool = mysql
     .createPool({
       host: process.env.DB_HOST,
+      port: databasePort,
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME,

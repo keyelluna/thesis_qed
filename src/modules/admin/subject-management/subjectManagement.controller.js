@@ -33,20 +33,21 @@ exports.getSubjectSectionsByGrade = async (req, res) => {
     const subjectIds = [...new Set(rows.map((r) => r.subject_id))];
 
     const [weightRows] = await connection.query(
-  `SELECT swd.id, swd.subject_id, swd.assessment_type_id, at.assessment_name,
-          swd.weight_percent, swd.order_index
-     FROM subject_weight_distribution swd
-     LEFT JOIN assessment_type at ON at.id = swd.assessment_type_id
-    WHERE swd.subject_id IN (?)
-    ORDER BY swd.order_index ASC`,
-  [subjectIds]
-);
+      `SELECT swd.id, swd.subject_id, swd.assessment_type_id,
+              at.assessment_name AS assessmentName,
+              swd.weight_percent, swd.order_index
+         FROM subject_weight_distribution swd
+         LEFT JOIN assessment_type at ON at.id = swd.assessment_type_id
+        WHERE swd.subject_id IN (?)
+        ORDER BY swd.order_index ASC`,
+      [subjectIds]
+    );
 
     const weightsBySubject = weightRows.reduce((acc, w) => {
       (acc[w.subject_id] ??= []).push({
-        id: w.id, 
+        id: w.id,
         assessment_type_id: w.assessment_type_id,
-        assessment_name: w.assessment_name,
+        assessmentName: w.assessmentName,
         weight_percent: w.weight_percent,
         order_index: w.order_index,
       });
@@ -144,7 +145,7 @@ exports.addSubject = async (req, res) => {
         (sum, w) => sum + Number(w.weight_percent),
         0
       );
-      if (totalWeight !== 100) {
+      if (Math.abs(totalWeight - 100) > 0.5) {
         return res.status(400).json({
           success: false,
           message: `Weight distribution must total 100%. Current total: ${totalWeight}%.`,
@@ -246,7 +247,15 @@ exports.addSubject = async (req, res) => {
 
 exports.updateSubjectSection = async (req, res) => {
   const { id } = req.params;
-  const { isGraded, weightDistribution } = req.body;
+  const {
+    isGraded,
+    weightDistribution,
+    subjectName,
+    gradeLevelId,
+    sectionName,
+    teacherId,
+    schoolYear,
+  } = req.body;
   // weightDistribution (optional): array na katulad ng sa addSubject
   // [
   //   { assessment_type_id: 1, weight_percent: 30, order_index: 1 }, // Written Works
@@ -266,6 +275,19 @@ exports.updateSubjectSection = async (req, res) => {
       success: false,
       message: "isGraded is required.",
     });
+  }
+
+  if (subjectName !== undefined && !String(subjectName).trim()) {
+    return res.status(400).json({ success: false, message: "Subject name is required." });
+  }
+  if (gradeLevelId !== undefined && (!Number.isInteger(Number(gradeLevelId)) || Number(gradeLevelId) < 1)) {
+    return res.status(400).json({ success: false, message: "Select a valid grade level." });
+  }
+  if (schoolYear !== undefined && !String(schoolYear).trim()) {
+    return res.status(400).json({ success: false, message: "Select a valid school year." });
+  }
+  if (sectionName !== undefined && !String(sectionName ?? "").trim()) {
+    return res.status(400).json({ success: false, message: "Select a section." });
   }
 
   const hasWeights =
@@ -317,7 +339,12 @@ exports.updateSubjectSection = async (req, res) => {
     await conn.beginTransaction();
 
     const [existingRows] = await conn.query(
-      `SELECT subject_id FROM \`subject-section\` WHERE id = ? LIMIT 1`,
+      `SELECT ss.subject_id, ss.section_id, ss.teacher_id, ss.school_year_id,
+              es.subject_name, es.grade_level_id, gls.section_name
+         FROM \`subject-section\` ss
+         JOIN elem_subjects es ON es.id = ss.subject_id
+         LEFT JOIN grade_level_sections gls ON gls.id = ss.section_id
+        WHERE ss.id = ? LIMIT 1 FOR UPDATE`,
       [id]
     );
     if (existingRows.length === 0) {
@@ -329,6 +356,117 @@ exports.updateSubjectSection = async (req, res) => {
       });
     }
     const subjectId = existingRows[0].subject_id;
+    const existing = existingRows[0];
+    const nextName = String(subjectName ?? existing.subject_name).trim();
+    const nextGradeLevelId = Number(gradeLevelId ?? existing.grade_level_id);
+    const gradeChanged = nextGradeLevelId !== Number(existing.grade_level_id);
+
+    if (nextName.toLowerCase() !== String(existing.subject_name).trim().toLowerCase() || gradeChanged) {
+      const [duplicateSubjects] = await conn.query(
+        `SELECT id FROM elem_subjects
+          WHERE LOWER(TRIM(subject_name)) = LOWER(TRIM(?))
+            AND grade_level_id = ? AND id <> ? LIMIT 1`,
+        [nextName, nextGradeLevelId, subjectId]
+      );
+      if (duplicateSubjects.length > 0) {
+        await conn.rollback();
+        conn.release();
+        return res.status(409).json({ success: false, message: `A subject named "${nextName}" already exists for this grade level.` });
+      }
+    }
+
+    const nextSectionName = sectionName === undefined ? existing.section_name : String(sectionName ?? "").trim();
+    let nextSectionId = existing.section_id;
+    if (gradeChanged || sectionName !== undefined) {
+      nextSectionId = null;
+      if (nextSectionName) {
+        const [sectionRows] = await conn.query(
+          `SELECT id FROM grade_level_sections
+            WHERE section_name = ? AND grade_level_id = ? AND is_active = 1 LIMIT 1`,
+          [nextSectionName, nextGradeLevelId]
+        );
+        if (sectionRows.length === 0) {
+          await conn.rollback();
+          conn.release();
+          return res.status(400).json({ success: false, message: `Section "${nextSectionName}" is not available for the selected grade level.` });
+        }
+        nextSectionId = sectionRows[0].id;
+      }
+    }
+
+    let nextSchoolYearId = existing.school_year_id;
+    if (schoolYear !== undefined) {
+      const [schoolYearRows] = await conn.query(
+        `SELECT id FROM school_year WHERE school_year = ? LIMIT 1`,
+        [String(schoolYear).trim()]
+      );
+      if (schoolYearRows.length === 0) {
+        await conn.rollback();
+        conn.release();
+        return res.status(400).json({ success: false, message: "The selected school year does not exist." });
+      }
+      nextSchoolYearId = schoolYearRows[0].id;
+    }
+
+    if (gradeChanged) {
+      const [assignments] = await conn.query(
+        `SELECT ss.id, gls.section_name
+           FROM \`subject-section\` ss
+           LEFT JOIN grade_level_sections gls ON gls.id = ss.section_id
+          WHERE ss.subject_id = ? FOR UPDATE`,
+        [subjectId]
+      );
+      for (const assignment of assignments) {
+        const assignmentSectionName = Number(assignment.id) === Number(id)
+          ? nextSectionName
+          : assignment.section_name;
+        if (!assignmentSectionName) {
+          if (Number(assignment.id) === Number(id)) {
+            await conn.query(`UPDATE \`subject-section\` SET section_id = NULL WHERE id = ?`, [assignment.id]);
+          }
+          continue;
+        }
+        const [mappedSections] = await conn.query(
+          `SELECT id FROM grade_level_sections
+            WHERE section_name = ? AND grade_level_id = ? AND is_active = 1 LIMIT 1`,
+          [assignmentSectionName, nextGradeLevelId]
+        );
+        if (mappedSections.length === 0) {
+          await conn.rollback();
+          conn.release();
+          return res.status(400).json({
+            success: false,
+            message: `Cannot move this subject to ${nextGradeLevelId}: create section "${assignmentSectionName}" for that grade first.`,
+          });
+        }
+        await conn.query(
+          `UPDATE \`subject-section\` SET section_id = ? WHERE id = ?`,
+          [mappedSections[0].id, assignment.id]
+        );
+      }
+    } else if (sectionName !== undefined) {
+      await conn.query(`UPDATE \`subject-section\` SET section_id = ? WHERE id = ?`, [nextSectionId, id]);
+    }
+
+    if (teacherId !== undefined || schoolYear !== undefined) {
+      await conn.query(
+        `UPDATE \`subject-section\`
+            SET teacher_id = ?, school_year_id = ?
+          WHERE id = ?`,
+        [teacherId === undefined ? existing.teacher_id : (teacherId || 0), nextSchoolYearId, id]
+      );
+    }
+
+    const [duplicateAssignments] = await conn.query(
+      `SELECT id FROM \`subject-section\`
+        WHERE subject_id = ? AND section_id <=> ? AND school_year_id = ? AND id <> ? LIMIT 1`,
+      [subjectId, nextSectionId, nextSchoolYearId, id]
+    );
+    if (duplicateAssignments.length > 0) {
+      await conn.rollback();
+      conn.release();
+      return res.status(409).json({ success: false, message: "This subject is already assigned to that section and school year." });
+    }
 
     if (isGraded && !hasWeights) {
       const [currentWeights] = await conn.query(
@@ -352,27 +490,18 @@ exports.updateSubjectSection = async (req, res) => {
       }
     }
 
-    await conn.query(`UPDATE elem_subjects SET is_graded = ? WHERE id = ?`, [
+    await conn.query(`UPDATE elem_subjects SET subject_name = ?, grade_level_id = ?, is_graded = ? WHERE id = ?`, [
+      nextName,
+      nextGradeLevelId,
       isGraded,
       subjectId,
     ]);
 
-    // if (!isGraded) {
-    //   await conn.query(
-    //     `DELETE FROM subject_weight_distribution WHERE subject_id = ?`,
-    //     [subjectId]
-    //   );
-    // } else if (hasWeights) {
-    //   await conn.query(
-    //     `DELETE FROM subject_weight_distribution WHERE subject_id = ?`,
-    //     [subjectId]
-    //   );
-
     if (isGraded && hasWeights) {
-  await conn.query(
-    `DELETE FROM subject_weight_distribution WHERE subject_id = ?`,
-    [subjectId]
-  );
+      await conn.query(
+        `DELETE FROM subject_weight_distribution WHERE subject_id = ?`,
+        [subjectId]
+      );
 
       const values = weightDistribution.map((w, index) => [
         subjectId,
@@ -391,7 +520,7 @@ exports.updateSubjectSection = async (req, res) => {
 
     const [finalWeights] = await conn.query(
       `SELECT swd.assessment_type_id,
-              at.assessment_name,
+              at.assessment_name AS assessmentName,
               swd.weight_percent,
               swd.order_index
          FROM subject_weight_distribution swd
@@ -440,6 +569,7 @@ exports.updateSubjectSection = async (req, res) => {
     });
   }
 };
+
 exports.assignTeacherToSection = async (req, res) => {
   const { id } = req.params;
   const { gradeLevelId, sectionName, teacherId } = req.body;
@@ -590,13 +720,13 @@ exports.createAssessmentType = async (req, res) => {
 
 exports.getAssessmentType = async (req, res) => {
   try {
-    const query = 'SELECT id, assessment_name FROM assessment_type ORDER BY id DESC';
-    const [assessmentName] = await connection.query(query);
+    const query = 'SELECT id, assessment_name AS assessmentName FROM assessment_type ORDER BY id DESC';
+    const [assessmentTypes] = await connection.query(query);
 
     return res.status(200).json({
       success: true,
       message: 'Assessment types fetched successfully',
-      data: assessmentName
+      data: assessmentTypes
     });
 
   } catch (err) {

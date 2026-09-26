@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-// const verifyToken = require("../../authentication/authentication.middleware");
+const verifyToken = require("../../authentication/authentication.middleware");
 const overviewController = require("./overviewCard.controller");
 const attendanceController = require("./attendance.controller");
 const subjectPerformanceController = require("./subjectPerformance.controller");
@@ -11,26 +11,26 @@ router.get("/attendanceRate", overviewController.getOverviewAttendance);
 router.get("/getTodaysAttendance", attendanceController.getTodaysAttendance);
 router.get("/getAttendanceByGrade", attendanceController.getAttendanceByGrade);
 router.get(
-  "/topSubjectPerGrade",
+  "/topSubjectPerGrade", verifyToken,
   subjectPerformanceController.getTopSubjectPerGrade,
 );
 router.get(
-  "/subjectRankingByTerm",
+  "/subjectRankingByTerm", verifyToken,
   subjectPerformanceController.getSubjectRankingByTerm,
 );
 router.get(
-  "/academicPerformance",
+  "/academicPerformance", verifyToken,
   overviewController.getSchoolWideAcademicPerformance,
 );
-router.get("/holisticDomain", holisticOverviewController.getHolisticOverview);
+router.get("/holisticDomain", verifyToken, holisticOverviewController.getHolisticOverview);
 router.get(
-  "/performanceByGrade",
+  "/performanceByGrade", verifyToken,
   academicPerformanceController.getPerformanceByGrade,
 );
 router.get(
-  "/performanceTrend",
+  "/performanceTrend", verifyToken,
   academicPerformanceController.getPerformanceTrend,
 );
 
-router.get("/active-term", academicPerformanceController.getActiveTerm);
+router.get("/active-term", verifyToken, academicPerformanceController.getActiveTerm);
 module.exports = router;

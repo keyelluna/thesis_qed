@@ -476,6 +476,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
 
         grades[String(ss.subjectSectionId)] = {
           status,
+          termGrade: status === "submitted" && cell.average !== null ? Number(cell.average) : null,
           average:
             status === "submitted" && cell.average !== null
               ? Number(cell.average)

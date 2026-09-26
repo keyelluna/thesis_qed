@@ -13,14 +13,26 @@ exports.addNewStudent = async (req, res) => {
     section,
   } = req.body;
 
-  // 👇 optional na ang section — kapag wala/blangko, i-save bilang NULL sa DB
   const sectionId = section ? section : null;
 
   try {
+    const [activeSY] = await connection.query(
+      `SELECT id FROM school_year WHERE is_active = 1 LIMIT 1`
+    );
+
+    if (activeSY.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No active school year found. Please set an active school year first.",
+      });
+    }
+
+    const currentSchoolYearId = activeSY[0].id;
+
     const studentQuery = `
         INSERT INTO elem_students
-        (student_number, last_name, first_name, middle_name, learner_reference_number, gender, grade_level_id, section_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (student_number, last_name, first_name, middle_name, learner_reference_number, gender, grade_level_id, section_id, current_school_year_id, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const [result] = await connection.query(studentQuery, [
@@ -32,6 +44,8 @@ exports.addNewStudent = async (req, res) => {
       gender,
       gradeLevel,
       sectionId,
+      currentSchoolYearId,
+      "active",
     ]);
 
     res.status(201).json({
@@ -43,9 +57,6 @@ exports.addNewStudent = async (req, res) => {
     console.error("Database Error:", error);
 
     if (error.code === "ER_DUP_ENTRY") {
-      // sqlMessage usually looks like:
-      // "Duplicate entry 'xxxx' for key 'elem_students.student_number'"
-      // or "...for key 'elem_students.learner_reference_number'"
       const message = error.sqlMessage || error.message || "";
 
       if (message.includes("student_number")) {
@@ -62,7 +73,6 @@ exports.addNewStudent = async (req, res) => {
         });
       }
 
-      // fallback kung may ibang unique constraint na na-hit
       return res.status(409).json({
         success: false,
         message: "Duplicate entry detected.",
@@ -75,7 +85,7 @@ exports.addNewStudent = async (req, res) => {
   }
 };
 
-// UPDATE STUDENT
+
 exports.updateStudent = async (req, res) => {
   const { id } = req.params;
   const {
@@ -89,7 +99,6 @@ exports.updateStudent = async (req, res) => {
     section,
   } = req.body;
 
-  // 👇 optional na ang section — kapag wala/blangko, i-save bilang NULL sa DB
   const sectionId = section ? section : null;
 
   try {
@@ -222,7 +231,10 @@ exports.getAllStudents = async (req, res) => {
             FROM elem_students s
             LEFT JOIN grade_level gl ON s.grade_level_id = gl.id
             LEFT JOIN grade_level_sections sec ON s.section_id = sec.id
-            WHERE s.is_deleted = 0 
+            JOIN school_year sy ON sy.id = s.current_school_year_id
+            WHERE s.is_deleted = 0
+              AND sy.is_active = 1
+              AND s.status != 'graduated'
             ORDER BY s.grade_level_id ASC
         `;
 
@@ -247,7 +259,12 @@ exports.getAllStudents = async (req, res) => {
 exports.getTotalStudents = async (req, res) => {
   try {
     const [rows] = await connection.execute(
-      `SELECT COUNT(*) AS total FROM elem_students WHERE is_deleted = 0`,
+      `SELECT COUNT(*) AS total
+       FROM elem_students es
+       JOIN school_year sy ON sy.id = es.current_school_year_id
+       WHERE es.is_deleted = 0
+         AND sy.is_active = 1
+         AND es.status != 'graduated'`,
     );
 
     return res.status(200).json({

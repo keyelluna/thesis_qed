@@ -1,5 +1,5 @@
 // attendance.controller.js
-const connection = require('../../.././../../config/db');
+const connection = require("../../.././../../config/db");
 
 exports.getMyChildren = async (req, res) => {
   try {
@@ -11,7 +11,7 @@ exports.getMyChildren = async (req, res) => {
 
     const [parentRows] = await connection.query(
       `SELECT id FROM parent_table WHERE user_id = ? AND is_deleted = 0 LIMIT 1`,
-      [authUserId]
+      [authUserId],
     );
 
     if (parentRows.length === 0) {
@@ -22,19 +22,23 @@ exports.getMyChildren = async (req, res) => {
 
     const [children] = await connection.query(
       `SELECT
-         es.id,
-         es.student_number,
-         es.last_name,
-         es.first_name,
-         es.middle_name,
-         gl.grade_level,
-         gls.section_name
-       FROM parent_student ps
-       JOIN elem_students es ON es.id = ps.student_id
-       LEFT JOIN grade_level gl ON gl.id = es.grade_level_id
-       LEFT JOIN grade_level_sections gls ON gls.id = es.section_id
-       WHERE ps.parent_id = ? AND es.is_deleted = 0`,
-      [parentId]
+     es.id,
+     es.student_number,
+     es.last_name,
+     es.first_name,
+     es.middle_name,
+     gl.grade_level,
+     gls.section_name
+   FROM parent_student ps
+   JOIN elem_students es ON es.id = ps.student_id
+   LEFT JOIN grade_level gl ON gl.id = es.grade_level_id
+   LEFT JOIN grade_level_sections gls
+     ON gls.id = es.section_id
+    AND gls.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 ORDER BY id DESC LIMIT 1)
+   WHERE ps.parent_id = ?
+     AND es.is_deleted = 0
+     AND ${HIDE_GRADUATED_AFTER_NEW_TERM_1("es")}`,
+      [parentId],
     );
 
     return res.status(200).json({ children });
@@ -55,8 +59,18 @@ function getMonthsInRange(startDate, endDate) {
   const last = new Date(end.getFullYear(), end.getMonth(), 1);
 
   const monthNames = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
   ];
 
   while (cursor <= last) {
@@ -86,7 +100,7 @@ exports.getAttendanceSummary = async (req, res) => {
 
     const [parentRows] = await connection.query(
       `SELECT id FROM parent_table WHERE user_id = ? AND is_deleted = 0 LIMIT 1`,
-      [authUserId]
+      [authUserId],
     );
 
     if (parentRows.length === 0) {
@@ -100,27 +114,33 @@ exports.getAttendanceSummary = async (req, res) => {
        FROM parent_student ps
        WHERE ps.parent_id = ? AND ps.student_id = ?
        LIMIT 1`,
-      [parentId, studentId]
+      [parentId, studentId],
     );
 
     if (ownershipRows.length === 0) {
-      return res.status(403).json({ message: "You are not authorized to view this student's attendance." });
+      return res
+        .status(403)
+        .json({
+          message: "You are not authorized to view this student's attendance.",
+        });
     }
 
     const [studentRows] = await connection.query(
       `SELECT
-         es.id,
-         es.first_name,
-         es.last_name,
-         es.middle_name,
-         gl.grade_level,
-         gls.section_name
-       FROM elem_students es
-       LEFT JOIN grade_level gl ON gl.id = es.grade_level_id
-       LEFT JOIN grade_level_sections gls ON gls.id = es.section_id
-       WHERE es.id = ? AND es.is_deleted = 0
-       LIMIT 1`,
-      [studentId]
+     es.id,
+     es.first_name,
+     es.last_name,
+     es.middle_name,
+     gl.grade_level,
+     gls.section_name
+   FROM elem_students es
+   LEFT JOIN grade_level gl ON gl.id = es.grade_level_id
+   LEFT JOIN grade_level_sections gls
+     ON gls.id = es.section_id
+    AND gls.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 ORDER BY id DESC LIMIT 1)
+   WHERE es.id = ? AND es.is_deleted = 0
+   LIMIT 1`,
+      [studentId],
     );
 
     if (studentRows.length === 0) {
@@ -130,25 +150,34 @@ exports.getAttendanceSummary = async (req, res) => {
     const student = studentRows[0];
 
     const [gradingPeriods] = await connection.query(
-      `SELECT id, school_year_id, term_number, term_label, start_date, end_date, is_active
-       FROM grading_periods
-       ORDER BY term_number ASC`
+      `SELECT gp.id, gp.school_year_id, gp.term_number, gp.term_label,
+          gp.start_date, gp.end_date, gp.is_active
+   FROM grading_periods gp
+   JOIN school_year sy ON sy.id = gp.school_year_id
+   WHERE sy.is_active = 1
+   ORDER BY gp.term_number ASC`,
     );
 
-    const [attendanceRows] = await connection.query(
-      `SELECT
-         aar.grading_period_id,
-         DATE_FORMAT(aar.attendance_date, '%Y-%m') AS month_key,
-         SUM(CASE WHEN aar.status = 'P' THEN 1 ELSE 0 END) AS present_count,
-         SUM(CASE WHEN aar.status = 'A' THEN 1 ELSE 0 END) AS absent_count,
-         SUM(CASE WHEN aar.status = 'L' THEN 1 ELSE 0 END) AS tardiness_count,
-         SUM(CASE WHEN aar.status = 'E' THEN 1 ELSE 0 END) AS excused_count,
-         COUNT(*) AS total_days
-       FROM advisory_attendance_records aar
-       WHERE aar.student_id = ?
-       GROUP BY aar.grading_period_id, month_key`,
-      [studentId]
-    );
+    const periodIds = gradingPeriods.map((gp) => gp.id);
+
+    let attendanceRows = [];
+    if (periodIds.length > 0) {
+      [attendanceRows] = await connection.query(
+        `SELECT
+       aar.grading_period_id,
+       DATE_FORMAT(aar.attendance_date, '%Y-%m') AS month_key,
+       SUM(CASE WHEN aar.status = 'P' THEN 1 ELSE 0 END) AS present_count,
+       SUM(CASE WHEN aar.status = 'A' THEN 1 ELSE 0 END) AS absent_count,
+       SUM(CASE WHEN aar.status = 'L' THEN 1 ELSE 0 END) AS tardiness_count,
+       SUM(CASE WHEN aar.status = 'E' THEN 1 ELSE 0 END) AS excused_count,
+       COUNT(*) AS total_days
+     FROM advisory_attendance_records aar
+     WHERE aar.student_id = ?
+       AND aar.grading_period_id IN (?)
+     GROUP BY aar.grading_period_id, month_key`,
+        [studentId, periodIds],
+      );
+    }
 
     const gradingPeriods_withData = gradingPeriods.map((gp) => {
       // Lahat ng months sa loob ng start_date–end_date ng term na ito
@@ -193,7 +222,7 @@ exports.getAttendanceSummary = async (req, res) => {
           excused: acc.excused + m.excused,
           totalDays: acc.totalDays + m.totalDays,
         }),
-        { present: 0, absent: 0, tardiness: 0, excused: 0, totalDays: 0 }
+        { present: 0, absent: 0, tardiness: 0, excused: 0, totalDays: 0 },
       );
 
       return {
@@ -221,6 +250,8 @@ exports.getAttendanceSummary = async (req, res) => {
     });
   } catch (error) {
     console.error("getAttendanceSummary error:", error);
-    return res.status(500).json({ message: "Failed to fetch attendance summary." });
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch attendance summary." });
   }
 };

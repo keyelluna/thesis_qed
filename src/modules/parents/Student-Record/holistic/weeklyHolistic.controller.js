@@ -22,7 +22,6 @@ function riskLevelFromDomains(domainAverages) {
   return "NONE";
 }
 
-/** rows: [{ axis, rating }] for ONE week, pooled across every subject */
 function averageDomainsFromRows(rows) {
   const byAxis = new Map();
   for (const r of rows) {
@@ -41,11 +40,6 @@ function averageDomainsFromRows(rows) {
   return { domainAverages, count };
 }
 
-/**
- * Access-control middleware: verifies the logged-in parent actually has
- * this student as a linked child (via `parent_student`) before returning
- * any holistic data. Mirrors studentTermPerformance.controller's loadParentStudent.
- */
 async function loadParentStudent(req, res, next) {
   try {
     const authId = req.user?.userId;
@@ -54,7 +48,7 @@ async function loadParentStudent(req, res, next) {
     }
 
     const [parentRows] = await connection.execute(
-      `SELECT id FROM parent_table WHERE user_id = ?`,
+      `SELECT id FROM parent_table WHERE user_id = ? AND is_deleted = 0`,
       [authId]
     );
     if (parentRows.length === 0) {
@@ -65,7 +59,7 @@ async function loadParentStudent(req, res, next) {
     const { studentId } = req.params;
 
     const [linkRows] = await connection.execute(
-      `SELECT es.id, es.section_id
+      `SELECT es.id, es.section_id, es.grade_level_id
        FROM elem_students es
        INNER JOIN parent_student ps ON ps.student_id = es.id
        WHERE es.id = ? AND ps.parent_id = ? AND es.is_deleted = 0`,
@@ -77,6 +71,7 @@ async function loadParentStudent(req, res, next) {
 
     req.parentId = parentId;
     req.studentSectionId = linkRows[0].section_id;
+    req.studentGradeLevelId = linkRows[0].grade_level_id;
     next();
   } catch (error) {
     console.error("Error verifying parent-student access:", error);
@@ -84,19 +79,11 @@ async function loadParentStudent(req, res, next) {
   }
 }
 
-/**
- * GET /weeklyHolisticEvaluation/students/:studentId?termNumber=1
- *
- * Student's holistic evaluation for the term, POOLED across every subject
- * (not broken out per subject) — one entry per week.
- * "current" = latest week's snapshot (for WholeChildSnapshotData props).
- * "history" = earlier weeks, most recent first (for the `history` prop).
- * Requires loadParentStudent to run first (uses req.studentSectionId).
- */
 async function getStudentWeeklyEvaluation(req, res) {
   try {
     const { studentId } = req.params;
-    const sectionId = req.studentSectionId;
+    const sectionId = req.studentSectionId ?? null;
+    const gradeLevelId = req.studentGradeLevelId ?? null;
     const { termNumber } = req.query;
     if (!termNumber) {
       return res.status(400).json({ success: false, message: "termNumber is required." });
@@ -107,15 +94,28 @@ async function getStudentWeeklyEvaluation(req, res) {
       history: [],
     };
 
-    if (!sectionId) {
+    const [termRows] = await connection.execute(
+      `SELECT gp.id
+       FROM grading_periods gp
+       INNER JOIN school_year sy ON sy.id = gp.school_year_id
+       WHERE sy.is_active = 1 AND gp.term_number = ?`,
+      [termNumber]
+    );
+    if (termRows.length === 0) {
       return res.status(200).json({ success: true, data: emptyResponse });
     }
 
-    // Every active subject for the child's section — no teacher/advisory filtering,
-    // parents see the whole child, not one teacher's slice.
     const [subjectSectionRows] = await connection.execute(
-      `SELECT id FROM \`subject-section\` WHERE section_id = ? AND status = 'Active'`,
-      [sectionId]
+      `SELECT ss.id
+       FROM \`subject-section\` ss
+       INNER JOIN elem_subjects es ON es.id = ss.subject_id
+       INNER JOIN school_year sy ON sy.id = ss.school_year_id AND sy.is_active = 1
+       WHERE ss.status = 'Active'
+         AND (
+           ss.section_id = ?
+           OR (ss.section_id IS NULL AND es.grade_level_id = ?)
+         )`,
+      [sectionId, gradeLevelId]
     );
     const subjectSectionIds = subjectSectionRows.map((r) => r.id);
 
@@ -135,7 +135,6 @@ async function getStudentWeeklyEvaluation(req, res) {
       return res.status(200).json({ success: true, data: emptyResponse });
     }
 
-    // Pool every subject's ratings together, per week.
     const byWeek = new Map();
     for (const r of rows) {
       if (!byWeek.has(r.week)) byWeek.set(r.week, []);
@@ -156,7 +155,6 @@ async function getStudentWeeklyEvaluation(req, res) {
       riskLevel: riskLevelFromDomains(latest.domainAverages),
     };
 
-    // Most recent first, latest week excluded (that's already "current").
     const history = weeklyEntries
       .slice(0, -1)
       .reverse()

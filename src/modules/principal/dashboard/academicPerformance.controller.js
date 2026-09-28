@@ -1,17 +1,13 @@
 const connection = require("../../../../config/db");
-// GET /performanceByGrade
-// Overall academic performance per grade level (blended across sections),
-// PLUS per-section breakdown para sa hover tooltip sa frontend.
+
 exports.getPerformanceByGrade = async (req, res) => {
   try {
-    // 1. Lahat ng grade levels — starting point, hindi advisory_overall_grades
     const [allGrades] = await connection.query(`
       SELECT id AS gradeLevelId, grade_level AS grade
       FROM grade_level
       ORDER BY id ASC
     `);
 
-    // 2. Overall score per grade level (blinend, meron lang kung may data)
     const [overallRows] = await connection.query(`
       SELECT 
         gl.id AS gradeLevelId,
@@ -20,16 +16,18 @@ exports.getPerformanceByGrade = async (req, res) => {
       JOIN elem_students es 
         ON es.id = aog.student_id 
         AND es.is_deleted = 0
+        AND es.status <> 'graduated'
       JOIN grade_level gl 
         ON gl.id = es.grade_level_id
       JOIN grading_periods gp 
-        ON gp.id = aog.grading_period_id 
-        AND gp.is_active = 1
+        ON gp.id = aog.grading_period_id
+      JOIN school_year sy 
+        ON sy.id = gp.school_year_id 
+        AND sy.is_active = 1
       WHERE aog.overall_average IS NOT NULL
       GROUP BY gl.id
     `);
 
-    // 3. Score per section (breakdown pag-hover)
     const [sectionRows] = await connection.query(`
       SELECT 
         es.grade_level_id AS gradeLevelId,
@@ -40,18 +38,19 @@ exports.getPerformanceByGrade = async (req, res) => {
       JOIN elem_students es 
         ON es.id = aog.student_id 
         AND es.is_deleted = 0
+        AND es.status <> 'graduated'
       JOIN grade_level_sections gls 
         ON gls.id = aog.section_id
       JOIN grading_periods gp 
-        ON gp.id = aog.grading_period_id 
-        AND gp.is_active = 1
+        ON gp.id = aog.grading_period_id
+      JOIN school_year sy 
+        ON sy.id = gp.school_year_id 
+        AND sy.is_active = 1
       WHERE aog.overall_average IS NOT NULL
       GROUP BY es.grade_level_id, gls.id, gls.section_name
       ORDER BY gls.id ASC
     `);
 
-    // 4. I-merge: simula sa allGrades (lahat ng 6), i-attach ang score/sections
-    // kung meron; kung wala, null ang score at [] ang sections.
     const performanceByGrade = allGrades.map((grade) => {
       const overallMatch = overallRows.find(
         (r) => r.gradeLevelId === grade.gradeLevelId,
@@ -75,7 +74,7 @@ exports.getPerformanceByGrade = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: performanceByGrade, // matches GradePerformance[]
+      data: performanceByGrade, 
     });
   } catch (error) {
     console.error("Error fetching performance by grade:", error);
@@ -88,7 +87,6 @@ exports.getPerformanceByGrade = async (req, res) => {
 
 exports.getPerformanceTrend = async (req, res) => {
   try {
-
     const [terms] = await connection.execute(
       `SELECT gp.id, gp.term_number AS termNumber, gp.term_label AS termLabel
        FROM grading_periods gp
@@ -106,26 +104,34 @@ exports.getPerformanceTrend = async (req, res) => {
     const gpPlaceholders = gradingPeriodIds.map(() => "?").join(",");
     const termPlaceholders = termNumbers.map(() => "?").join(",");
 
-    // 2. Academic performance average per grading period (advisory_overall_grades)
     const [performanceRows] = await connection.execute(
-      `SELECT grading_period_id AS gradingPeriodId, AVG(overall_average) AS avgPerformance
-   FROM advisory_overall_grades
-   WHERE grading_period_id IN (${gpPlaceholders}) AND overall_average IS NOT NULL
-   GROUP BY grading_period_id`,
+      `SELECT aog.grading_period_id AS gradingPeriodId,
+              AVG(aog.overall_average) AS avgPerformance
+       FROM advisory_overall_grades aog
+       JOIN elem_students es
+         ON es.id = aog.student_id
+         AND es.is_deleted = 0
+         AND es.status <> 'graduated'
+       WHERE aog.grading_period_id IN (${gpPlaceholders})
+         AND aog.overall_average IS NOT NULL
+       GROUP BY aog.grading_period_id`,
       gradingPeriodIds,
     );
     const performanceByGp = new Map(
       performanceRows.map((r) => [r.gradingPeriodId, Number(r.avgPerformance)]),
     );
 
-    // 3. Attendance rate per grading period (advisory/homeroom daily attendance)
     const [attendanceRows] = await connection.execute(
-      `SELECT grading_period_id AS gradingPeriodId,
-              SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) AS presentCount,
+      `SELECT aar.grading_period_id AS gradingPeriodId,
+              SUM(CASE WHEN aar.status = 'P' THEN 1 ELSE 0 END) AS presentCount,
               COUNT(*) AS totalCount
-       FROM advisory_attendance_records
-       WHERE grading_period_id IN (${gpPlaceholders})
-       GROUP BY grading_period_id`,
+       FROM advisory_attendance_records aar
+       JOIN elem_students es
+         ON es.id = aar.student_id
+         AND es.is_deleted = 0
+         AND es.status <> 'graduated'
+       WHERE aar.grading_period_id IN (${gpPlaceholders})
+       GROUP BY aar.grading_period_id`,
       gradingPeriodIds,
     );
     const attendanceByGp = new Map(
@@ -137,12 +143,20 @@ exports.getPerformanceTrend = async (req, res) => {
       ]),
     );
 
-    // 4. Holistic ratings average per axis, grouped by term_number
     const [holisticRows] = await connection.execute(
-      `SELECT term_number AS termNumber, axis, AVG(rating) AS avgRating
-       FROM holistic_ratings
-       WHERE term_number IN (${termPlaceholders})
-       GROUP BY term_number, axis`,
+      `SELECT hr.term_number AS termNumber, hr.axis, AVG(hr.rating) AS avgRating
+       FROM holistic_ratings hr
+       JOIN elem_students es
+         ON es.id = hr.student_id
+         AND es.is_deleted = 0
+         AND es.status <> 'graduated'
+       JOIN \`subject-section\` ss
+         ON ss.id = hr.subject_section_id
+       JOIN school_year sy
+         ON sy.id = ss.school_year_id
+         AND sy.is_active = 1
+       WHERE hr.term_number IN (${termPlaceholders})
+       GROUP BY hr.term_number, hr.axis`,
       termNumbers,
     );
     const holisticByTerm = new Map();
@@ -170,8 +184,6 @@ exports.getPerformanceTrend = async (req, res) => {
       const behavioral = toPercentFromRating(holisticAxes.behavioral ?? null);
       const social = toPercentFromRating(holisticAxes.social ?? null);
 
-      // Holistic group = average ng 4 axes (null-safe: hindi isasali sa
-      // divisor ang mga axis na walang data)
       const holisticValues = [cognitive, emotional, behavioral, social].filter(
         (v) => v !== null && v !== undefined,
       );
@@ -181,9 +193,6 @@ exports.getPerformanceTrend = async (req, res) => {
             holisticValues.length
           : null;
 
-      // Overall trend = average ng 3 equal-weight categories:
-      // performance, attendance, holistic (null-safe din — kung walang
-      // value ang isang category, hindi ito isasali sa divisor)
       const categoryValues = [performance, attendance, holisticAvg].filter(
         (v) => v !== null && v !== undefined,
       );
@@ -232,6 +241,7 @@ function deriveTermStatus(startDate, endDate) {
   return "Active";
 }
 
+// GET /activeTerm
 exports.getActiveTerm = async (_req, res) => {
   try {
     const [rows] = await connection.query(
@@ -241,7 +251,7 @@ exports.getActiveTerm = async (_req, res) => {
        FROM grading_periods gp
        INNER JOIN school_year sy ON sy.id = gp.school_year_id
        WHERE gp.is_active = 1
-       LIMIT 1`
+       LIMIT 1`,
     );
 
     const row = rows[0];
@@ -268,6 +278,8 @@ exports.getActiveTerm = async (_req, res) => {
     });
   } catch (error) {
     console.error("Database Error:", error);
-    res.status(500).json({ status: "error", message: "Database error occurred." });
+    res
+      .status(500)
+      .json({ status: "error", message: "Database error occurred." });
   }
 };

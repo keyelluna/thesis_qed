@@ -2,6 +2,11 @@ const connection = require('../../../../config/db');
 const { loadSubjectSection } = require('../gradebook/subjectGrading.controller');
 const { notifyWeeklyEvaluationIfComplete } = require('../../notification/notification.service');
 
+const ACTIVE_SY_ID = `(SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)`;
+
+const rosterFilter = (alias) =>
+  `${alias}.is_deleted = 0 AND ${alias}.status <> 'graduated' AND ${alias}.current_school_year_id = ${ACTIVE_SY_ID}`;
+
 async function getActiveTermNumber() {
   const [rows] = await connection.execute(
     `SELECT gp.term_number AS termNumber
@@ -101,11 +106,13 @@ const getHolistic = async (req, res) => {
     const { allWeeks, termNumber } = req.query;
 
     if (allWeeks === "true") {
-      let sql = `SELECT student_id, axis, rating, DATE_FORMAT(week_start_date, '%Y-%m-%d') AS week
-                 FROM holistic_ratings WHERE subject_section_id = ?`;
+      let sql = `SELECT hr.student_id, hr.axis, hr.rating, DATE_FORMAT(hr.week_start_date, '%Y-%m-%d') AS week
+                 FROM holistic_ratings hr
+                 INNER JOIN elem_students st ON hr.student_id = st.id
+                 WHERE hr.subject_section_id = ? AND ${rosterFilter("st")}`;
       const params = [subjectSectionId];
       if (termNumber) {
-        sql += ` AND term_number = ?`;
+        sql += ` AND hr.term_number = ?`;
         params.push(termNumber);
       }
 
@@ -155,8 +162,10 @@ const getHolistic = async (req, res) => {
     }
 
     const [rows] = await connection.execute(
-      `SELECT student_id, axis, rating, DATE_FORMAT(week_start_date, '%Y-%m-%d') AS weekStartDate
-       FROM holistic_ratings WHERE subject_section_id = ? AND week_start_date = ?`,
+      `SELECT hr.student_id, hr.axis, hr.rating, DATE_FORMAT(hr.week_start_date, '%Y-%m-%d') AS weekStartDate
+       FROM holistic_ratings hr
+       INNER JOIN elem_students st ON hr.student_id = st.id
+       WHERE hr.subject_section_id = ? AND hr.week_start_date = ? AND ${rosterFilter("st")}`,
       [subjectSectionId, getCurrentWeekStartDate()]
     );
 
@@ -199,8 +208,10 @@ const upsertHolistic = async (req, res) => {
     }
 
     if (sectionId) {
+      // Kailangang enrolled at nasa current school year ang estudyante (hindi graduated).
       const [studentCheck] = await connection.execute(
-        `SELECT id FROM elem_students WHERE id = ? AND section_id = ?`,
+        `SELECT s.id FROM elem_students s
+         WHERE s.id = ? AND s.section_id = ? AND ${rosterFilter("s")}`,
         [studentId, sectionId]
       );
       if (studentCheck.length === 0) {
@@ -252,25 +263,22 @@ const getHolisticOverview = async (req, res) => {
     }
     const teacherId = teacherRows[0].id;
 
-    // ---- 1. Students in sections where this teacher teaches a subject ----
     const [taughtStudents] = await connection.execute(
       `SELECT DISTINCT st.id,
               ${STUDENT_NAME_SQL} AS name,
               st.section_id
        FROM elem_students st
        INNER JOIN \`subject-section\` ss ON st.section_id = ss.section_id
-       WHERE ss.teacher_id = ? AND ss.status = 'Active' AND st.is_deleted = 0`,
+       WHERE ss.teacher_id = ? AND ss.status = 'Active'
+         AND ss.school_year_id = ${ACTIVE_SY_ID}
+         AND ${rosterFilter("st")}`,
       [teacherId]
     );
 
-    // ---- 2. Students in classes this teacher ADVISES ----
-    // Mirrors the Attendance page's roster logic, so every advisory
-    // section shows up here even if the teacher teaches no subject in it.
-    // A class with no section_id falls back to grade level + unassigned
-    // students, exactly like getAdvisorySectionsList.
     const [advisoryClasses] = await connection.execute(
       `SELECT id AS classId, section_id, grade_level_id
-       FROM classes WHERE class_adviser_id = ?`,
+       FROM classes
+       WHERE class_adviser_id = ? AND school_year_id = ${ACTIVE_SY_ID}`,
       [teacherId]
     );
 
@@ -280,20 +288,19 @@ const getHolisticOverview = async (req, res) => {
         ? await connection.execute(
             `SELECT st.id, ${STUDENT_NAME_SQL} AS name, st.section_id
              FROM elem_students st
-             WHERE st.section_id = ? AND st.is_deleted = 0`,
+             WHERE st.section_id = ? AND ${rosterFilter("st")}`,
             [cls.section_id]
           )
         : await connection.execute(
             `SELECT st.id, ${STUDENT_NAME_SQL} AS name, st.section_id
              FROM elem_students st
-             WHERE st.grade_level_id = ? AND st.section_id IS NULL AND st.is_deleted = 0`,
+             WHERE st.grade_level_id = ? AND st.section_id IS NULL AND ${rosterFilter("st")}`,
             [cls.grade_level_id]
           );
       advisoryStudents.push(...rows);
     }
     const advisoryStudentIds = new Set(advisoryStudents.map((s) => String(s.id)));
 
-    // ---- 3. Merge both lists (dedupe by id) ----
     const studentsById = new Map();
     for (const s of [...taughtStudents, ...advisoryStudents]) {
       studentsById.set(String(s.id), s);
@@ -319,7 +326,6 @@ const getHolisticOverview = async (req, res) => {
 
     const studentSectionIds = [...new Set(myStudents.map((s) => s.section_id).filter((id) => id !== null && id !== undefined))];
 
-    // Nobody is in a real section (e.g. only unassigned advisory students)
     if (studentSectionIds.length === 0) {
       return res.status(200).json({ success: true, data: emptyResults() });
     }
@@ -330,7 +336,8 @@ const getHolisticOverview = async (req, res) => {
       `SELECT ss.id, ss.section_id, ss.teacher_id, es.subject_name AS subjectName
        FROM \`subject-section\` ss
        INNER JOIN elem_subjects es ON ss.subject_id = es.id
-       WHERE ss.section_id IN (${sectionPlaceholders}) AND ss.status = 'Active'`,
+       WHERE ss.section_id IN (${sectionPlaceholders}) AND ss.status = 'Active'
+         AND ss.school_year_id = ${ACTIVE_SY_ID}`,
       studentSectionIds
     );
 
@@ -481,8 +488,9 @@ const getStudentHolisticProfile = async (req, res) => {
     const teacherId = teacherRows[0].id;
 
     const [studentRows] = await connection.execute(
-      `SELECT id, CONCAT(last_name, ', ', first_name, ' ', COALESCE(middle_name, '')) AS name, section_id
-       FROM elem_students WHERE id = ?`,
+      `SELECT st.id, CONCAT(st.last_name, ', ', st.first_name, ' ', COALESCE(st.middle_name, '')) AS name, st.section_id
+       FROM elem_students st
+       WHERE st.id = ? AND ${rosterFilter("st")}`,
       [studentId]
     );
     if (studentRows.length === 0) {
@@ -491,12 +499,10 @@ const getStudentHolisticProfile = async (req, res) => {
     const student = studentRows[0];
 
     const [advisoryRows] = await connection.execute(
-      `SELECT section_id FROM classes WHERE class_adviser_id = ?`,
+      `SELECT section_id FROM classes
+       WHERE class_adviser_id = ? AND school_year_id = ${ACTIVE_SY_ID}`,
       [teacherId]
     );
-    // Compare as strings so a number-vs-string mismatch can't make an
-    // advisory student look non-advisory (that would list only the subjects
-    // this teacher teaches instead of everything the student takes).
     const isAdvisory = advisoryRows.some(
       (r) => r.section_id != null && String(r.section_id) === String(student.section_id)
     );
@@ -507,7 +513,8 @@ const getStudentHolisticProfile = async (req, res) => {
         `SELECT ss.id, es.subject_name AS subjectName
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON ss.subject_id = es.id
-         WHERE ss.section_id = ? AND ss.status = 'Active'`,
+         WHERE ss.section_id = ? AND ss.status = 'Active'
+           AND ss.school_year_id = ${ACTIVE_SY_ID}`,
         [student.section_id]
       );
     } else {
@@ -515,7 +522,8 @@ const getStudentHolisticProfile = async (req, res) => {
         `SELECT ss.id, es.subject_name AS subjectName
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON ss.subject_id = es.id
-         WHERE ss.teacher_id = ? AND ss.section_id = ? AND ss.status = 'Active'`,
+         WHERE ss.teacher_id = ? AND ss.section_id = ? AND ss.status = 'Active'
+           AND ss.school_year_id = ${ACTIVE_SY_ID}`,
         [teacherId, student.section_id]
       );
     }
@@ -686,14 +694,15 @@ const getDomainTrends = async (req, res) => {
     }
     const teacherId = teacherRows[0].id;
 
-    // Every class this teacher advises (same shape the Attendance page uses)
+    // Every class this teacher advises in the ACTIVE school year
+    // (same shape the Attendance page uses)
     const [classes] = await connection.execute(
       `SELECT c.id AS classId, c.section_id AS sectionId,
               gls.section_name AS sectionName, gl.grade_level AS gradeLevel
        FROM classes c
        LEFT JOIN grade_level_sections gls ON c.section_id = gls.id
        INNER JOIN grade_level gl ON c.grade_level_id = gl.id
-       WHERE c.class_adviser_id = ?`,
+       WHERE c.class_adviser_id = ? AND c.school_year_id = ${ACTIVE_SY_ID}`,
       [teacherId]
     );
 
@@ -713,20 +722,22 @@ const getDomainTrends = async (req, res) => {
     if (sectionIds.length > 0) {
       const sectionPh = sectionIds.map(() => "?").join(",");
 
-      // Every ACTIVE subject in the section, whoever teaches it
+      // Every ACTIVE subject in the section (active school year), whoever teaches it
       [subjectRows] = await connection.execute(
         `SELECT ss.id, ss.section_id AS sectionId, es.subject_name AS subjectName
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON ss.subject_id = es.id
          WHERE ss.section_id IN (${sectionPh}) AND ss.status = 'Active'
+           AND ss.school_year_id = ${ACTIVE_SY_ID}
          ORDER BY es.subject_name ASC`,
         sectionIds
       );
 
+      // Current-year roster lang (hindi graduated)
       [studentRows] = await connection.execute(
-        `SELECT id, section_id AS sectionId
-         FROM elem_students
-         WHERE section_id IN (${sectionPh}) AND is_deleted = 0`,
+        `SELECT st.id, st.section_id AS sectionId
+         FROM elem_students st
+         WHERE st.section_id IN (${sectionPh}) AND ${rosterFilter("st")}`,
         sectionIds
       );
 

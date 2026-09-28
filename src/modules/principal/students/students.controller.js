@@ -5,13 +5,24 @@ function buildFullName({ first_name, middle_name, last_name }) {
   return `${first_name}${middle} ${last_name}`;
 }
 
+// Id ng active school year (null kung wala)
+async function getActiveSchoolYearId() {
+  const [rows] = await connection.query(
+    `SELECT id FROM school_year WHERE is_active = 1 ORDER BY id DESC LIMIT 1`
+  );
+  return rows.length ? rows[0].id : null;
+}
+
 // GET /grade-levels
-// Powers PrincipalStudentsPage's grid — one row per grade level.
-// Assumes 1 section per grade (elementary setup), matching ClassList's
-// single sectionInfo shape.
-// GET /grade-levels — dagdagan ng gradeId sa output
+// Powers PrincipalStudentsPage's grid, isang row per grade level.
+// Current school year lang, at walang deleted o graduated na estudyante.
 exports.getGradeLevels = async (req, res) => {
   try {
+    const schoolYearId = await getActiveSchoolYearId();
+    if (!schoolYearId) {
+      return res.json([]);
+    }
+
     const [rows] = await connection.query(
       `SELECT
           gl.id AS gradeId,
@@ -20,12 +31,18 @@ exports.getGradeLevels = async (req, res) => {
           c.id AS classId,
           COUNT(es.id) AS totalStudents
        FROM grade_level gl
-       JOIN classes c ON c.grade_level_id = gl.id
-       JOIN grade_level_sections gls ON gls.id = c.section_id
+       JOIN classes c
+         ON c.grade_level_id = gl.id
+        AND c.school_year_id = ?
+       JOIN grade_level_sections gls
+         ON gls.id = c.section_id
+        AND gls.school_year_id = ?
        LEFT JOIN elem_students es
          ON es.grade_level_id = gl.id
-         AND es.section_id = c.section_id
-         AND es.is_deleted = 0
+        AND es.section_id = c.section_id
+        AND es.is_deleted = 0
+        AND es.status <> 'graduated'
+        AND es.current_school_year_id = ?
        GROUP BY gl.id, gls.id, c.id
 
        UNION ALL
@@ -39,21 +56,30 @@ exports.getGradeLevels = async (req, res) => {
        FROM grade_level gl
        LEFT JOIN elem_students es
          ON es.grade_level_id = gl.id
-         AND es.section_id IS NULL
-         AND es.is_deleted = 0
+        AND es.section_id IS NULL
+        AND es.is_deleted = 0
+        AND es.status <> 'graduated'
+        AND es.current_school_year_id = ?
        WHERE NOT EXISTS (
          SELECT 1
          FROM classes c2
          JOIN grade_level_sections gls2 ON gls2.id = c2.section_id
          WHERE c2.grade_level_id = gl.id
+           AND c2.school_year_id = ?
+           AND gls2.school_year_id = ?
        )
        GROUP BY gl.id
 
-       ORDER BY gradeId`
+       ORDER BY gradeId`,
+      [
+        schoolYearId, schoolYearId, schoolYearId,
+        schoolYearId,
+        schoolYearId, schoolYearId,
+      ]
     );
 
     const gradeLevels = rows
-      .filter(r => r.section !== null || r.totalStudents > 0)
+      .filter((r) => r.section !== null || r.totalStudents > 0)
       .map((row) => ({
         gradeId: row.gradeId,
         grade: row.grade,
@@ -70,12 +96,17 @@ exports.getGradeLevels = async (req, res) => {
 };
 
 // GET /grade/:gradeId/unassigned
-// Powers ClassListPage for grades with no section record yet —
-// shows students whose section_id is NULL under that grade.
+// Estudyante ng grade na walang section (section_id NULL),
+// current school year lang, walang deleted at graduated.
 exports.getUnassignedClassList = async (req, res) => {
   const { gradeId } = req.params;
 
   try {
+    const schoolYearId = await getActiveSchoolYearId();
+    if (!schoolYearId) {
+      return res.status(404).json({ message: "No active school year." });
+    }
+
     const [gradeRows] = await connection.query(
       `SELECT id, grade_level AS grade FROM grade_level WHERE id = ? LIMIT 1`,
       [gradeId]
@@ -95,9 +126,13 @@ exports.getUnassignedClassList = async (req, res) => {
           es.middle_name,
           es.gender
        FROM elem_students es
-       WHERE es.grade_level_id = ? AND es.section_id IS NULL AND es.is_deleted = 0
+       WHERE es.grade_level_id = ?
+         AND es.section_id IS NULL
+         AND es.is_deleted = 0
+         AND es.status <> 'graduated'
+         AND es.current_school_year_id = ?
        ORDER BY es.last_name, es.first_name`,
-      [gradeId]
+      [gradeId, schoolYearId]
     );
 
     const roster = studentRows.map((row) => ({
@@ -125,12 +160,18 @@ exports.getUnassignedClassList = async (req, res) => {
     return res.status(500).json({ message: "Failed to fetch class list." });
   }
 };
-// GET /class-list/:grade
-// Powers ClassListPage — sectionInfo + full roster for one grade.
+
+// GET /class-list/:classId
+// sectionInfo + full roster ng isang class (current school year lang).
 exports.getClassList = async (req, res) => {
   const { classId } = req.params;
 
   try {
+    const schoolYearId = await getActiveSchoolYearId();
+    if (!schoolYearId) {
+      return res.status(404).json({ message: "No active school year." });
+    }
+
     const [classRows] = await connection.query(
       `SELECT
           c.id AS class_id,
@@ -146,8 +187,9 @@ exports.getClassList = async (req, res) => {
        JOIN grade_level_sections gls ON gls.id = c.section_id
        LEFT JOIN teacher_table t ON t.id = c.class_adviser_id
        WHERE c.id = ?
+         AND c.school_year_id = ?
        LIMIT 1`,
-      [classId]
+      [classId, schoolYearId]
     );
 
     if (classRows.length === 0) {
@@ -172,9 +214,12 @@ exports.getClassList = async (req, res) => {
           es.middle_name,
           es.gender
        FROM elem_students es
-       WHERE es.section_id = ? AND es.is_deleted = 0
+       WHERE es.section_id = ?
+         AND es.is_deleted = 0
+         AND es.status <> 'graduated'
+         AND es.current_school_year_id = ?
        ORDER BY es.last_name, es.first_name`,
-      [classRow.section_id]
+      [classRow.section_id, schoolYearId]
     );
 
     const roster = studentRows.map((row) => ({

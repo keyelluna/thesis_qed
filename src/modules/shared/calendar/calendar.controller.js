@@ -1,14 +1,5 @@
 const connection = require("../../../../config/db");
 
-// ==========================================================
-// Holiday type mapping
-// ==========================================================
-// AKTWAL na ENUM values sa `holiday_type` column ng DB:
-//   'regular holiday' | 'special non-working day' | 'special working day'
-//
-// Ang frontend (calendar.service.ts) ay pwedeng magpadala ng SHORT codes
-// (hal. "regular" bilang default), kaya nag-mamap tayo papunta sa
-// tamang DB string bago mag-INSERT/UPDATE.
 const HOLIDAY_TYPE_MAP = {
   regular: "regular holiday",
   "regular holiday": "regular holiday",
@@ -22,11 +13,27 @@ function resolveHolidayType(input) {
   return HOLIDAY_TYPE_MAP[input] || null;
 }
 
+async function getActiveSchoolYearId() {
+  const [rows] = await connection.query(
+    "SELECT id FROM school_year WHERE is_active = 1 LIMIT 1"
+  );
+  return rows.length > 0 ? rows[0].id : null;
+}
+
 // GET /activities
 exports.getAllActivities = async (req, res) => {
   try {
+    const schoolYearId = await getActiveSchoolYearId();
+    if (!schoolYearId) {
+      return res.status(400).json({
+        success: false,
+        message: "No active school year found",
+      });
+    }
+
     const [rows] = await connection.query(
-      "SELECT id, title, date FROM school_calendar WHERE type = 'activity' ORDER BY date ASC"
+      "SELECT id, title, date FROM school_calendar WHERE type = 'activity' AND school_year_id = ? ORDER BY date ASC",
+      [schoolYearId]
     );
 
     const data = rows.map((row) => ({
@@ -52,8 +59,17 @@ exports.getAllActivities = async (req, res) => {
 
 exports.getActivities = async (req, res) => {
   try {
+    const schoolYearId = await getActiveSchoolYearId();
+    if (!schoolYearId) {
+      return res.status(400).json({
+        success: false,
+        message: "No active school year found",
+      });
+    }
+
     const [rows] = await connection.query(
-      "SELECT id, title, date FROM school_calendar WHERE type = 'activity' AND date >= CURRENT_DATE ORDER BY date ASC"
+      "SELECT id, title, date FROM school_calendar WHERE type = 'activity' AND school_year_id = ? AND date >= CURRENT_DATE ORDER BY date ASC",
+      [schoolYearId]
     );
 
     const data = rows.map((row) => ({
@@ -77,8 +93,6 @@ exports.getActivities = async (req, res) => {
   }
 };
 
-// POST /activities/add
-// Body: { entries: [{ title, date, createdBy }, ...] }
 exports.addActivities = async (req, res) => {
   try {
     const { entries } = req.body;
@@ -98,18 +112,22 @@ exports.addActivities = async (req, res) => {
       }
     }
 
-    // Manual placeholder build (hindi natin ginagamit ang "VALUES ?" bulk
-    // syntax dahil hindi ito supported sa prepared statements / execute())
-    const placeholders = entries.map(() => "(?, 'activity', ?)").join(", ");
-    const params = entries.flatMap((item) => [item.title, item.date]);
+    const schoolYearId = await getActiveSchoolYearId();
+    if (!schoolYearId) {
+      return res.status(400).json({
+        success: false,
+        message: "No active school year found",
+      });
+    }
+
+    const placeholders = entries.map(() => "(?, 'activity', ?, ?)").join(", ");
+    const params = entries.flatMap((item) => [item.title, item.date, schoolYearId]);
 
     const [result] = await connection.query(
-      `INSERT INTO school_calendar (title, type, date) VALUES ${placeholders}`,
+      `INSERT INTO school_calendar (title, type, date, school_year_id) VALUES ${placeholders}`,
       params
     );
 
-    // Ang mga bagong ID ay sunod-sunod simula sa insertId (gumagana ito
-    // dahil iisang INSERT statement lang ang ginamit para sa lahat ng rows)
     const data = entries.map((item, index) => ({
       id: result.insertId + index,
       title: item.title,
@@ -131,7 +149,6 @@ exports.addActivities = async (req, res) => {
   }
 };
 
-// PUT /activities/:id
 exports.updateActivity = async (req, res) => {
   try {
     const { id } = req.params;
@@ -165,7 +182,6 @@ exports.updateActivity = async (req, res) => {
   }
 };
 
-// DELETE /activities/:id
 exports.deleteActivity = async (req, res) => {
   try {
     const { id } = req.params;
@@ -196,11 +212,19 @@ exports.deleteActivity = async (req, res) => {
 // HOLIDAYS
 // =======================
 
-// GET /holidays
 exports.getHolidays = async (req, res) => {
   try {
+    const schoolYearId = await getActiveSchoolYearId();
+    if (!schoolYearId) {
+      return res.status(400).json({
+        success: false,
+        message: "No active school year found",
+      });
+    }
+
     const [rows] = await connection.query(
-      "SELECT id, title, date, holiday_type FROM school_calendar WHERE type = 'holiday' AND date >= CURRENT_DATE ORDER BY date ASC"
+      "SELECT id, title, date, holiday_type FROM school_calendar WHERE type = 'holiday' AND school_year_id = ? AND date >= CURRENT_DATE ORDER BY date ASC",
+      [schoolYearId]
     );
 
     const data = rows.map((row) => ({
@@ -227,8 +251,17 @@ exports.getHolidays = async (req, res) => {
 
 exports.getAllHolidays = async (req, res) => {
   try {
+    const schoolYearId = await getActiveSchoolYearId();
+    if (!schoolYearId) {
+      return res.status(400).json({
+        success: false,
+        message: "No active school year found",
+      });
+    }
+
     const [rows] = await connection.query(
-      "SELECT id, title, date, holiday_type FROM school_calendar WHERE type = 'holiday' ORDER BY date ASC"
+      "SELECT id, title, date, holiday_type FROM school_calendar WHERE type = 'holiday' AND school_year_id = ? ORDER BY date ASC",
+      [schoolYearId]
     );
 
     const data = rows.map((row) => ({
@@ -253,8 +286,6 @@ exports.getAllHolidays = async (req, res) => {
   }
 };
 
-// POST /holidays/add
-// Body: { entries: [{ title, date, holidayType, createdBy }, ...] }
 exports.addHolidays = async (req, res) => {
   try {
     const { entries } = req.body;
@@ -280,17 +311,24 @@ exports.addHolidays = async (req, res) => {
       }
     }
 
-    // Manual placeholder build (hindi natin ginagamit ang "VALUES ?" bulk
-    // syntax dahil hindi ito supported sa prepared statements / execute())
-    const placeholders = entries.map(() => "(?, 'holiday', ?, ?)").join(", ");
+    const schoolYearId = await getActiveSchoolYearId();
+    if (!schoolYearId) {
+      return res.status(400).json({
+        success: false,
+        message: "No active school year found",
+      });
+    }
+
+    const placeholders = entries.map(() => "(?, 'holiday', ?, ?, ?)").join(", ");
     const params = entries.flatMap((item) => [
       item.title,
       item.date,
       resolveHolidayType(item.holidayType),
+      schoolYearId,
     ]);
 
     const [result] = await connection.query(
-      `INSERT INTO school_calendar (title, type, date, holiday_type) VALUES ${placeholders}`,
+      `INSERT INTO school_calendar (title, type, date, holiday_type, school_year_id) VALUES ${placeholders}`,
       params
     );
 
@@ -316,7 +354,6 @@ exports.addHolidays = async (req, res) => {
   }
 };
 
-// PUT /holidays/:id
 exports.updateHoliday = async (req, res) => {
   try {
     const { id } = req.params;
@@ -358,7 +395,6 @@ exports.updateHoliday = async (req, res) => {
   }
 };
 
-// DELETE /holidays/:id
 exports.deleteHoliday = async (req, res) => {
   try {
     const { id } = req.params;

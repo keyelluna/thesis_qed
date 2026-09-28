@@ -3,9 +3,15 @@ const connection = require("../../../../config/db");
 exports.getHolisticOverview = async (req, res) => {
   try {
     const [rows] = await connection.query(`
-      SELECT axis, AVG(rating) AS avgRating
-      FROM holistic_ratings
-      GROUP BY axis
+      SELECT hr.axis, AVG(hr.rating) AS avgRating
+      FROM holistic_ratings hr
+      JOIN \`subject-section\` ss ON hr.subject_section_id = ss.id
+      JOIN school_year sy ON ss.school_year_id = sy.id
+      JOIN elem_students st ON hr.student_id = st.id
+      WHERE sy.is_active = 1
+        AND st.status <> 'graduated'
+        AND st.is_deleted = 0
+      GROUP BY hr.axis
     `);
 
     const axisToDomain = {

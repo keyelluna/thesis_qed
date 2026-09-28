@@ -2,16 +2,13 @@ const connection = require('../../../../../config/db');
 
 const TERM_LABEL_FALLBACK = (termNumber) => `Term ${termNumber}`;
 
-/**
- * Confirms the requesting user may view this student's term performance,
- * then attaches { id, sectionId } to req.student for the handler.
- *
- * Access rules:
- *  - admin / principal: any student
- *  - teacher: only students in a section they advise, or in a section
- *    they hold a subject in
- *  - parent: only their own linked children (parent_student)
- */
+async function getActiveSchoolYearId() {
+  const [rows] = await connection.execute(
+    `SELECT id FROM school_year WHERE is_active = 1 ORDER BY id DESC LIMIT 1`
+  );
+  return rows.length ? rows[0].id : null;
+}
+
 async function verifyStudentAccess(req, res, next) {
   try {
     const authId = req.user?.userId;
@@ -21,9 +18,10 @@ async function verifyStudentAccess(req, res, next) {
     }
 
     const { studentId } = req.params;
+    const activeSchoolYearId = await getActiveSchoolYearId();
 
     const [studentRows] = await connection.execute(
-      `SELECT id, section_id AS sectionId
+      `SELECT id, section_id AS sectionId, current_school_year_id AS schoolYearId, status
        FROM elem_students
        WHERE id = ? AND is_deleted = 0`,
       [studentId]
@@ -33,8 +31,13 @@ async function verifyStudentAccess(req, res, next) {
     }
     const student = studentRows[0];
 
-    if (role === "admin" || role === "principal") {
+    const attach = () => {
       req.student = student;
+      req.activeSchoolYearId = activeSchoolYearId;
+    };
+
+    if (role === "admin" || role === "principal") {
+      attach();
       return next();
     }
 
@@ -50,14 +53,19 @@ async function verifyStudentAccess(req, res, next) {
 
       if (student.sectionId !== null) {
         const [access] = await connection.execute(
-          `SELECT 1 FROM classes WHERE section_id = ? AND class_adviser_id = ?
+          `SELECT 1 FROM classes
+             WHERE section_id = ? AND class_adviser_id = ? AND school_year_id = ?
            UNION
-           SELECT 1 FROM \`subject-section\` WHERE section_id = ? AND teacher_id = ? AND status = 'Active'
+           SELECT 1 FROM \`subject-section\`
+             WHERE section_id = ? AND teacher_id = ? AND status = 'Active' AND school_year_id = ?
            LIMIT 1`,
-          [student.sectionId, teacherId, student.sectionId, teacherId]
+          [
+            student.sectionId, teacherId, activeSchoolYearId,
+            student.sectionId, teacherId, activeSchoolYearId,
+          ]
         );
         if (access.length > 0) {
-          req.student = student;
+          attach();
           return next();
         }
       }
@@ -82,7 +90,7 @@ async function verifyStudentAccess(req, res, next) {
         return res.status(403).json({ success: false, message: "You don't have access to this student." });
       }
 
-      req.student = student;
+      attach();
       return next();
     }
 
@@ -93,22 +101,7 @@ async function verifyStudentAccess(req, res, next) {
   }
 }
 
-/**
- * Fetches learner meta info (name, grade & section, class adviser,
- * school year) for the progress report header.
- *
- * - Grade & section come straight off elem_students (grade_level_id /
- *   section_id), joined to their label tables.
- * - Class adviser is resolved via classes.section_id -> class_adviser_id
- *   -> teacher_table, since that's the same place the adviser is set for
- *   the section (not grade_level_sections.adviser_id, which isn't kept
- *   in sync).
- * - School year is whichever row in school_year has is_active = 1.
- * - Any piece can come back null (e.g. student has no section yet, or
- *   the section has no adviser assigned) -- callers should treat missing
- *   pieces as "not set yet" rather than an error.
- */
-async function getStudentMeta(studentId) {
+async function getStudentMeta(studentId, schoolYearId) {
   const [rows] = await connection.execute(
     `SELECT
        es.first_name AS firstName,
@@ -122,12 +115,13 @@ async function getStudentMeta(studentId) {
      FROM elem_students es
      LEFT JOIN grade_level gl ON es.grade_level_id = gl.id
      LEFT JOIN grade_level_sections gls ON es.section_id = gls.id
-     LEFT JOIN classes c ON c.section_id = es.section_id
+     LEFT JOIN classes c
+            ON c.section_id = es.section_id AND c.school_year_id = ?
      LEFT JOIN teacher_table t ON c.class_adviser_id = t.id
-     LEFT JOIN school_year sy ON sy.is_active = 1
+     LEFT JOIN school_year sy ON sy.id = ?
      WHERE es.id = ?
      LIMIT 1`,
-    [studentId]
+    [schoolYearId, schoolYearId, studentId]
   );
 
   const m = rows[0] || {};
@@ -140,36 +134,19 @@ async function getStudentMeta(studentId) {
   };
 }
 
-/**
- * GET /api/termPerformanceProgress/:studentId/term-performance
- *
- * One entry per grading period of the active school year. A term is only
- * "released" once the adviser submitted grades for the student's section
- * for that period (grade_submissions) — unreleased terms come back with
- * an empty subject list and no average, so the frontend can show a
- * "not yet released" state instead of leaking unfinished grades.
- *
- * Subject grades = subject_grade_cache (kept accurate by
- * gradeCache.service.js on every score write). Overall/GWA per term =
- * advisory_overall_grades. Both are the same source the teacher's grade
- * sheet reads, so results match exactly.
- *
- * Response shape: { success, meta, data }. `meta` carries the learner's
- * name/grade-section/adviser/school-year for the report header and is
- * always populated regardless of which early-return path `data` takes.
- */
 const getTermPerformance = async (req, res) => {
   try {
-    const { id: studentId, sectionId } = req.student;
+    const { id: studentId, sectionId, schoolYearId: studentSchoolYearId } = req.student;
+    const activeSchoolYearId = req.activeSchoolYearId;
 
-    const meta = await getStudentMeta(studentId);
+    const meta = await getStudentMeta(studentId, activeSchoolYearId);
 
     const [gradingPeriods] = await connection.execute(
-      `SELECT gp.id, gp.term_number AS termNumber, gp.term_label AS termLabel
-       FROM grading_periods gp
-       INNER JOIN school_year sy ON gp.school_year_id = sy.id
-       WHERE sy.is_active = 1
-       ORDER BY gp.term_number ASC`
+      `SELECT id, term_number AS termNumber, term_label AS termLabel
+       FROM grading_periods
+       WHERE school_year_id = ?
+       ORDER BY term_number ASC`,
+      [activeSchoolYearId]
     );
 
     const shell = (released) =>
@@ -181,7 +158,11 @@ const getTermPerformance = async (req, res) => {
         subjects: [],
       }));
 
-    if (gradingPeriods.length === 0 || sectionId === null) {
+    const notInActiveYear =
+      !activeSchoolYearId ||
+      studentSchoolYearId !== activeSchoolYearId;
+
+    if (gradingPeriods.length === 0 || sectionId === null || notInActiveYear) {
       return res.status(200).json({ success: true, meta, data: shell(false) });
     }
 
@@ -200,8 +181,8 @@ const getTermPerformance = async (req, res) => {
       `SELECT ss.id, es.subject_name AS subjectName
        FROM \`subject-section\` ss
        INNER JOIN elem_subjects es ON ss.subject_id = es.id
-       WHERE ss.section_id = ? AND ss.status = 'Active'`,
-      [sectionId]
+       WHERE ss.section_id = ? AND ss.status = 'Active' AND ss.school_year_id = ?`,
+      [sectionId, activeSchoolYearId]
     );
 
     if (subjectSections.length === 0) {
@@ -248,11 +229,13 @@ const getTermPerformance = async (req, res) => {
 
     const subjectsByPeriodId = new Map();
     for (const gp of gradingPeriods) {
-      const list = subjectSections.map((ss) => ({
-        subject: ss.subjectName,
-        grade: gradeBySubjectAndPeriod.get(`${ss.id}_${gp.id}`) ?? null,
-      }));
-      subjectsByPeriodId.set(gp.id, list);
+      subjectsByPeriodId.set(
+        gp.id,
+        subjectSections.map((ss) => ({
+          subject: ss.subjectName,
+          grade: gradeBySubjectAndPeriod.get(`${ss.id}_${gp.id}`) ?? null,
+        }))
+      );
     }
 
     const data = gradingPeriods.map((gp) => {

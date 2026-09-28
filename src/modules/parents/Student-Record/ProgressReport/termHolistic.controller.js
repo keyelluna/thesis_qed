@@ -2,6 +2,22 @@ const connection = require('../../../../../config/db');
 
 const AXES = ["cognitive", "emotional", "social", "behavioral"];
 
+async function getActiveSubjectSectionIds(sectionId, gradeLevelId) {
+  const [rows] = await connection.execute(
+    `SELECT ss.id
+     FROM \`subject-section\` ss
+     INNER JOIN elem_subjects es ON es.id = ss.subject_id
+     INNER JOIN school_year sy ON sy.id = ss.school_year_id AND sy.is_active = 1
+     WHERE ss.status = 'Active'
+       AND (
+         ss.section_id = ?
+         OR (ss.section_id IS NULL AND es.grade_level_id = ?)
+       )`,
+    [sectionId ?? null, gradeLevelId ?? null]
+  );
+  return rows.map((r) => r.id);
+}
+
 function emptyDomainAverages() {
   return { cognitive: null, emotional: null, social: null, behavioral: null };
 }
@@ -54,9 +70,10 @@ async function loadParentStudent(req, res, next) {
     }
 
     const [parentRows] = await connection.execute(
-      `SELECT id FROM parent_table WHERE user_id = ?`,
+      `SELECT id FROM parent_table WHERE user_id = ? AND is_deleted = 0`,
       [authId]
     );
+
     if (parentRows.length === 0) {
       return res.status(404).json({ success: false, message: "Parent record not found." });
     }
@@ -65,7 +82,7 @@ async function loadParentStudent(req, res, next) {
     const { studentId } = req.params;
 
     const [linkRows] = await connection.execute(
-      `SELECT es.id, es.section_id
+      `SELECT es.id, es.section_id, es.grade_level_id
        FROM elem_students es
        INNER JOIN parent_student ps ON ps.student_id = es.id
        WHERE es.id = ? AND ps.parent_id = ? AND es.is_deleted = 0`,
@@ -77,6 +94,7 @@ async function loadParentStudent(req, res, next) {
 
     req.parentId = parentId;
     req.studentSectionId = linkRows[0].section_id;
+    req.studentGradeLevelId = linkRows[0].grade_level_id;
     next();
   } catch (error) {
     console.error("Error verifying parent-student access:", error);
@@ -96,7 +114,8 @@ async function loadParentStudent(req, res, next) {
 async function getStudentWeeklyEvaluation(req, res) {
   try {
     const { studentId } = req.params;
-    const sectionId = req.studentSectionId;
+    const sectionId = req.studentSectionId ?? null;
+    const gradeLevelId = req.studentGradeLevelId ?? null;
     const { termNumber } = req.query;
     if (!termNumber) {
       return res.status(400).json({ success: false, message: "termNumber is required." });
@@ -107,18 +126,18 @@ async function getStudentWeeklyEvaluation(req, res) {
       history: [],
     };
 
-    if (!sectionId) {
+    const [termRows] = await connection.execute(
+      `SELECT gp.id
+       FROM grading_periods gp
+       INNER JOIN school_year sy ON sy.id = gp.school_year_id
+       WHERE sy.is_active = 1 AND gp.term_number = ?`,
+      [termNumber]
+    );
+    if (termRows.length === 0) {
       return res.status(200).json({ success: true, data: emptyResponse });
     }
 
-    // Every active subject for the child's section — no teacher/advisory filtering,
-    // parents see the whole child, not one teacher's slice.
-    const [subjectSectionRows] = await connection.execute(
-      `SELECT id FROM \`subject-section\` WHERE section_id = ? AND status = 'Active'`,
-      [sectionId]
-    );
-    const subjectSectionIds = subjectSectionRows.map((r) => r.id);
-
+    const subjectSectionIds = await getActiveSubjectSectionIds(sectionId, gradeLevelId);
     if (subjectSectionIds.length === 0) {
       return res.status(200).json({ success: true, data: emptyResponse });
     }
@@ -196,6 +215,7 @@ async function getStudentTermAverages(req, res) {
   try {
     const { studentId } = req.params;
     const sectionId = req.studentSectionId;
+    const gradeLevelId = req.studentGradeLevelId ?? null;
     const { termNumber } = req.query;
 
     // 1. Which terms are we reporting on? Pull the active school year's grading
@@ -230,8 +250,8 @@ async function getStudentTermAverages(req, res) {
       `SELECT id FROM \`subject-section\` WHERE section_id = ? AND status = 'Active'`,
       [sectionId]
     );
-    const subjectSectionIds = subjectSectionRows.map((r) => r.id);
-
+    
+    const subjectSectionIds = await getActiveSubjectSectionIds(sectionId, gradeLevelId);
     if (subjectSectionIds.length === 0) {
       return res.status(200).json({ success: true, data: periodRows.map(buildEmptyTerm) });
     }

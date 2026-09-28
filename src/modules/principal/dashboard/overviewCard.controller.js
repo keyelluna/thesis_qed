@@ -1,9 +1,31 @@
 const connection = require("../../../../config/db");
 
+//========================== Helpers ==========================
+
+// Current grading period: nasa active school year at pasok sa petsa ngayon.
+// Date-based para hindi maapektuhan kahit maraming term na naka-is_active = 1.
+async function getCurrentGradingPeriod() {
+  const [rows] = await connection.query(
+    `SELECT gp.id, gp.school_year_id, gp.term_number, gp.term_label, gp.start_date, gp.end_date
+     FROM grading_periods gp
+     JOIN school_year sy ON gp.school_year_id = sy.id
+     WHERE sy.is_active = 1
+       AND CURDATE() BETWEEN gp.start_date AND gp.end_date
+     ORDER BY gp.term_number ASC
+     LIMIT 1`
+  );
+  return rows.length ? rows[0] : null;
+}
+
 //========================== Attendance Rate ==========================
 
 exports.getOverviewAttendance = async (req, res) => {
   try {
+    const currentTerm = await getCurrentGradingPeriod();
+    if (!currentTerm) {
+      return res.status(200).json({ attendance: 0 });
+    }
+
     const [rows] = await connection.query(
       `SELECT
          ROUND(
@@ -11,8 +33,11 @@ exports.getOverviewAttendance = async (req, res) => {
            1
          ) AS attendance
        FROM advisory_attendance_records aar
-       JOIN grading_periods gp ON aar.grading_period_id = gp.id
-       WHERE gp.is_active = 1`
+       JOIN elem_students st ON aar.student_id = st.id
+       WHERE aar.grading_period_id = ?
+         AND st.status <> 'graduated'
+         AND st.is_deleted = 0`,
+      [currentTerm.id]
     );
 
     return res.status(200).json({
@@ -25,16 +50,6 @@ exports.getOverviewAttendance = async (req, res) => {
 };
 
 //========================== Overall Performance ==========================
-
-async function getCurrentGradingPeriod() {
-  const [rows] = await connection.query(
-    `SELECT id, school_year_id, term_number, term_label, start_date, end_date
-     FROM grading_periods
-     WHERE is_active = 1
-     LIMIT 1`
-  );
-  return rows.length ? rows[0] : null;
-}
 
 exports.getStudentAcademicPerformance = async (req, res) => {
   try {
@@ -49,12 +64,14 @@ exports.getStudentAcademicPerformance = async (req, res) => {
       return res.status(404).json({ success: false, message: "Walang active grading period sa ngayon." });
     }
 
-    // Basic student info
+    // Basic student info (hindi deleted, hindi graduated)
     const [studentRows] = await connection.query(
       `SELECT id, student_number, last_name, first_name, middle_name,
               grade_level_id, section_id
        FROM elem_students
-       WHERE id = ? AND is_deleted = 0`,
+       WHERE id = ?
+         AND is_deleted = 0
+         AND status <> 'graduated'`,
       [studentId]
     );
 
@@ -63,7 +80,7 @@ exports.getStudentAcademicPerformance = async (req, res) => {
     }
     const student = studentRows[0];
 
-    // Per-subject grades para sa current term
+    // Per-subject grades para sa current term at current school year
     const [subjectGrades] = await connection.query(
       `SELECT
           es.id            AS subject_id,
@@ -77,8 +94,9 @@ exports.getStudentAcademicPerformance = async (req, res) => {
        INNER JOIN elem_subjects es ON es.id = ss.subject_id
        WHERE sgc.student_id = ?
          AND sgc.grading_period_id = ?
+         AND ss.school_year_id = ?
        ORDER BY es.subject_name ASC`,
-      [studentId, currentTerm.id]
+      [studentId, currentTerm.id, currentTerm.school_year_id]
     );
 
     // Overall / advisory average para sa current term (kung meron)
@@ -129,7 +147,6 @@ exports.getSectionAcademicPerformance = async (req, res) => {
     }
     const section = sectionRows[0];
 
-    // Lahat ng grades ng section para sa current term, per student per subject
     const [rows] = await connection.query(
       `SELECT
           st.id            AS student_id,
@@ -140,7 +157,9 @@ exports.getSectionAcademicPerformance = async (req, res) => {
           sgc.average,
           sgc.is_complete
        FROM elem_students st
-       INNER JOIN \`subject-section\` ss ON ss.section_id = st.section_id
+       INNER JOIN \`subject-section\` ss
+               ON ss.section_id = st.section_id
+              AND ss.school_year_id = ?
        INNER JOIN elem_subjects es ON es.id = ss.subject_id
        LEFT JOIN subject_grade_cache sgc
               ON sgc.student_id = st.id
@@ -148,8 +167,9 @@ exports.getSectionAcademicPerformance = async (req, res) => {
              AND sgc.grading_period_id = ?
        WHERE st.section_id = ?
          AND st.is_deleted = 0
+         AND st.status <> 'graduated'
        ORDER BY st.last_name ASC, es.subject_name ASC`,
-      [currentTerm.id, sectionId]
+      [currentTerm.school_year_id, currentTerm.id, sectionId]
     );
 
     // I-group per student para mas madaling gamitin sa frontend
@@ -195,16 +215,18 @@ exports.getSchoolWideAcademicPerformance = async (req, res) => {
       `SELECT id, grade_level FROM grade_level ORDER BY id ASC`
     );
 
-    // Lahat ng active sections
+    // Active sections ng current school year lang
     const [sections] = await connection.query(
       `SELECT id, grade_level_id, section_name
        FROM grade_level_sections
        WHERE is_active = 1
-       ORDER BY grade_level_id ASC, section_name ASC`
+         AND school_year_id = ?
+       ORDER BY grade_level_id ASC, section_name ASC`,
+      [currentTerm.school_year_id]
     );
 
-    // Lahat ng estudyante + overall average sa current term (LEFT JOIN
-    // para makasama pa rin yung wala pang grade / incomplete)
+    // Estudyante ng current school year lang, walang deleted at graduated.
+    // LEFT JOIN para makasama pa rin yung wala pang grade / incomplete.
     const [students] = await connection.query(
       `SELECT
           st.id            AS student_id,
@@ -220,12 +242,13 @@ exports.getSchoolWideAcademicPerformance = async (req, res) => {
               ON aog.student_id = st.id
              AND aog.grading_period_id = ?
        WHERE st.is_deleted = 0
+         AND st.status <> 'graduated'
+         AND st.current_school_year_id = ?
        ORDER BY st.grade_level_id ASC, st.section_id ASC, st.last_name ASC`,
-      [currentTerm.id]
+      [currentTerm.id, currentTerm.school_year_id]
     );
 
-    // I-nest: grade level -> sections -> students (para "magkakasama" na
-    // ang lahat pero organized pa rin)
+    // I-nest: grade level -> sections -> students
     const gradeLevelMap = new Map(
       gradeLevels.map((gl) => [
         gl.id,
@@ -245,14 +268,15 @@ exports.getSchoolWideAcademicPerformance = async (req, res) => {
       if (gl) gl.sections.push(sectionEntry);
     }
 
-    // Kung may estudyanteng walang section (hal. NULL section_id),
-    // ilagay sa isang "Unassigned" bucket para hindi mawala sa report.
+    // Estudyanteng walang section (hal. NULL section_id) ay ilalagay
+    // sa "Unassigned" bucket para hindi mawala sa report.
     const unassigned = { section_id: null, section_name: "Unassigned", students: [] };
 
     for (const st of students) {
-      const target = st.section_id && sectionMap.has(st.section_id)
-        ? sectionMap.get(st.section_id)
-        : unassigned;
+      const target =
+        st.section_id && sectionMap.has(st.section_id)
+          ? sectionMap.get(st.section_id)
+          : unassigned;
 
       target.students.push({
         student_id: st.student_id,

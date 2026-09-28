@@ -35,6 +35,7 @@ const sendNotification = async ({
     userId,
     studentId,
     studentName,
+    refKey,
     title,
     message: finalMessage,
     type,
@@ -339,6 +340,41 @@ const notifyLowGradeScore = async ({ studentId, itemId }) => {
   return sent;
 };
 
+// ==================== TEACHER'S NOTIF =======================
+
+const notifySubjectGradeSubmission = async ({ subjectSectionId, gradingPeriodId, submittedBy }) => {
+  const [rows] = await db.query(
+    `SELECT
+       tt.first_name AS teacherFirstName,
+       tt.last_name AS teacherLastName,
+       sub.subject_name AS subjectName,
+       adviser.user_id AS adviserUserId
+     FROM \`subject-section\` ss
+     JOIN elem_subjects sub ON sub.id = ss.subject_id
+     JOIN teacher_table tt ON tt.id = ss.teacher_id
+     JOIN classes c ON c.section_id = ss.section_id
+     JOIN teacher_table adviser ON adviser.id = c.class_adviser_id
+     WHERE ss.id = ?`,
+    [subjectSectionId]
+  );
+
+  if (rows.length === 0) return 0;
+
+  const { teacherFirstName, teacherLastName, subjectName, adviserUserId } = rows[0];
+  if (!adviserUserId) return 0;
+
+  // walang dedupe check — bawat submit/resubmit ay bagong notification
+  await sendNotification({
+    userId: adviserUserId,
+    refKey: `gradesubmit:${subjectSectionId}:${gradingPeriodId}:${Date.now()}`,
+    title: 'Grade Submission',
+    message: `${teacherFirstName} ${teacherLastName} has submitted grades for ${subjectName}.`,
+    type: 'info',
+  });
+
+  return 1;
+};
+
 module.exports = {
   sendNotification,
   notifyMissedActivity,
@@ -347,4 +383,5 @@ module.exports = {
   notifyAbsence,
   notifyGradeVisibility,
   notifyLowGradeScore,
+  notifySubjectGradeSubmission,
 };

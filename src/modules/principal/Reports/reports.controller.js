@@ -3,28 +3,11 @@ const connection = require("../../../../config/db");
 
 const TREND_THRESHOLD = 2;
 
-exports.getTermOptions = async (req, res) => {
-  try {
-    const [rows] = await connection.query(
-      `SELECT gp.term_label
-       FROM grading_periods gp
-       JOIN school_year sy ON sy.id = gp.school_year_id
-       WHERE sy.is_active = 1
-       ORDER BY gp.term_number ASC`
-    );
-
-    const options = rows.map((r) => r.term_label);
-
-    return res.status(200).json({ success: true, data: options });
-  } catch (err) {
-    console.error("getTermOptions error:", err);
-    return res.status(500).json({ success: false, message: "Failed to fetch term options." });
-  }
-};
+//========================== Helpers ==========================
 
 async function getActiveSchoolYearId() {
   const [rows] = await connection.query(
-    `SELECT id FROM school_year WHERE is_active = 1 LIMIT 1`
+    `SELECT id FROM school_year WHERE is_active = 1 ORDER BY id DESC LIMIT 1`
   );
   return rows[0]?.id ?? null;
 }
@@ -47,7 +30,7 @@ async function getPreviousGradingPeriod(currentPeriod) {
   if (!currentPeriod || currentPeriod.term_number <= 1) return null;
 
   const [rows] = await connection.query(
-    `SELECT id FROM grading_periods
+    `SELECT id, school_year_id FROM grading_periods
      WHERE school_year_id = ? AND term_number = ?
      LIMIT 1`,
     [currentPeriod.school_year_id, currentPeriod.term_number - 1]
@@ -55,7 +38,8 @@ async function getPreviousGradingPeriod(currentPeriod) {
   return rows[0] ?? null;
 }
 
-async function getSubjectGradeAverages(gradingPeriodId) {
+// Current school year lang, walang deleted at graduated na estudyante
+async function getSubjectGradeAverages(gradingPeriodId, schoolYearId) {
   const [rows] = await connection.query(
     `SELECT
        es.subject_name AS subject,
@@ -64,13 +48,15 @@ async function getSubjectGradeAverages(gradingPeriodId) {
      FROM subject_grade_cache sgc
      JOIN \`subject-section\` ss ON ss.id = sgc.subject_section_id
      JOIN elem_subjects es ON es.id = ss.subject_id
-     JOIN grade_level_sections gls ON gls.id = ss.section_id
-     JOIN grade_level gl ON gl.id = gls.grade_level_id
+     JOIN grade_level gl ON gl.id = es.grade_level_id
+     JOIN elem_students st ON st.id = sgc.student_id
      WHERE sgc.grading_period_id = ?
+       AND ss.school_year_id = ?
        AND sgc.average IS NOT NULL
-       AND ss.section_id IS NOT NULL
-     GROUP BY es.subject_name, gl.grade_level`,
-    [gradingPeriodId]
+       AND st.is_deleted = 0
+       AND st.status <> 'graduated'
+     GROUP BY es.subject_name, gl.id, gl.grade_level`,
+    [gradingPeriodId, schoolYearId]
   );
   return rows;
 }
@@ -83,6 +69,51 @@ function resolveTrend(currentScore, previousScore) {
   return "flat";
 }
 
+//========================== Options ==========================
+
+exports.getTermOptions = async (req, res) => {
+  try {
+    const [rows] = await connection.query(
+      `SELECT gp.term_label
+       FROM grading_periods gp
+       JOIN school_year sy ON sy.id = gp.school_year_id
+       WHERE sy.is_active = 1
+       ORDER BY gp.term_number ASC`
+    );
+
+    const options = rows.map((r) => r.term_label);
+
+    return res.status(200).json({ success: true, data: options });
+  } catch (err) {
+    console.error("getTermOptions error:", err);
+    return res.status(500).json({ success: false, message: "Failed to fetch term options." });
+  }
+};
+
+exports.getGradeOptions = async (req, res) => {
+  try {
+    const [rows] = await connection.query(
+      `SELECT grade_level FROM grade_level ORDER BY id ASC`
+    );
+    const options = ["All Grades", ...rows.map((r) => r.grade_level)];
+    return res.status(200).json({ success: true, data: options });
+  } catch (err) {
+    console.error("getGradeOptions error:", err);
+    return res.status(500).json({ success: false, message: "Failed to fetch grade options." });
+  }
+};
+
+exports.getViewOptions = async (req, res) => {
+  try {
+    const options = ["By Grade Level", "By Subject"];
+    return res.status(200).json({ success: true, data: options });
+  } catch (err) {
+    console.error("getViewOptions error:", err);
+    return res.status(500).json({ success: false, message: "Failed to fetch view options." });
+  }
+};
+
+//========================== Subject Ranking ==========================
 
 exports.getSubjectRanking = async (req, res) => {
   try {
@@ -97,13 +128,16 @@ exports.getSubjectRanking = async (req, res) => {
     }
 
     const [currentRows, previousPeriod] = await Promise.all([
-      getSubjectGradeAverages(currentPeriod.id),
+      getSubjectGradeAverages(currentPeriod.id, currentPeriod.school_year_id),
       getPreviousGradingPeriod(currentPeriod),
     ]);
 
     let previousRows = [];
     if (previousPeriod) {
-      previousRows = await getSubjectGradeAverages(previousPeriod.id);
+      previousRows = await getSubjectGradeAverages(
+        previousPeriod.id,
+        previousPeriod.school_year_id
+      );
     }
 
     const previousLookup = new Map(
@@ -128,22 +162,7 @@ exports.getSubjectRanking = async (req, res) => {
   }
 };
 
-exports.getGradeOptions = async (req, res) => {
-  try {
-    const [rows] = await connection.query(
-      `SELECT grade_level FROM grade_level ORDER BY id ASC`
-    );
-    const options = ["All Grades", ...rows.map((r) => r.grade_level)];
-    return res.status(200).json({ success: true, data: options });
-  } catch (err) {
-    console.error("getGradeOptions error:", err);
-    return res.status(500).json({ success: false, message: "Failed to fetch grade options." });
-  }
-};
-
 // ============================== HOLISTIC REPORTS ==============================
-
-const AXES = ["cognitive", "emotional", "behavioral", "social"];
 
 function buildEmptyScores() {
   return { cognitive: null, emotional: null, behavioral: null, social: null };
@@ -179,7 +198,7 @@ async function getTermNumberByLabel(termLabel) {
   return rows[0]?.term_number ?? null;
 }
 
-async function getHolisticByGradeLevel(termNumber) {
+async function getHolisticByGradeLevel(termNumber, schoolYearId) {
   const [flatRows] = await connection.query(
     `SELECT
        gl.grade_level AS label,
@@ -187,11 +206,15 @@ async function getHolisticByGradeLevel(termNumber) {
        AVG(hr.rating) AS avg_rating
      FROM holistic_ratings hr
      JOIN \`subject-section\` ss ON ss.id = hr.subject_section_id
-     JOIN grade_level_sections gls ON gls.id = ss.section_id
-     JOIN grade_level gl ON gl.id = gls.grade_level_id
+     JOIN elem_subjects es ON es.id = ss.subject_id
+     JOIN grade_level gl ON gl.id = es.grade_level_id
+     JOIN elem_students st ON st.id = hr.student_id
      WHERE hr.term_number = ?
-     GROUP BY gl.grade_level, hr.axis`,
-    [termNumber]
+       AND ss.school_year_id = ?
+       AND st.is_deleted = 0
+       AND st.status <> 'graduated'
+     GROUP BY gl.id, gl.grade_level, hr.axis`,
+    [termNumber, schoolYearId]
   );
 
   const [gradeLevelRows] = await connection.query(
@@ -202,7 +225,7 @@ async function getHolisticByGradeLevel(termNumber) {
   return pivotToHeatmapRows(flatRows, orderedLabels);
 }
 
-async function getHolisticBySubject(termNumber) {
+async function getHolisticBySubject(termNumber, schoolYearId) {
   const [flatRows] = await connection.query(
     `SELECT
        es.subject_name AS label,
@@ -211,14 +234,16 @@ async function getHolisticBySubject(termNumber) {
      FROM holistic_ratings hr
      JOIN \`subject-section\` ss ON ss.id = hr.subject_section_id
      JOIN elem_subjects es ON es.id = ss.subject_id
+     JOIN elem_students st ON st.id = hr.student_id
      WHERE hr.term_number = ?
+       AND ss.school_year_id = ?
+       AND st.is_deleted = 0
+       AND st.status <> 'graduated'
      GROUP BY es.subject_name, hr.axis`,
-    [termNumber]
+    [termNumber, schoolYearId]
   );
 
-  // Preserve a stable, sensible order: subjects appear in the order
-  // they were first seen in the query results (grouped alphabetically
-  // by MySQL's GROUP BY isn't guaranteed, so sort explicitly).
+  // Explicit sort para stable ang order ng subjects
   const uniqueLabels = Array.from(new Set(flatRows.map((r) => r.label))).sort();
 
   return pivotToHeatmapRows(flatRows, uniqueLabels);
@@ -232,30 +257,20 @@ exports.getHolisticRows = async (req, res) => {
       return res.status(400).json({ success: false, message: "Query params 'term' and 'view' are required." });
     }
 
+    const schoolYearId = await getActiveSchoolYearId();
     const termNumber = await getTermNumberByLabel(term);
-    if (termNumber === null) {
+    if (!schoolYearId || termNumber === null) {
       return res.status(404).json({ success: false, message: `No grading period found for term '${term}'.` });
     }
 
     const rows =
       view === "By Grade Level"
-        ? await getHolisticByGradeLevel(termNumber)
-        : await getHolisticBySubject(termNumber);
+        ? await getHolisticByGradeLevel(termNumber, schoolYearId)
+        : await getHolisticBySubject(termNumber, schoolYearId);
 
     return res.status(200).json({ success: true, data: rows });
   } catch (err) {
     console.error("getHolisticRows error:", err);
     return res.status(500).json({ success: false, message: "Failed to fetch holistic rows." });
-  }
-};
-
-
-exports.getViewOptions = async (req, res) => {
-  try {
-    const options = ["By Grade Level", "By Subject"];
-    return res.status(200).json({ success: true, data: options });
-  } catch (err) {
-    console.error("getViewOptions error:", err);
-    return res.status(500).json({ success: false, message: "Failed to fetch view options." });
   }
 };

@@ -12,6 +12,14 @@ async function getActiveGradingPeriodId() {
   return rows.length > 0 ? rows[0].id : null;
 }
 
+// Kinukuha ang ID ng active na school year.
+async function getActiveSchoolYearId() {
+  const [rows] = await connection.execute(
+    `SELECT id FROM school_year WHERE is_active = 1 LIMIT 1`,
+  );
+  return rows.length > 0 ? rows[0].id : null;
+}
+
 // Loads every class this teacher advises. Used by the list endpoint,
 // and to verify ownership when a specific :classId is requested.
 async function loadAdvisoryClasses(req, res, next) {
@@ -85,6 +93,8 @@ const getAdvisorySectionsList = async (req, res) => {
       });
     }
 
+    const activeSchoolYearId = await getActiveSchoolYearId();
+
     const [terms] = await connection.execute(
       `SELECT gp.id,
               gp.term_label AS label,
@@ -113,8 +123,10 @@ const getAdvisorySectionsList = async (req, res) => {
                FROM elem_students s
                WHERE s.section_id = ?
                  AND s.is_deleted = 0
+                 AND s.status <> 'graduated'
+                 AND s.current_school_year_id = ?
                ORDER BY s.last_name ASC, s.first_name ASC`,
-              [sectionId],
+              [sectionId, activeSchoolYearId],
             )
           : await connection.execute(
               `SELECT s.id,
@@ -124,8 +136,10 @@ const getAdvisorySectionsList = async (req, res) => {
                WHERE s.grade_level_id = (SELECT grade_level_id FROM classes WHERE id = ?)
                  AND s.section_id IS NULL
                  AND s.is_deleted = 0
+                 AND s.status <> 'graduated'
+                 AND s.current_school_year_id = ?
                ORDER BY s.last_name ASC, s.first_name ASC`,
-              [classId],
+              [classId, activeSchoolYearId],
             );
 
         return {
@@ -153,18 +167,24 @@ const getAdvisoryAttendance = async (req, res) => {
     const { classId } = req.advisorySection;
     const { term, allPeriods } = req.query;
 
+    const activeSchoolYearId = await getActiveSchoolYearId();
+
+    // Hindi isasama ang graduated at ang mga estudyanteng wala sa current school year.
     let sql = `
-      SELECT student_id, DATE_FORMAT(attendance_date, '%Y-%m-%d') AS date, status
-      FROM advisory_attendance_records
-      WHERE class_id = ?
+      SELECT a.student_id, DATE_FORMAT(a.attendance_date, '%Y-%m-%d') AS date, a.status
+      FROM advisory_attendance_records a
+      INNER JOIN elem_students s ON s.id = a.student_id
+      WHERE a.class_id = ?
+        AND s.status <> 'graduated'
+        AND s.current_school_year_id = ?
     `;
-    const params = [classId];
+    const params = [classId, activeSchoolYearId];
 
     let resolvedTermId = null;
     if (allPeriods !== "true") {
       resolvedTermId = term || (await getActiveGradingPeriodId());
       if (resolvedTermId) {
-        sql += ` AND grading_period_id = ?`;
+        sql += ` AND a.grading_period_id = ?`;
         params.push(resolvedTermId);
       }
     }

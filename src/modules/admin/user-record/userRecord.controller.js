@@ -57,6 +57,7 @@ exports.createUser = async (req, res) => {
     status,
     userName,
     generatedPassword,
+    gender,
   } = req.body;
 
   try {
@@ -68,6 +69,10 @@ exports.createUser = async (req, res) => {
         success: false,
         message: "Invalid role selected.",
       });
+    }
+
+    if (normalizedRole !== "admin" && !["Male", "Female"].includes(gender)) {
+      return res.status(400).json({ success: false, message: "Select this user's gender." });
     }
 
     const conflictingRole = await findEmailAcrossAllRoles(email);
@@ -90,6 +95,7 @@ exports.createUser = async (req, res) => {
       email,
       contactNumber,
       status,
+      gender,
     });
 
     // Send login credentials to the new user's email. Only fires for brand
@@ -142,6 +148,7 @@ exports.editUser = async (req, res) => {
     email,
     contactNumber,
     status,
+    gender,
   } = req.body;
 
   try {
@@ -153,6 +160,10 @@ exports.editUser = async (req, res) => {
         success: false,
         message: "Invalid role selected.",
       });
+    }
+
+    if (normalizedRole !== "admin" && !["Male", "Female"].includes(gender)) {
+      return res.status(400).json({ success: false, message: "Select this user's gender." });
     }
 
     if (!id) {
@@ -171,6 +182,7 @@ exports.editUser = async (req, res) => {
       email,
       contactNumber,
       status,
+      gender,
     });
 
     if (!updatedUser) {
@@ -234,6 +246,7 @@ exports.getUserById = async (req, res) => {
         role: normalizedRole.toUpperCase(),
         email: user.email_address,
         contactNumber: user.contact_number,
+        gender: user.gender ?? null,
         status: user.status?.toLowerCase() === "active" ? "Active" : "Inactive",
         lastLogin: user.last_login ?? null,
       },
@@ -269,6 +282,7 @@ exports.getAllUsers = async (req, res) => {
           role: role.toUpperCase(),
           email: user.email_address,
           contactNumber: user.contact_number,
+          gender: user.gender ?? null,
           status: user.status?.toLowerCase() === 'active' ? 'Active' : 'Inactive',
           lastLogin: user.last_login ?? null,
         }));

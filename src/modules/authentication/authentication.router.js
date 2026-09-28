@@ -10,7 +10,7 @@ router.post("/register", authentication.register);
 router.post("/login", authentication.login);
 
 //logout user
-router.post("/logout", authentication.logout);
+router.post("/logout", verifyToken, authentication.logout);
 // router.get('/admin/dashboard', verifyToken, requireRole('admin'), adminController.dashboard);
 // router.get('/teacher/class', verifyToken, requireRole('teacher', 'principal', 'admin'), teacherController.getClass);
 

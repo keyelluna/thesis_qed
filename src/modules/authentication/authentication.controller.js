@@ -2,8 +2,26 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const connection = require("../../../config/db"); // mysql2 pool with .promise()
 const ROLE_TABLES = require("../../../config/roleTables");
+const Teacher = require("../../models/teacher.model");
+const Principal = require("../../models/principal.model");
+const Parent = require("../../models/parent.model");
 const crypto = require("crypto");
 const { sendPasswordResetOtpEmail } = require("../../services/mailer.service");
+const { recordAuditEvent } = require("../shared/audit/auditLog.service");
+
+const PROFILE_MODELS = { teacher: Teacher, principal: Principal, parent: Parent };
+
+async function genderColumnForRole(roleKey) {
+  const Model = PROFILE_MODELS[roleKey];
+  if (!Model) return "NULL";
+  try {
+    await Model.ensureGenderColumn();
+    return "gender";
+  } catch (schemaError) {
+    console.warn(`Could not ensure ${roleKey} gender column:`, schemaError.message);
+    return "NULL";
+  }
+}
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = "1h";
@@ -28,15 +46,17 @@ exports.login = async (req, res) => {
       return res.status(401).json({ message: "Invalid Password" });
     }
 
-    const table = ROLE_TABLES[user.role];
+    const roleKey = String(user.role).toLowerCase();
+    const table = ROLE_TABLES[roleKey];
     if (!table) {
       return res
         .status(500)
         .json({ message: "Invalid user role configuration." });
     }
 
+    const genderColumn = await genderColumnForRole(roleKey);
     const [profileRows] = await connection.execute(
-      `SELECT is_deleted, status, CONCAT(first_name, ' ', last_name) AS name FROM ${table} WHERE user_id = ? LIMIT 1`,
+      `SELECT is_deleted, status, ${genderColumn} AS gender, CONCAT_WS(' ', NULLIF(TRIM(first_name), ''), NULLIF(TRIM(middle_name), ''), NULLIF(TRIM(last_name), '')) AS name FROM ${table} WHERE user_id = ? LIMIT 1`,
       [user.id],
     );
 
@@ -60,6 +80,21 @@ exports.login = async (req, res) => {
       [user.id, user.role],
     );
 
+    try {
+      await recordAuditEvent({
+        actor: { userId: user.id, userName: user.user_name, fullName: profile.name, role: user.role },
+        action: "LOGIN",
+        resource: "Authentication",
+        method: "POST",
+        endpoint: "/api/auth/login",
+        statusCode: 200,
+        ip: req.ip,
+        userAgent: req.get("user-agent"),
+      });
+    } catch (auditError) {
+      console.error("Failed to record successful login:", auditError.message);
+    }
+
     const token = jwt.sign(
       { userId: user.id, userName: user.user_name, role: user.role },
       JWT_SECRET,
@@ -81,6 +116,7 @@ exports.login = async (req, res) => {
           user_name: user.user_name,
           name: profile.name,
           role: user.role,
+          gender: profile.gender ?? null,
           mustChangePassword: !!user.must_change_password,
           token,
         },
@@ -97,10 +133,12 @@ exports.me = async (req, res) => {
   }
   try {
     const { userId, userName, role } = req.user;
-    const table = ROLE_TABLES[role];
+    const roleKey = String(role).toLowerCase();
+    const table = ROLE_TABLES[roleKey];
+    const genderColumn = await genderColumnForRole(roleKey);
 
     const [profileRows] = await connection.execute(
-      `SELECT CONCAT(first_name, ' ', last_name) AS name, email_address, contact_number FROM ${table} WHERE user_id = ? LIMIT 1`,
+      `SELECT CONCAT(first_name, ' ', last_name) AS name, email_address, contact_number, ${genderColumn} AS gender FROM ${table} WHERE user_id = ? LIMIT 1`,
       [userId],
     );
 
@@ -113,7 +151,7 @@ exports.me = async (req, res) => {
     const mustChangePassword = !!authRows[0]?.must_change_password;
 
     res.status(200).json({
-      user: { id: userId, user_name: userName, name, role, mustChangePassword },
+      user: { id: userId, user_name: userName, name, role, gender: profileRows[0]?.gender ?? null, mustChangePassword },
     });
   } catch (err) {
     console.error(err);

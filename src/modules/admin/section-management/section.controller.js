@@ -1,4 +1,5 @@
 const connection = require("../../../../config/db");
+const Teacher = require("../../../models/teacher.model");
 
 exports.getGrade = async (req, res) => {
   try {
@@ -154,8 +155,9 @@ exports.getSectionsByGradeLevel = async (req, res) => {
 
 exports.getTeachers = async (req, res) => {
   try {
+    await Teacher.ensureGenderColumn();
     const [rows] = await connection.execute(
-      `SELECT id, user_id, first_name, last_name, middle_name, email_address, contact_number
+      `SELECT id, user_id, first_name, last_name, middle_name, email_address, contact_number, gender
        FROM teacher_table
        WHERE is_deleted = 0 AND status = 'active'
        ORDER BY last_name ASC`,

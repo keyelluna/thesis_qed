@@ -9,6 +9,7 @@ const moment = require('moment');
 
 const apiRoutes = require('./src/routes/index.js');
 const { initSocket } = require('./socket.js');
+const auditLog = require('./src/modules/shared/audit/auditLog.service.js');
 
 const app = express();
 
@@ -33,6 +34,7 @@ app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+app.use('/api', auditLog.auditMutationRequests);
 app.use('/api', apiRoutes);
 
 app.use((req, res) => {
@@ -54,6 +56,10 @@ app.use((err, req, res, next) => {
 const httpServer = createServer(app);
 initSocket(httpServer, allowedOrigins);
 
-httpServer.listen(process.env.PORT, () => {
-  console.log(`Server is running on port ${process.env.PORT}`);
-});
+auditLog.ensureAuditLogTable()
+  .catch((error) => console.error('Audit log table could not be initialized:', error.message))
+  .finally(() => {
+    httpServer.listen(process.env.PORT, () => {
+      console.log(`Server is running on port ${process.env.PORT}`);
+    });
+  });

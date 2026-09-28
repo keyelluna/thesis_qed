@@ -1,5 +1,19 @@
 const connection = require("../../../../config/db");
 
+const HIDE_GRADUATED_AFTER_NEW_TERM_1 = (alias = "elem_students") => `
+  NOT (
+    ${alias}.status = 'graduated'
+    AND EXISTS (
+      SELECT 1
+      FROM grading_periods gp_new
+      WHERE gp_new.term_number = 1
+        AND gp_new.start_date IS NOT NULL
+        AND gp_new.start_date <= CURDATE()
+        AND gp_new.school_year_id > ${alias}.current_school_year_id
+    )
+  )
+`;
+
 //search children via student number, and name
 exports.getChildren = async (req, res) => {
   const {
@@ -39,9 +53,11 @@ exports.getChildren = async (req, res) => {
     ON grade_level_sections.id = classes.section_id
   LEFT JOIN teacher_table 
     ON classes.class_adviser_id = teacher_table.id
-  WHERE elem_students.student_number = ?
+    WHERE elem_students.student_number = ?
     AND LOWER(elem_students.last_name) = LOWER(?)
     AND LOWER(elem_students.first_name) = LOWER(?)
+    AND elem_students.is_deleted = 0
+    AND ${HIDE_GRADUATED_AFTER_NEW_TERM_1()}
 `;
     const [rows] = await connection.query(query, [
       studentNumber,
@@ -113,7 +129,8 @@ exports.linkedChildren = async (req, res) => {
        WHERE student_number = ?
          AND LOWER(last_name) = LOWER(?)
          AND LOWER(first_name) = LOWER(?)
-         AND is_deleted = 0`,
+         AND is_deleted = 0
+         AND ${HIDE_GRADUATED_AFTER_NEW_TERM_1("elem_students")}`,
       [studentNumber, lastName, firstName]
     );
 
@@ -401,8 +418,9 @@ exports.getEnrolledChildren = async (req, res) => {
         ON classes.class_adviser_id = teacher_table.id
       WHERE parent_student.parent_id = ?
         AND elem_students.is_deleted = 0
+        AND ${HIDE_GRADUATED_AFTER_NEW_TERM_1()}
     `;
-
+    
     const [rows] = await connection.execute(query, [parentId]);
 
     const studentsWithPerformance = await attachCurrentPerformance(rows);

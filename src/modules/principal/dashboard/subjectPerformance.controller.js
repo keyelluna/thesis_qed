@@ -1,8 +1,37 @@
 const connection = require("../../../../config/db");
 
+//========================== Helpers ==========================
+
+// Current grading period: nasa active school year at pasok sa petsa ngayon.
+async function getCurrentGradingPeriod() {
+  const [rows] = await connection.query(
+    `SELECT gp.id, gp.school_year_id, gp.term_number, gp.term_label
+     FROM grading_periods gp
+     JOIN school_year sy ON gp.school_year_id = sy.id
+     WHERE sy.is_active = 1
+       AND CURDATE() BETWEEN gp.start_date AND gp.end_date
+     ORDER BY gp.term_number ASC
+     LIMIT 1`
+  );
+  return rows.length ? rows[0] : null;
+}
+
+function getTrend(current, previous) {
+  if (previous === undefined || previous === null) return "flat";
+  if (Number(current) > Number(previous)) return "up";
+  if (Number(current) < Number(previous)) return "down";
+  return "flat";
+}
+
+//========================== Top Subject Per Grade ==========================
 
 exports.getTopSubjectPerGrade = async (req, res) => {
   try {
+    const currentTerm = await getCurrentGradingPeriod();
+    if (!currentTerm) {
+      return res.status(200).json([]);
+    }
+
     const [rows] = await connection.query(
       `SELECT
          gl.id AS gradeLevelId,
@@ -13,17 +42,19 @@ exports.getTopSubjectPerGrade = async (req, res) => {
        JOIN \`subject-section\` ss ON sgc.subject_section_id = ss.id
        JOIN elem_subjects es ON ss.subject_id = es.id
        JOIN grade_level gl ON es.grade_level_id = gl.id
-       JOIN grading_periods gp ON sgc.grading_period_id = gp.id
-       WHERE gp.is_active = 1 AND sgc.average IS NOT NULL
-       GROUP BY gl.id, gl.grade_level, es.subject_name`
+       JOIN elem_students st ON sgc.student_id = st.id
+       WHERE sgc.grading_period_id = ?
+         AND ss.school_year_id = ?
+         AND sgc.average IS NOT NULL
+         AND st.is_deleted = 0
+         AND st.status <> 'graduated'
+       GROUP BY gl.id, gl.grade_level, es.subject_name`,
+      [currentTerm.id, currentTerm.school_year_id]
     );
 
-    const [[activeTerm]] = await connection.query(
-      `SELECT school_year_id, term_number FROM grading_periods WHERE is_active = 1 LIMIT 1`
-    );
-
+    // Previous term (same school year) para sa trend
     let prevRows = [];
-    if (activeTerm && activeTerm.term_number > 1) {
+    if (currentTerm.term_number > 1) {
       const [prev] = await connection.query(
         `SELECT
            gl.id AS gradeLevelId,
@@ -34,9 +65,19 @@ exports.getTopSubjectPerGrade = async (req, res) => {
          JOIN elem_subjects es ON ss.subject_id = es.id
          JOIN grade_level gl ON es.grade_level_id = gl.id
          JOIN grading_periods gp ON sgc.grading_period_id = gp.id
-         WHERE gp.school_year_id = ? AND gp.term_number = ? AND sgc.average IS NOT NULL
+         JOIN elem_students st ON sgc.student_id = st.id
+         WHERE gp.school_year_id = ?
+           AND gp.term_number = ?
+           AND ss.school_year_id = ?
+           AND sgc.average IS NOT NULL
+           AND st.is_deleted = 0
+           AND st.status <> 'graduated'
          GROUP BY gl.id, es.subject_name`,
-        [activeTerm.school_year_id, activeTerm.term_number - 1]
+        [
+          currentTerm.school_year_id,
+          currentTerm.term_number - 1,
+          currentTerm.school_year_id,
+        ]
       );
       prevRows = prev;
     }
@@ -53,16 +94,11 @@ exports.getTopSubjectPerGrade = async (req, res) => {
       const prev = prevRows.find(
         (p) => p.gradeLevelId === row.gradeLevelId && p.subject === row.subject
       );
-      let trend = "flat";
-      if (prev) {
-        if (Number(row.score) > Number(prev.score)) trend = "up";
-        else if (Number(row.score) < Number(prev.score)) trend = "down";
-      }
       return {
         grade: row.grade,
         subject: row.subject,
         score: Number(row.score) || 0,
-        trend,
+        trend: getTrend(row.score, prev?.score),
       };
     });
 
@@ -73,12 +109,17 @@ exports.getTopSubjectPerGrade = async (req, res) => {
   }
 };
 
+//========================== Subject Ranking By Term ==========================
+
 exports.getSubjectRankingByTerm = async (req, res) => {
   try {
+    // Lahat ng terms ng active school year lang
     const [periods] = await connection.query(
-      `SELECT id, term_number, term_label FROM grading_periods WHERE school_year_id = (
-         SELECT id FROM school_year WHERE is_active = 1 LIMIT 1
-       ) ORDER BY term_number`
+      `SELECT gp.id, gp.school_year_id, gp.term_number, gp.term_label
+       FROM grading_periods gp
+       JOIN school_year sy ON gp.school_year_id = sy.id
+       WHERE sy.is_active = 1
+       ORDER BY gp.term_number`
     );
 
     const result = {};
@@ -93,10 +134,15 @@ exports.getSubjectRankingByTerm = async (req, res) => {
          JOIN \`subject-section\` ss ON sgc.subject_section_id = ss.id
          JOIN elem_subjects es ON ss.subject_id = es.id
          JOIN grade_level gl ON es.grade_level_id = gl.id
-         WHERE sgc.grading_period_id = ? AND sgc.average IS NOT NULL
+         JOIN elem_students st ON sgc.student_id = st.id
+         WHERE sgc.grading_period_id = ?
+           AND ss.school_year_id = ?
+           AND sgc.average IS NOT NULL
+           AND st.is_deleted = 0
+           AND st.status <> 'graduated'
          GROUP BY gl.id, gl.grade_level, es.subject_name
          ORDER BY score DESC`,
-        [period.id]
+        [period.id, period.school_year_id]
       );
 
       const prevPeriod = periods.find((p) => p.term_number === period.term_number - 1);
@@ -109,9 +155,14 @@ exports.getSubjectRankingByTerm = async (req, res) => {
            JOIN \`subject-section\` ss ON sgc.subject_section_id = ss.id
            JOIN elem_subjects es ON ss.subject_id = es.id
            JOIN grade_level gl ON es.grade_level_id = gl.id
-           WHERE sgc.grading_period_id = ? AND sgc.average IS NOT NULL
+           JOIN elem_students st ON sgc.student_id = st.id
+           WHERE sgc.grading_period_id = ?
+             AND ss.school_year_id = ?
+             AND sgc.average IS NOT NULL
+             AND st.is_deleted = 0
+             AND st.status <> 'graduated'
            GROUP BY gl.id, gl.grade_level, es.subject_name`,
-          [prevPeriod.id]
+          [prevPeriod.id, prevPeriod.school_year_id]
         );
         prevRows = prev;
       }
@@ -120,17 +171,12 @@ exports.getSubjectRankingByTerm = async (req, res) => {
         const prev = prevRows.find(
           (p) => p.grade === row.grade && p.subject === row.subject
         );
-        let trend = "flat";
-        if (prev) {
-          if (Number(row.score) > Number(prev.score)) trend = "up";
-          else if (Number(row.score) < Number(prev.score)) trend = "down";
-        }
         return {
           rank: index + 1,
           subject: row.subject,
           grade: row.grade,
           score: Number(row.score) || 0,
-          trend,
+          trend: getTrend(row.score, prev?.score),
         };
       });
     }

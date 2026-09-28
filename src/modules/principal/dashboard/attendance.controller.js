@@ -1,14 +1,36 @@
 const connection = require("../../../../config/db");
 
+// Active school year id (subquery na ginagamit sa lahat ng queries)
+const ACTIVE_SY = `(SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)`;
+
 exports.getTodaysAttendance = async (req, res) => {
   try {
+
     const [rows] = await connection.query(
-      `SELECT
+      `WITH latest_attendance AS (
+         SELECT
+           aar.status,
+           ROW_NUMBER() OVER (
+             PARTITION BY aar.student_id, aar.attendance_date
+             ORDER BY aar.updated_at DESC, aar.id DESC
+           ) AS rn
+         FROM advisory_attendance_records aar
+         JOIN elem_students es
+           ON es.id = aar.student_id
+           AND es.is_deleted = 0
+           AND es.status <> 'graduated'
+           AND es.current_school_year_id = ${ACTIVE_SY}
+         LEFT JOIN grading_periods gp
+           ON gp.id = aar.grading_period_id
+         WHERE aar.attendance_date = CURDATE()
+           AND (aar.grading_period_id IS NULL OR gp.school_year_id = ${ACTIVE_SY})
+       )
+       SELECT
          SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) AS present,
          SUM(CASE WHEN status = 'A' THEN 1 ELSE 0 END) AS absent,
          SUM(CASE WHEN status IN ('L', 'E') THEN 1 ELSE 0 END) AS concerning
-       FROM advisory_attendance_records
-       WHERE attendance_date = CURDATE()`,
+       FROM latest_attendance
+       WHERE rn = 1`,
     );
 
     const row = rows[0] || {};
@@ -28,9 +50,7 @@ exports.getTodaysAttendance = async (req, res) => {
 
 exports.getAttendanceByGrade = async (req, res) => {
   try {
-    // 1) Master roster: bawat grade level + section combo, kasama total enrolled students.
-    //    Ito ang source of truth para sa denominator (hindi yung attendance table),
-    //    kaya lalabas pa rin yung section kahit wala pang naitatala today.
+
     const [rosterRows] = await connection.query(`
       SELECT
         gl.id AS gradeLevelId,
@@ -41,6 +61,7 @@ exports.getAttendanceByGrade = async (req, res) => {
       FROM grade_level gl
       LEFT JOIN grade_level_sections gls
         ON gls.grade_level_id = gl.id
+        AND (gls.school_year_id IS NULL OR gls.school_year_id = ${ACTIVE_SY})
       LEFT JOIN elem_students es
         ON es.grade_level_id = gl.id
         AND (
@@ -48,21 +69,12 @@ exports.getAttendanceByGrade = async (req, res) => {
           OR (gls.id IS NULL AND es.section_id IS NULL)
         )
         AND es.is_deleted = 0
+        AND es.status <> 'graduated'
+        AND es.current_school_year_id = ${ACTIVE_SY}
       GROUP BY gl.id, gl.grade_level, gls.id, gls.section_name
       ORDER BY gl.id, gls.id
     `);
 
-    // 2) Aktwal na attendance ngayong araw.
-    //
-    //    IMPORTANT: dinededupe muna dito gamit ROW_NUMBER() bago i-SUM.
-    //    Dahil ang unique key sa advisory_attendance_records ay
-    //    (class_id, student_id, attendance_date), at si class_id ay
-    //    nullable, posibleng magkaroon ng 2+ records para sa parehong
-    //    student sa parehong araw kapag class_id = NULL (hindi
-    //    na-eenforce ng MySQL ang uniqueness pag NULL ang column).
-    //    Kaya kunin lang natin yung pinaka-huling na-update na record
-    //    per (student_id, attendance_date) - yun ang totoong/current
-    //    status ng estudyante for the day.
     const [attendanceRows] = await connection.query(`
       WITH latest_attendance AS (
         SELECT
@@ -72,7 +84,15 @@ exports.getAttendanceByGrade = async (req, res) => {
             ORDER BY aar.updated_at DESC, aar.id DESC
           ) AS rn
         FROM advisory_attendance_records aar
+        JOIN elem_students es
+          ON es.id = aar.student_id
+          AND es.is_deleted = 0
+          AND es.status <> 'graduated'
+          AND es.current_school_year_id = ${ACTIVE_SY}
+        LEFT JOIN grading_periods gp
+          ON gp.id = aar.grading_period_id
         WHERE aar.attendance_date = CURDATE()
+          AND (aar.grading_period_id IS NULL OR gp.school_year_id = ${ACTIVE_SY})
       )
       SELECT
         COALESCE(c.section_id, la.section_id) AS sectionId,
@@ -90,7 +110,6 @@ exports.getAttendanceByGrade = async (req, res) => {
       GROUP BY sectionId, gl.id
     `);
 
-    // Index ng today's attendance by sectionId ("grade-{id}" key = grade na walang section)
     const attendanceBySection = new Map();
     attendanceRows.forEach((row) => {
       const key = row.sectionId ?? `grade-${row.gradeLevelId}`;
@@ -101,7 +120,6 @@ exports.getAttendanceByGrade = async (req, res) => {
       });
     });
 
-    // 3) I-build yung grade -> sections map, galing sa roster (hindi sa attendance)
     const gradeMap = new Map();
 
     rosterRows.forEach((row) => {
@@ -129,7 +147,7 @@ exports.getAttendanceByGrade = async (req, res) => {
 
       gradeData.sections.push({
         sectionId: row.sectionId,
-        section: row.section, // null kapag grade na walang section
+        section: row.section, 
         present: attendance.present,
         absent: attendance.absent,
         total: totalEnrolled,
@@ -141,14 +159,12 @@ exports.getAttendanceByGrade = async (req, res) => {
       });
     });
 
-    // 4) I-shape yung final response per grade level
     const result = [];
 
     for (const gradeData of gradeMap.values()) {
       const sectionCount = gradeData.sections.length;
 
       if (sectionCount >= 2) {
-        // Maraming section -> bar uses combined rate, tooltip breaks it down per section.
         const gradePresent = gradeData.sections.reduce((sum, s) => sum + s.present, 0);
         const gradeAbsent = gradeData.sections.reduce((sum, s) => sum + s.absent, 0);
         const gradeTotal = gradeData.sections.reduce((sum, s) => sum + s.total, 0);
@@ -169,7 +185,7 @@ exports.getAttendanceByGrade = async (req, res) => {
           sections: gradeData.sections,
         });
       } else {
-        // 1 o 0 section -> isang bar lang, wala nang kailangang i-breakdown.
+
         const single = gradeData.sections[0] || {
           present: 0,
           absent: 0,

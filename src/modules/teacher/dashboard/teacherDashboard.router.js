@@ -6,6 +6,7 @@ const {
   getDashboardStats,
   getAttendanceSummary,
   getUpcomingEvents,
+  getTodaysAgenda,
 } = require("./teacherDashboard.controller");
 const verifyToken = require("../../authentication/authentication.middleware");
 
@@ -13,5 +14,6 @@ router.get("/summary", verifyToken, getDashboardSummary);
 router.get("/stats", verifyToken, getDashboardStats);
 router.get("/attendance", verifyToken, getAttendanceSummary);
 router.get("/upcoming", verifyToken, getUpcomingEvents);
+router.get("/agenda", verifyToken, getTodaysAgenda);
 
 module.exports = router;

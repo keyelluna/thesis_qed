@@ -26,21 +26,28 @@ const getClassSchedule = async (req, res) => {
   try {
     const [rows] = await connection.query(
       `SELECT
-         cs.id AS schedule_id,
-         cs.subject_name,
-         cs.start_time,
-         cs.end_time,
-         csd.day_of_week,
-         t.first_name AS adviser_first_name,
-         t.last_name AS adviser_last_name
-       FROM elem_students es
-       JOIN classes c ON c.section_id = es.section_id
-       JOIN class_schedule cs ON cs.class_id = c.id
-       JOIN class_schedule_day csd ON csd.class_schedule_id = cs.id
-       LEFT JOIN teacher_table t ON t.id = c.class_adviser_id
-       WHERE es.id = ?
-       ORDER BY cs.start_time ASC`,
-      [studentId]
+     cs.id AS schedule_id,
+     cs.subject_name,
+     cs.start_time,
+     cs.end_time,
+     csd.day_of_week,
+     t.first_name AS teacher_first_name,
+     t.last_name AS teacher_last_name
+   FROM elem_students es
+   JOIN classes c
+     ON (c.section_id = es.section_id
+         OR (c.section_id IS NULL AND c.grade_level_id = es.grade_level_id))
+   JOIN school_year sy
+     ON sy.id = c.school_year_id AND sy.is_active = 1
+   JOIN class_schedule cs ON cs.class_id = c.id
+   JOIN class_schedule_day csd ON csd.class_schedule_id = cs.id
+   LEFT JOIN teacher_table t
+     ON t.id = cs.subject_teacher_id AND t.is_deleted = 0
+   WHERE es.id = ?
+     AND es.is_deleted = 0
+     AND c.status = 'Active'
+   ORDER BY cs.start_time ASC`,
+      [studentId],
     );
 
     // Group rows by schedule_id since one class_schedule row can have multiple days
@@ -54,8 +61,8 @@ const getClassSchedule = async (req, res) => {
         scheduleMap.set(row.schedule_id, {
           id: String(row.schedule_id),
           subject: row.subject_name,
-          teacher: row.adviser_first_name
-            ? `${row.adviser_first_name} ${row.adviser_last_name}`.trim()
+          teacher: row.teacher_first_name
+            ? `${row.teacher_first_name} ${row.teacher_last_name}`.trim()
             : "TBA",
           startTime: formatTime(row.start_time),
           endTime: formatTime(row.end_time),

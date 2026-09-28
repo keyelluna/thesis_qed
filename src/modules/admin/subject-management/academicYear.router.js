@@ -4,7 +4,7 @@ const verifyToken = require('../../authentication/authentication.middleware');
 const academicYear = require("./academicYear.controller");
 
 router.get('/getAcademicYear', verifyToken, academicYear.getActiveAcademicYear);
-router.put('/updateAcademicYear/:id', verifyToken, academicYear.updateAcademicYear);
+router.post('/addAcademicYear', verifyToken, academicYear.addAcademicYear);
 router.get('/getTerms/:id', verifyToken, academicYear.getTermsForSchoolYear);
 router.put('/saveTerms/:id', verifyToken, academicYear.saveTermsForSchoolYear);
 

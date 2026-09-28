@@ -7,6 +7,14 @@ const {
   notifyMissedActivity, notifyMissingForItem, notifyLowGradeScore, notifySubjectGradeSubmission
 } = require("../../notification/notification.service");
 
+// Filter para sa current (active) school year lang.
+// ACTIVE_SY_ID ay subquery na nagbabalik ng ID ng active na school year.
+const ACTIVE_SY_ID = `(SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)`;
+
+// Roster filter (alias: s = elem_students): hindi isasama ang graduated
+// at ang mga estudyanteng wala sa current school year.
+const ROSTER_FILTER = `s.is_deleted = 0 AND s.status <> 'graduated' AND s.current_school_year_id = ${ACTIVE_SY_ID}`;
+
 async function getActiveGradingPeriodId() {
   const [rows] = await connection.execute(
     `SELECT gp.id
@@ -66,6 +74,8 @@ async function loadSubjectSection(req, res, next) {
 
     const { subjectSectionId } = req.params;
 
+    // Subject-section ng active school year lang ang papayagan.
+    // Pati ang adviser (classes) ay kukunin lang mula sa active school year.
     const [ssRows] = await connection.execute(
       `SELECT ss.id, ss.section_id, es.subject_name AS subjectName,
               es.grade_level_id AS gradeLevelId,
@@ -76,11 +86,15 @@ async function loadSubjectSection(req, res, next) {
        INNER JOIN elem_subjects es ON ss.subject_id = es.id
        LEFT JOIN grade_level_sections gls ON ss.section_id = gls.id
        LEFT JOIN classes c
-         ON (ss.section_id IS NOT NULL AND c.section_id = ss.section_id)
-         OR (ss.section_id IS NULL AND c.section_id IS NULL AND c.grade_level_id = es.grade_level_id)
+         ON (
+              (ss.section_id IS NOT NULL AND c.section_id = ss.section_id)
+              OR (ss.section_id IS NULL AND c.section_id IS NULL AND c.grade_level_id = es.grade_level_id)
+            )
+            AND c.school_year_id = ${ACTIVE_SY_ID}
        LEFT JOIN teacher_table advT ON c.class_adviser_id = advT.id
        INNER JOIN grade_level gl ON es.grade_level_id = gl.id
-       WHERE ss.id = ? AND ss.teacher_id = ?`,
+       WHERE ss.id = ? AND ss.teacher_id = ?
+         AND ss.school_year_id = ${ACTIVE_SY_ID}`,
       [subjectSectionId, teacherId],
     );
     if (ssRows.length === 0) {
@@ -88,7 +102,7 @@ async function loadSubjectSection(req, res, next) {
         .status(403)
         .json({
           success: false,
-          message: "You don't have access to this class.",
+          message: "You don't have access to this class in the current school year.",
         });
     }
 
@@ -117,19 +131,19 @@ const getSubjectSectionInfo = async (req, res) => {
 
     const [students] = section_id
       ? await connection.execute(
-          `SELECT id, gender,
-                  CONCAT(last_name, ', ', first_name, ' ', COALESCE(middle_name, '')) AS name
-           FROM elem_students
-           WHERE section_id = ?
-           ORDER BY last_name ASC, first_name ASC`,
+          `SELECT s.id, s.gender,
+                  CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
+           FROM elem_students s
+           WHERE s.section_id = ? AND ${ROSTER_FILTER}
+           ORDER BY s.last_name ASC, s.first_name ASC`,
           [section_id],
         )
       : await connection.execute(
-          `SELECT id, gender,
-                  CONCAT(last_name, ', ', first_name, ' ', COALESCE(middle_name, '')) AS name
-           FROM elem_students
-           WHERE grade_level_id = ? AND is_deleted = 0
-           ORDER BY last_name ASC, first_name ASC`,
+          `SELECT s.id, s.gender,
+                  CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
+           FROM elem_students s
+           WHERE s.grade_level_id = ? AND ${ROSTER_FILTER}
+           ORDER BY s.last_name ASC, s.first_name ASC`,
           [gradeLevelId],
         );
 
@@ -637,8 +651,10 @@ const upsertHolistic = async (req, res) => {
     }
 
     if (sectionId) {
+      // Kailangang enrolled at nasa current school year ang estudyante (hindi graduated).
       const [studentCheck] = await connection.execute(
-        `SELECT id FROM elem_students WHERE id = ? AND section_id = ?`,
+        `SELECT s.id FROM elem_students s
+         WHERE s.id = ? AND s.section_id = ? AND ${ROSTER_FILTER}`,
         [studentId, sectionId],
       );
       if (studentCheck.length === 0) {
@@ -738,6 +754,8 @@ const submitSubjectGrades = async (req, res) => {
       });
     }
 
+    // Graduated / hindi-current-school-year na estudyante ay hindi kasama sa
+    // pagbibilang, para hindi nila ma-block ang submission.
     const [incompleteRows] = await connection.execute(
       `SELECT COUNT(*) AS incompleteCount
        FROM elem_students s
@@ -745,7 +763,7 @@ const submitSubjectGrades = async (req, res) => {
        INNER JOIN elem_subjects es ON es.id = ss.subject_id
        LEFT JOIN subject_grade_cache c
          ON c.student_id = s.id AND c.subject_section_id = ss.id AND c.grading_period_id = ?
-       WHERE s.is_deleted = 0
+       WHERE ${ROSTER_FILTER}
          AND ((ss.section_id IS NOT NULL AND s.section_id = ss.section_id)
            OR (ss.section_id IS NULL AND s.section_id IS NULL AND s.grade_level_id = es.grade_level_id))
          AND (c.is_complete IS NULL OR c.is_complete = 0 OR c.average IS NULL)`,

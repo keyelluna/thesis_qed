@@ -1,5 +1,13 @@
 const connection = require('../../../../config/db');
 
+// Filter para sa current (active) school year lang.
+// Ginagamit sa lahat ng query sa ibaba: ss.school_year_id = ACTIVE_SY
+const ACTIVE_SY_CONDITION = `ss.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)`;
+
+// Filter para sa roster: hindi isasama ang graduated at ang mga estudyanteng
+// wala sa current school year. Ginagamit sa lahat ng query sa elem_students (alias: s).
+const ROSTER_FILTER = `s.status <> 'graduated' AND s.current_school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)`;
+
 exports.getAssignedSubjects = async (req, res) => {
   try {
     const userId = req.user?.userId;
@@ -27,6 +35,7 @@ exports.getAssignedSubjects = async (req, res) => {
        LEFT JOIN grade_level_sections gls ON ss.section_id = gls.id
        INNER JOIN grade_level gl ON es.grade_level_id = gl.id
        WHERE tt.user_id = ?
+         AND ${ACTIVE_SY_CONDITION}
        ORDER BY gl.id ASC, gls.section_name ASC, es.subject_name ASC`,
       [userId]
     );
@@ -58,9 +67,9 @@ exports.getAssignedSubjectsWithStudents = async (req, res) => {
       });
     }
 
-    // 1. All subject-sections this teacher is assigned to, across every
-    // grade level. LEFT JOIN grade_level_sections so whole-grade
-    // subjects (section_id NULL) aren't dropped.
+    // 1. All subject-sections this teacher is assigned to in the ACTIVE
+    // school year, across every grade level. LEFT JOIN grade_level_sections
+    // so whole-grade subjects (section_id NULL) aren't dropped.
     const [subjectSections] = await connection.query(
       `SELECT 
           ss.id AS subject_section_id,
@@ -77,6 +86,7 @@ exports.getAssignedSubjectsWithStudents = async (req, res) => {
        LEFT JOIN grade_level_sections gls ON ss.section_id = gls.id
        INNER JOIN grade_level gl ON es.grade_level_id = gl.id
        WHERE tt.user_id = ?
+         AND ${ACTIVE_SY_CONDITION}
        ORDER BY gl.id ASC, gls.section_name ASC, es.subject_name ASC`,
       [userId]
     );
@@ -119,7 +129,7 @@ exports.getAssignedSubjectsWithStudents = async (req, res) => {
                   s.last_name,
                   s.gender
                FROM elem_students s
-               WHERE s.section_id IN (?) AND s.is_deleted = 0
+               WHERE s.section_id IN (?) AND s.is_deleted = 0 AND ${ROSTER_FILTER}
                ORDER BY s.last_name ASC, s.first_name ASC`,
               [sectionedIds]
             )
@@ -137,7 +147,7 @@ exports.getAssignedSubjectsWithStudents = async (req, res) => {
                   s.last_name,
                   s.gender
                FROM elem_students s
-               WHERE s.grade_level_id IN (?) AND s.is_deleted = 0
+               WHERE s.grade_level_id IN (?) AND s.is_deleted = 0 AND ${ROSTER_FILTER}
                ORDER BY s.last_name ASC, s.first_name ASC`,
               [wholeGradeIds]
             )
@@ -216,7 +226,7 @@ exports.getSubjectClassList = async (req, res) => {
       });
     }
 
-
+    // Kapag subject-section ng nakaraang school year, hindi na ito mahahanap (404).
     const [sectionRows] = await connection.query(
       `SELECT 
           ss.id AS subject_section_id,
@@ -230,14 +240,15 @@ exports.getSubjectClassList = async (req, res) => {
        INNER JOIN elem_subjects es ON ss.subject_id = es.id
        LEFT JOIN grade_level_sections gls ON ss.section_id = gls.id
        INNER JOIN grade_level gl ON es.grade_level_id = gl.id
-       WHERE ss.id = ? AND tt.user_id = ?`,
+       WHERE ss.id = ? AND tt.user_id = ?
+         AND ${ACTIVE_SY_CONDITION}`,
       [subjectSectionId, userId]
     );
 
     if (sectionRows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'Subject section not found or hindi ito assigned sa iyo.',
+        message: 'Subject section not found or hindi ito assigned sa iyo sa current school year.',
       });
     }
 
@@ -254,7 +265,7 @@ exports.getSubjectClassList = async (req, res) => {
               s.last_name,
               s.gender
            FROM elem_students s
-           WHERE s.section_id = ? AND s.is_deleted = 0
+           WHERE s.section_id = ? AND s.is_deleted = 0 AND ${ROSTER_FILTER}
            ORDER BY s.last_name ASC, s.first_name ASC`,
           [section.section_id]
         )
@@ -267,7 +278,7 @@ exports.getSubjectClassList = async (req, res) => {
               s.last_name,
               s.gender
            FROM elem_students s
-           WHERE s.grade_level_id = ? AND s.is_deleted = 0
+           WHERE s.grade_level_id = ? AND s.is_deleted = 0 AND ${ROSTER_FILTER}
            ORDER BY s.last_name ASC, s.first_name ASC`,
           [section.subject_grade_level_id]
         );

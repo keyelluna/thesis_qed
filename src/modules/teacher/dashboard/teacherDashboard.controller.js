@@ -1,5 +1,7 @@
 const connection = require('../../../../config/db');
 
+const ACTIVE_SY_SUBQUERY = '(SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)';
+
 const getDashboardSummary = async (req, res) => {
   try {
     const authId = req.user?.userId;
@@ -63,10 +65,13 @@ const getDashboardStats = async (req, res) => {
 
     const teacherId = teacherRows[0].id;
 
+    // Only count subject-sections that belong to the currently active school year.
     const [totalClassesRows] = await connection.execute(
       `SELECT COUNT(*) AS totalClasses
        FROM \`subject-section\`
-       WHERE teacher_id = ? AND status = 'Active'`,
+       WHERE teacher_id = ?
+         AND status = 'Active'
+         AND school_year_id = ${ACTIVE_SY_SUBQUERY}`,
       [teacherId]
     );
 
@@ -75,6 +80,10 @@ const getDashboardStats = async (req, res) => {
     // Now we join elem_students directly against ALL of the teacher's advisory
     // classes at once, so a teacher with multiple advisory sections gets the
     // correct combined count.
+    //
+    // Also added: exclude graduated students, and only count students who
+    // belong to the currently active school year (via elem_students.current_school_year_id),
+    // and only count advisory classes that belong to the active school year.
     const [advisoryCountRows] = await connection.execute(
       `SELECT COUNT(*) AS advisoryClassCount
        FROM elem_students st
@@ -83,7 +92,11 @@ const getDashboardStats = async (req, res) => {
               (c.section_id IS NOT NULL AND st.section_id = c.section_id)
            OR (c.section_id IS NULL AND st.section_id IS NULL AND st.grade_level_id = c.grade_level_id)
             )
-       WHERE c.class_adviser_id = ? AND st.is_deleted = 0`,
+       WHERE c.class_adviser_id = ?
+         AND st.is_deleted = 0
+         AND st.status <> 'graduated'
+         AND c.school_year_id = ${ACTIVE_SY_SUBQUERY}
+         AND st.current_school_year_id = ${ACTIVE_SY_SUBQUERY}`,
       [teacherId]
     );
 
@@ -98,11 +111,15 @@ const getDashboardStats = async (req, res) => {
          INNER JOIN elem_subjects sub ON sub.id = ss.subject_id
          INNER JOIN elem_students st
            ON st.is_deleted = 0
+          AND st.status <> 'graduated'
+          AND st.current_school_year_id = ${ACTIVE_SY_SUBQUERY}
           AND (
                 (ss.section_id IS NOT NULL AND st.section_id = ss.section_id)
              OR (ss.section_id IS NULL AND st.section_id IS NULL AND st.grade_level_id = sub.grade_level_id)
               )
-         WHERE ss.teacher_id = ? AND ss.status = 'Active'
+         WHERE ss.teacher_id = ?
+           AND ss.status = 'Active'
+           AND ss.school_year_id = ${ACTIVE_SY_SUBQUERY}
 
          UNION
 
@@ -111,11 +128,14 @@ const getDashboardStats = async (req, res) => {
          FROM classes c
          INNER JOIN elem_students st
            ON st.is_deleted = 0
+          AND st.status <> 'graduated'
+          AND st.current_school_year_id = ${ACTIVE_SY_SUBQUERY}
           AND (
                 (c.section_id IS NOT NULL AND st.section_id = c.section_id)
              OR (c.section_id IS NULL AND st.section_id IS NULL AND st.grade_level_id = c.grade_level_id)
               )
          WHERE c.class_adviser_id = ?
+           AND c.school_year_id = ${ACTIVE_SY_SUBQUERY}
        ) combined`,
       [teacherId, teacherId]
     );
@@ -156,8 +176,11 @@ const getAttendanceSummary = async (req, res) => {
 
     // FIX: removed LIMIT 1 — a teacher can have more than one advisory class,
     // so we need every advisory class id, not just the first one found.
+    // Also restricted to advisory classes under the currently active school year.
     const [advisoryRows] = await connection.execute(
-      `SELECT id FROM classes WHERE class_adviser_id = ?`,
+      `SELECT id FROM classes
+       WHERE class_adviser_id = ?
+         AND school_year_id = ${ACTIVE_SY_SUBQUERY}`,
       [teacherId]
     );
 
@@ -219,10 +242,12 @@ const getUpcomingEvents = async (req, res) => {
   try {
     const limit = parseInt(req.query.limit, 10) || 5;
 
+    // Restricted to the currently active school year.
     const [rows] = await connection.query(
       `SELECT id, title, type, date, holiday_type
        FROM school_calendar
        WHERE date >= CURDATE()
+         AND school_year_id = ${ACTIVE_SY_SUBQUERY}
        ORDER BY date ASC
        LIMIT ?`,
       [limit]
@@ -247,4 +272,88 @@ const getUpcomingEvents = async (req, res) => {
   }
 };
 
-module.exports = { getDashboardSummary, getDashboardStats, getAttendanceSummary, getUpcomingEvents, getDateLabel };
+// Convert 'HH:MM:SS' (MySQL TIME) -> '8:00 AM'
+const formatTime = (timeStr) => {
+  if (!timeStr) return "";
+  const [h, m] = String(timeStr).split(":").map(Number);
+  const period = h >= 12 ? "PM" : "AM";
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12}:${String(m).padStart(2, "0")} ${period}`;
+};
+
+const getTodaysAgenda = async (req, res) => {
+  try {
+    const authId = req.user?.userId;
+
+    if (!authId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized: walang user ID na nakuha mula sa token.",
+      });
+    }
+
+    const [teacherRows] = await connection.execute(
+      `SELECT id FROM teacher_table WHERE user_id = ?`,
+      [authId]
+    );
+
+    if (teacherRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Teacher record not found." });
+    }
+
+    const teacherId = teacherRows[0].id;
+
+    // Use Philippine time so the "today" is correct even if the DB/server runs in UTC.
+    const today = new Date().toLocaleDateString("en-US", {
+      weekday: "long",
+      timeZone: "Asia/Manila",
+    });
+
+    // class_schedule_day only has Monday-Friday, so weekends return an empty agenda.
+    const [rows] = await connection.execute(
+      `SELECT
+         cs.id,
+         cs.subject_name,
+         cs.start_time,
+         cs.end_time,
+         c.room,
+         gl.grade_level,
+         gls.section_name
+       FROM class_schedule cs
+       INNER JOIN class_schedule_day csd ON csd.class_schedule_id = cs.id
+       INNER JOIN classes c ON c.id = cs.class_id
+       INNER JOIN grade_level gl ON gl.id = c.grade_level_id
+       LEFT JOIN grade_level_sections gls ON gls.id = c.section_id
+       WHERE cs.subject_teacher_id = ?
+         AND csd.day_of_week = ?
+         AND c.status = 'Active'
+         AND c.school_year_id = ${ACTIVE_SY_SUBQUERY}
+       ORDER BY cs.start_time ASC`,
+      [teacherId, today]
+    );
+
+    const agenda = rows.map((row) => ({
+      id: row.id,
+      subjectName: row.subject_name,
+      className: row.section_name
+        ? `${row.grade_level} - ${row.section_name}`
+        : row.grade_level,
+      room: row.room || null,
+      startTime: row.start_time, // 'HH:MM:SS'
+      endTime: row.end_time,
+      timeLabel: `${formatTime(row.start_time)} - ${formatTime(row.end_time)}`,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      day: today,
+      count: agenda.length,
+      data: agenda,
+    });
+  } catch (error) {
+    console.error("Error fetching today's agenda:", error);
+    return res.status(500).json({ success: false, message: "Internal server error." });
+  }
+};
+
+module.exports = { getDashboardSummary, getDashboardStats, getAttendanceSummary,  getTodaysAgenda, getUpcomingEvents, getDateLabel };

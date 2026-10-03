@@ -7,6 +7,8 @@ const subjectPerformanceController = require("./subjectPerformance.controller");
 const holisticOverviewController = require("./holistic.controller");
 const academicPerformanceController = require("./academicPerformance.controller");
 
+router.get("/overview-summary", verifyToken, overviewController.getOverviewSummary);
+
 router.get("/attendanceRate", overviewController.getOverviewAttendance);
 router.get("/getTodaysAttendance", attendanceController.getTodaysAttendance);
 router.get("/getAttendanceByGrade", attendanceController.getAttendanceByGrade);
@@ -33,4 +35,5 @@ router.get(
 );
 
 router.get("/active-term", verifyToken, academicPerformanceController.getActiveTerm);
+
 module.exports = router;

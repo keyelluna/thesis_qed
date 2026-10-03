@@ -1,20 +1,6 @@
 const connection = require("../../../../config/db");
 
-//========================== Helpers ==========================
-
-// Current grading period: nasa active school year at pasok sa petsa ngayon.
-async function getCurrentGradingPeriod() {
-  const [rows] = await connection.query(
-    `SELECT gp.id, gp.school_year_id, gp.term_number, gp.term_label
-     FROM grading_periods gp
-     JOIN school_year sy ON gp.school_year_id = sy.id
-     WHERE sy.is_active = 1
-       AND CURDATE() BETWEEN gp.start_date AND gp.end_date
-     ORDER BY gp.term_number ASC
-     LIMIT 1`
-  );
-  return rows.length ? rows[0] : null;
-}
+const { getCurrentGradingPeriod } = require("./utils/gradingPeriod");
 
 function getTrend(current, previous) {
   if (previous === undefined || previous === null) return "flat";
@@ -122,63 +108,36 @@ exports.getSubjectRankingByTerm = async (req, res) => {
        ORDER BY gp.term_number`
     );
 
+    // Aggregate all terms once and reuse their scores for trends.
+    const [allRows] = await connection.query(`
+      SELECT gp.id AS periodId, gl.grade_level AS grade, es.subject_name AS subject,
+             ROUND(AVG(sgc.average), 1) AS score
+      FROM subject_grade_cache sgc
+      JOIN grading_periods gp ON gp.id = sgc.grading_period_id
+      JOIN school_year sy ON sy.id = gp.school_year_id AND sy.is_active = 1
+      JOIN \`subject-section\` ss ON ss.id = sgc.subject_section_id AND ss.school_year_id = gp.school_year_id
+      JOIN elem_subjects es ON es.id = ss.subject_id
+      JOIN grade_level gl ON gl.id = es.grade_level_id
+      JOIN elem_students st ON st.id = sgc.student_id
+      WHERE sgc.average IS NOT NULL AND st.is_deleted = 0 AND st.status <> 'graduated'
+      GROUP BY gp.id, gl.id, gl.grade_level, es.subject_name
+      ORDER BY score DESC
+    `);
+    const rowsByPeriod = new Map();
+    for (const row of allRows) {
+      if (!rowsByPeriod.has(row.periodId)) rowsByPeriod.set(row.periodId, []);
+      rowsByPeriod.get(row.periodId).push(row);
+    }
     const result = {};
-
     for (const period of periods) {
-      const [rows] = await connection.query(
-        `SELECT
-           gl.grade_level AS grade,
-           es.subject_name AS subject,
-           ROUND(AVG(sgc.average), 1) AS score
-         FROM subject_grade_cache sgc
-         JOIN \`subject-section\` ss ON sgc.subject_section_id = ss.id
-         JOIN elem_subjects es ON ss.subject_id = es.id
-         JOIN grade_level gl ON es.grade_level_id = gl.id
-         JOIN elem_students st ON sgc.student_id = st.id
-         WHERE sgc.grading_period_id = ?
-           AND ss.school_year_id = ?
-           AND sgc.average IS NOT NULL
-           AND st.is_deleted = 0
-           AND st.status <> 'graduated'
-         GROUP BY gl.id, gl.grade_level, es.subject_name
-         ORDER BY score DESC`,
-        [period.id, period.school_year_id]
-      );
-
-      const prevPeriod = periods.find((p) => p.term_number === period.term_number - 1);
-      let prevRows = [];
-      if (prevPeriod) {
-        const [prev] = await connection.query(
-          `SELECT gl.grade_level AS grade, es.subject_name AS subject,
-                  ROUND(AVG(sgc.average), 1) AS score
-           FROM subject_grade_cache sgc
-           JOIN \`subject-section\` ss ON sgc.subject_section_id = ss.id
-           JOIN elem_subjects es ON ss.subject_id = es.id
-           JOIN grade_level gl ON es.grade_level_id = gl.id
-           JOIN elem_students st ON sgc.student_id = st.id
-           WHERE sgc.grading_period_id = ?
-             AND ss.school_year_id = ?
-             AND sgc.average IS NOT NULL
-             AND st.is_deleted = 0
-             AND st.status <> 'graduated'
-           GROUP BY gl.id, gl.grade_level, es.subject_name`,
-          [prevPeriod.id, prevPeriod.school_year_id]
-        );
-        prevRows = prev;
-      }
-
-      result[period.term_label] = rows.map((row, index) => {
-        const prev = prevRows.find(
-          (p) => p.grade === row.grade && p.subject === row.subject
-        );
-        return {
-          rank: index + 1,
-          subject: row.subject,
-          grade: row.grade,
-          score: Number(row.score) || 0,
-          trend: getTrend(row.score, prev?.score),
-        };
-      });
+      const rows = rowsByPeriod.get(period.id) || [];
+      const previous = periods.find((p) => p.school_year_id === period.school_year_id && p.term_number === period.term_number - 1);
+      const previousScores = new Map((rowsByPeriod.get(previous?.id) || []).map((r) => [JSON.stringify([r.grade, r.subject]), r.score]));
+      result[period.term_label] = rows.map((row, index) => ({
+        rank: index + 1, subject: row.subject, grade: row.grade,
+        score: Number(row.score) || 0,
+        trend: getTrend(row.score, previousScores.get(JSON.stringify([row.grade, row.subject]))),
+      }));
     }
 
     return res.status(200).json(result);

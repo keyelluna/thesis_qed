@@ -1,4 +1,5 @@
 const connection = require("../../../../config/db");
+const { getCurrentGradingPeriod } = require("./utils/gradingPeriod");
 
 exports.getPerformanceByGrade = async (req, res) => {
   try {
@@ -244,21 +245,12 @@ function deriveTermStatus(startDate, endDate) {
 // GET /activeTerm
 exports.getActiveTerm = async (_req, res) => {
   try {
-    const [rows] = await connection.query(
-      `SELECT gp.id, gp.school_year_id, gp.term_number, gp.term_label,
-              gp.start_date, gp.end_date, gp.is_active,
-              sy.school_year
-       FROM grading_periods gp
-       INNER JOIN school_year sy ON sy.id = gp.school_year_id
-       WHERE gp.is_active = 1
-       LIMIT 1`,
-    );
+    const row = await getCurrentGradingPeriod();
 
-    const row = rows[0];
     if (!row) {
       return res.status(404).json({
         status: "fail",
-        message: "No active term found.",
+        message: "No active school year or terms found.",
       });
     }
 
@@ -273,13 +265,11 @@ exports.getActiveTerm = async (_req, res) => {
         name: row.term_label,
         startDate: row.start_date,
         endDate: row.end_date,
-        status: deriveTermStatus(row.start_date, row.end_date),
+        status: deriveTermStatus(row.start_date, row.end_date), // "Completed" na ito
       },
     });
   } catch (error) {
     console.error("Database Error:", error);
-    res
-      .status(500)
-      .json({ status: "error", message: "Database error occurred." });
+    res.status(500).json({ status: "error", message: "Database error occurred." });
   }
 };

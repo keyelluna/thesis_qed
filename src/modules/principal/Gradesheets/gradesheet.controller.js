@@ -106,6 +106,7 @@ const getGradingPeriods = async (req, res) => {
 const getSectionsForGrade = async (gradeLevelId, schoolYearId) => {
   const [sections] = await connection.query(
     `SELECT
+        gls.grade_level_id,
         gls.id AS section_id,
         gls.section_name,
         (SELECT COUNT(*) FROM elem_students es
@@ -138,7 +139,7 @@ const getSectionsForGrade = async (gradeLevelId, schoolYearId) => {
       AND c.status = 'Active'
      LEFT JOIN teacher_table t
        ON t.id = c.class_adviser_id AND t.is_deleted = 0
-     WHERE gls.grade_level_id = ?
+     WHERE (? IS NULL OR gls.grade_level_id = ?)
        AND gls.school_year_id = ?
      ORDER BY gls.section_name`,
     [
@@ -146,6 +147,7 @@ const getSectionsForGrade = async (gradeLevelId, schoolYearId) => {
       schoolYearId,
       schoolYearId,
       schoolYearId,
+      gradeLevelId,
       gradeLevelId,
       schoolYearId,
     ],
@@ -299,33 +301,38 @@ const getSectionGrade = async (req, res) => {
       `SELECT id, grade_level FROM grade_level ORDER BY id`,
     );
 
-    const report = [];
-
-    for (const grade of gradeLevels) {
-      const sections = await getSectionsForGrade(grade.id, schoolYearId);
-
-      if (sections.length > 0) {
-        report.push({
-          gradeLevelId: grade.id,
-          gradeLevel: grade.grade_level,
-          sections: sections.map((s) => mapSection(s)),
-        });
-      } else {
-        const latestPeriodId = await getGradeLevelSubmission(
-          grade.id,
-          schoolYearId,
-        );
-        report.push({
-          gradeLevelId: grade.id,
-          gradeLevel: grade.grade_level,
-          section: null,
-          studentCount: await getGradeLevelStudentCount(grade.id, schoolYearId),
-          adviserName: await getGradeLevelAdviser(grade.id, schoolYearId),
-          isSubmitted: latestPeriodId !== null,
-          gradingPeriodId: latestPeriodId ?? gradingPeriodId,
-        });
-      }
+    // Fetch section summaries once for the school year, preserving each grade's section order.
+    const allSections = await getSectionsForGrade(null, schoolYearId);
+    const sectionsByGrade = new Map();
+    for (const section of allSections) {
+      if (!sectionsByGrade.has(section.grade_level_id)) sectionsByGrade.set(section.grade_level_id, []);
+      sectionsByGrade.get(section.grade_level_id).push(section);
     }
+    const report = await Promise.all(gradeLevels.map(async (grade) => {
+      const sections = sectionsByGrade.get(grade.id) || [];
+      if (sections.length > 0) {
+        return {
+          gradeLevelId: grade.id,
+          gradeLevel: grade.grade_level,
+          sections: sections.map(mapSection),
+        };
+      }
+      // These lookups are independent; retain their exact filters and LIMIT behavior.
+      const [latestPeriodId, studentCount, adviserName] = await Promise.all([
+        getGradeLevelSubmission(grade.id, schoolYearId),
+        getGradeLevelStudentCount(grade.id, schoolYearId),
+        getGradeLevelAdviser(grade.id, schoolYearId),
+      ]);
+      return {
+        gradeLevelId: grade.id,
+        gradeLevel: grade.grade_level,
+        section: null,
+        studentCount,
+        adviserName,
+        isSubmitted: latestPeriodId !== null,
+        gradingPeriodId: latestPeriodId ?? gradingPeriodId,
+      };
+    }));
 
     return res.json(report);
   } catch (error) {

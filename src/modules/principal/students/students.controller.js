@@ -13,6 +13,32 @@ async function getActiveSchoolYearId() {
   return rows.length ? rows[0].id : null;
 }
 
+// GET /total-students
+// Lahat ng enrolled sa current school year, hindi kasama ang deleted at graduated.
+// Hindi nakadepende sa section, kaya kasama pati walang section_id.
+exports.getTotalStudents = async (req, res) => {
+  try {
+    const schoolYearId = await getActiveSchoolYearId();
+    if (!schoolYearId) {
+      return res.json({ total: 0 });
+    }
+
+    const [[row]] = await connection.query(
+      `SELECT COUNT(*) AS total
+       FROM elem_students
+       WHERE is_deleted = 0
+         AND status <> 'graduated'
+         AND current_school_year_id = ?`,
+      [schoolYearId]
+    );
+
+    return res.json({ total: Number(row.total) || 0 });
+  } catch (err) {
+    console.error("getTotalStudents error:", err);
+    return res.status(500).json({ message: "Failed to fetch total students." });
+  }
+};
+
 // GET /grade-levels
 // Powers PrincipalStudentsPage's grid, isang row per grade level.
 // Current school year lang, at walang deleted o graduated na estudyante.
@@ -47,6 +73,8 @@ exports.getGradeLevels = async (req, res) => {
 
        UNION ALL
 
+       -- Estudyanteng walang section (section_id NULL), per grade level.
+       -- Walang NOT EXISTS para hindi mawala kahit may sections na ang grade.
        SELECT
           gl.id AS gradeId,
           gl.grade_level AS grade,
@@ -60,22 +88,10 @@ exports.getGradeLevels = async (req, res) => {
         AND es.is_deleted = 0
         AND es.status <> 'graduated'
         AND es.current_school_year_id = ?
-       WHERE NOT EXISTS (
-         SELECT 1
-         FROM classes c2
-         JOIN grade_level_sections gls2 ON gls2.id = c2.section_id
-         WHERE c2.grade_level_id = gl.id
-           AND c2.school_year_id = ?
-           AND gls2.school_year_id = ?
-       )
        GROUP BY gl.id
 
        ORDER BY gradeId`,
-      [
-        schoolYearId, schoolYearId, schoolYearId,
-        schoolYearId,
-        schoolYearId, schoolYearId,
-      ]
+      [schoolYearId, schoolYearId, schoolYearId, schoolYearId]
     );
 
     const gradeLevels = rows

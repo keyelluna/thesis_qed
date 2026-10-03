@@ -1,21 +1,6 @@
 const connection = require("../../../../config/db");
 
-//========================== Helpers ==========================
-
-// Current grading period: nasa active school year at pasok sa petsa ngayon.
-// Date-based para hindi maapektuhan kahit maraming term na naka-is_active = 1.
-async function getCurrentGradingPeriod() {
-  const [rows] = await connection.query(
-    `SELECT gp.id, gp.school_year_id, gp.term_number, gp.term_label, gp.start_date, gp.end_date
-     FROM grading_periods gp
-     JOIN school_year sy ON gp.school_year_id = sy.id
-     WHERE sy.is_active = 1
-       AND CURDATE() BETWEEN gp.start_date AND gp.end_date
-     ORDER BY gp.term_number ASC
-     LIMIT 1`
-  );
-  return rows.length ? rows[0] : null;
-}
+const { getCurrentGradingPeriod } = require("./utils/gradingPeriod");
 
 //========================== Attendance Rate ==========================
 
@@ -304,5 +289,27 @@ exports.getSchoolWideAcademicPerformance = async (req, res) => {
   } catch (error) {
     console.error("getSchoolWideAcademicPerformance error:", error);
     return res.status(500).json({ success: false, message: "May error sa server." });
+  }
+};
+exports.getOverviewSummary = async (req, res) => {
+  try {
+    const term = await getCurrentGradingPeriod();
+    const [[teachers], [attendance], [performance]] = await Promise.all([
+      connection.query('SELECT COUNT(*) AS total FROM teacher_table WHERE is_deleted = 0'),
+      connection.query(`SELECT ROUND(SUM(aar.status = 'P') / COUNT(*) * 100, 1) AS attendance
+        FROM advisory_attendance_records aar JOIN elem_students st ON st.id = aar.student_id
+        WHERE aar.grading_period_id = ? AND st.is_deleted = 0 AND st.status <> 'graduated'`, [term?.id ?? null]),
+      connection.query(`SELECT ROUND(AVG(aog.overall_average), 2) AS academicPerf
+        FROM elem_students st LEFT JOIN advisory_overall_grades aog
+          ON aog.student_id = st.id AND aog.grading_period_id = ?
+        WHERE st.is_deleted = 0 AND st.status <> 'graduated' AND st.current_school_year_id = ?`,
+        [term?.id ?? null, term?.school_year_id ?? null]),
+    ]);
+    return res.json({ totalTeachers: Number(teachers[0]?.total) || 0,
+      attendance: Number(attendance[0]?.attendance) || 0,
+      academicPerf: Number(performance[0]?.academicPerf) || 0 });
+  } catch (error) {
+    console.error('getOverviewSummary error:', error);
+    return res.status(500).json({ message: 'Failed to fetch overview summary.' });
   }
 };

@@ -17,13 +17,14 @@ exports.addNewStudent = async (req, res) => {
 
   try {
     const [activeSY] = await connection.query(
-      `SELECT id FROM school_year WHERE is_active = 1 LIMIT 1`
+      `SELECT id FROM school_year WHERE is_active = 1 LIMIT 1`,
     );
 
     if (activeSY.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "No active school year found. Please set an active school year first.",
+        message:
+          "No active school year found. Please set an active school year first.",
       });
     }
 
@@ -79,15 +80,13 @@ exports.addNewStudent = async (req, res) => {
       });
     }
 
-    return res
-      .status(500)
-      .json({ success: false, message: "Database error." });
+    return res.status(500).json({ success: false, message: "Database error." });
   }
 };
 
-
 exports.updateStudent = async (req, res) => {
   const { id } = req.params;
+
   const {
     studentId,
     lastName,
@@ -102,42 +101,101 @@ exports.updateStudent = async (req, res) => {
   const sectionId = section ? section : null;
 
   try {
-    // Check kung may ibang student (maliban sa kasalukuyang id) na may parehong student_number o lrn
+    // =========================================================
+    // 1. CHECK IF STUDENT IS STILL ACTIVE / CURRENT
+    // =========================================================
+    const [studentRows] = await connection.query(
+      `
+      SELECT s.id
+      FROM elem_students s
+      JOIN school_year sy
+        ON sy.id = s.current_school_year_id
+      WHERE s.id = ?
+        AND s.is_deleted = 0
+        AND s.status <> 'graduated'
+        AND sy.is_active = 1
+      LIMIT 1
+      `,
+      [id]
+    );
+
+    if (studentRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Active student not found.",
+      });
+    }
+
+    // =========================================================
+    // 2. CHECK DUPLICATE STUDENT NUMBER / LRN
+    // =========================================================
     const checkQuery = `
-      SELECT id, student_number, learner_reference_number FROM elem_students 
-      WHERE (student_number = ? OR learner_reference_number = ?) AND id != ?
+      SELECT
+        id,
+        student_number,
+        learner_reference_number
+      FROM elem_students
+      WHERE (
+        student_number = ?
+        OR learner_reference_number = ?
+      )
+      AND id != ?
     `;
-    const [existing] = await connection.query(checkQuery, [studentId, lrn, id]);
+
+    const [existing] = await connection.query(checkQuery, [
+      studentId,
+      lrn,
+      id,
+    ]);
 
     if (existing.length > 0) {
       const duplicateStudentNumber = existing.some(
         (row) => row.student_number === studentId
       );
+
       const duplicateLrn = existing.some(
         (row) => row.learner_reference_number === lrn
       );
 
       let message = "";
+
       if (duplicateStudentNumber && duplicateLrn) {
-        message = "Student number and LRN already exist. Please use unique values.";
+        message =
+          "Student number and LRN already exist. Please use unique values.";
       } else if (duplicateStudentNumber) {
-        message = "Student number already exists. Please use a unique student number.";
+        message =
+          "Student number already exists. Please use a unique student number.";
       } else if (duplicateLrn) {
-        message = "LRN already exists. Please use a unique LRN.";
+        message =
+          "LRN already exists. Please use a unique LRN.";
       }
 
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
         message,
       });
     }
 
+    // =========================================================
+    // 3. UPDATE STUDENT
+    // =========================================================
     const studentQuery = `
-      UPDATE elem_students 
-      SET student_number = ?, last_name = ?, first_name = ?, middle_name = ?, learner_reference_number = ?, gender = ?, grade_level_id = ?, section_id = ? WHERE id = ?
+      UPDATE elem_students
+      SET
+        student_number = ?,
+        last_name = ?,
+        first_name = ?,
+        middle_name = ?,
+        learner_reference_number = ?,
+        gender = ?,
+        grade_level_id = ?,
+        section_id = ?
+      WHERE id = ?
+        AND is_deleted = 0
+        AND status <> 'graduated'
     `;
 
-    await connection.query(studentQuery, [
+    const [result] = await connection.query(studentQuery, [
       studentId,
       lastName,
       firstName,
@@ -149,31 +207,43 @@ exports.updateStudent = async (req, res) => {
       id,
     ]);
 
-    res.status(200).json({
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Student not found or cannot be updated.",
+      });
+    }
+
+    return res.status(200).json({
       success: true,
       message: "Student record updated successfully!",
     });
   } catch (error) {
-    // Backup check: kung may UNIQUE constraint sa DB level at nadaanan pa rin
     if (error.code === "ER_DUP_ENTRY") {
-      // Tingnan kung anong column ang na-violate base sa error message
       let message = "Duplicate entry found. Please use unique values.";
+
       if (error.sqlMessage?.includes("student_number")) {
-        message = "Student number already exists. Please use a unique student number.";
-      } else if (error.sqlMessage?.includes("learner_reference_number")) {
-        message = "LRN already exists. Please use a unique LRN.";
+        message =
+          "Student number already exists. Please use a unique student number.";
+      } else if (
+        error.sqlMessage?.includes("learner_reference_number")
+      ) {
+        message =
+          "LRN already exists. Please use a unique LRN.";
       }
 
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
         message,
       });
     }
 
     console.error("Database Error:", error);
-    res
-      .status(500)
-      .json({ success: false, message: "Database error occurred." });
+
+    return res.status(500).json({
+      success: false,
+      message: "Database error occurred.",
+    });
   }
 };
 
@@ -195,7 +265,9 @@ exports.getStudentById = async (req, res) => {
         section_id,
         parent_guardian_name
       FROM elem_students
-      WHERE id = ? AND is_deleted = 0
+      WHERE id = ?
+  AND is_deleted = 0
+  AND status <> 'graduated'
     `;
 
     const [rows] = await connection.query(studentQuery, [id]);
@@ -220,10 +292,9 @@ exports.getStudentById = async (req, res) => {
   }
 };
 
-
 exports.getAllStudents = async (req, res) => {
-    try {
-        const query = `
+  try {
+    const query = `
             SELECT 
                 s.*,
                 gl.grade_level AS grade_level_name,
@@ -238,21 +309,21 @@ exports.getAllStudents = async (req, res) => {
             ORDER BY s.grade_level_id ASC
         `;
 
-        const [students] = await connection.query(query);
+    const [students] = await connection.query(query);
 
-        return res.status(200).json({
-            success: true,
-            message: 'Students retrieved successfully',
-            data: students
-        });
-    } catch (error) {
-        console.error('Error fetching students:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-            error: error.message
-        });
-    }
+    return res.status(200).json({
+      success: true,
+      message: "Students retrieved successfully",
+      data: students,
+    });
+  } catch (error) {
+    console.error("Error fetching students:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
 };
 
 //GET THE TOTAL NUMBER OF STUDENTS
@@ -283,25 +354,34 @@ exports.getTotalStudents = async (req, res) => {
 // FILTERED
 //get all grade evel studentt
 exports.getAllGrade = async (req, res) => {
-    try {
-        // Query para makuha lang ang mga hindi deleted (is_deleted = 0 o FALSE)
-        const [gradeLevels] = await connection.query(
-            `SELECT * FROM elem_students WHERE is_deleted = 0 ORDER BY id ASC`
-        );
+  try {
+    const [gradeLevels] = await connection.query(
+      `
+      SELECT s.*
+      FROM elem_students s
+      JOIN school_year sy
+        ON sy.id = s.current_school_year_id
+      WHERE s.is_deleted = 0
+        AND sy.is_active = 1
+        AND s.status <> 'graduated'
+      ORDER BY s.id ASC
+      `,
+    );
 
-        return res.status(200).json({
-            success: true,
-            message: 'Grade levels retrieved successfully',
-            data: gradeLevels
-        });
-    } catch (error) {
-        console.error('Error fetching grade levels:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-            error: error.message
-        });
-    }
+    return res.status(200).json({
+      success: true,
+      message: "Grade levels retrieved successfully",
+      data: gradeLevels,
+    });
+  } catch (error) {
+    console.error("Error fetching grade levels:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
 };
 
 // SOFT DELETE STUDENT

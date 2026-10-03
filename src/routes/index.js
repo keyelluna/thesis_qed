@@ -4,8 +4,10 @@ const router = express.Router();
 // ============================ S Y S T E M   R O U T E S =============================
 
 const notificationRoutes = require("../modules/notification/notification.router.js");
+const profileRoutes = require("../modules/shared/profile/profile.router.js");
 
 router.use('/notification', notificationRoutes);
+router.use('/user-profile', profileRoutes);
 
 //==================================== A D M I N =======================================
 
@@ -20,7 +22,6 @@ const subjectGradeTemplateRoutes = require("./../modules/admin/subject-managemen
 const academicYearRouters = require("./../modules/admin/subject-management/academicYear.router.js");
 const gradeLevelRoutes = require("./../modules/utils/gradeLevels.router.js");
 const calendarRoutes = require("./../modules/shared/calendar/calendar.router.js");
-const settingsRoutes = require("../modules/settings/school-year-management/sy.router.js");
 const gradingPeriodsRouters = require("../modules/settings/grading-periods/gradingPeriods.router.js");
 
 router.use("/auth", authenticationRoutes);
@@ -33,7 +34,6 @@ router.use("/subject", subjectManagementRoutes);
 router.use("/subject", subjectGradeTemplateRoutes);
 router.use("/gradeLevel", gradeLevelRoutes);
 router.use("/calendar", calendarRoutes);
-router.use("/sy", settingsRoutes);
 router.use("/gradingPeriods", gradingPeriodsRouters); 
 router.use("/academic-year", academicYearRouters);
 

@@ -63,7 +63,7 @@ const Principal = {
 
   //delete user
   softDelete: async (id) => {
-    const conn = await connection.getConnection(); // assuming connection is a pool
+    const conn = await connection.getConnection();
     try {
       await conn.beginTransaction();
 

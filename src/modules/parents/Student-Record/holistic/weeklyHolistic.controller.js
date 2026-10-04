@@ -92,6 +92,7 @@ async function getStudentWeeklyEvaluation(req, res) {
     const emptyResponse = {
       current: { domainAverages: emptyDomainAverages(), evaluationCount: 0, lastEvaluation: null, riskLevel: "NONE" },
       history: [],
+      subjects: [],
     };
 
     const [termRows] = await connection.execute(
@@ -106,7 +107,7 @@ async function getStudentWeeklyEvaluation(req, res) {
     }
 
     const [subjectSectionRows] = await connection.execute(
-      `SELECT ss.id
+      `SELECT ss.id AS subjectSectionId, es.subject_name AS subjectName
        FROM \`subject-section\` ss
        INNER JOIN elem_subjects es ON es.id = ss.subject_id
        INNER JOIN school_year sy ON sy.id = ss.school_year_id AND sy.is_active = 1
@@ -117,7 +118,7 @@ async function getStudentWeeklyEvaluation(req, res) {
          )`,
       [sectionId, gradeLevelId]
     );
-    const subjectSectionIds = subjectSectionRows.map((r) => r.id);
+    const subjectSectionIds = subjectSectionRows.map((r) => r.subjectSectionId);
 
     if (subjectSectionIds.length === 0) {
       return res.status(200).json({ success: true, data: emptyResponse });
@@ -125,20 +126,35 @@ async function getStudentWeeklyEvaluation(req, res) {
 
     const placeholders = subjectSectionIds.map(() => "?").join(",");
     const [rows] = await connection.execute(
-      `SELECT DATE_FORMAT(week_start_date, '%Y-%m-%d') AS week, axis, rating
-       FROM holistic_ratings
-       WHERE subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?`,
+      `SELECT hr.subject_section_id AS subjectSectionId,
+              es.subject_name AS subjectName,
+              DATE_FORMAT(hr.week_start_date, '%Y-%m-%d') AS week,
+              hr.axis, hr.rating
+       FROM holistic_ratings hr
+       INNER JOIN \`subject-section\` ss ON ss.id = hr.subject_section_id
+       INNER JOIN elem_subjects es ON es.id = ss.subject_id
+       WHERE hr.subject_section_id IN (${placeholders}) AND hr.student_id = ? AND hr.term_number = ?`,
       [...subjectSectionIds, studentId, termNumber]
     );
 
-    if (rows.length === 0) {
-      return res.status(200).json({ success: true, data: emptyResponse });
-    }
-
     const byWeek = new Map();
+    const subjectsById = new Map(subjectSectionRows.map((subject) => [
+      String(subject.subjectSectionId),
+      {
+        subjectSectionId: String(subject.subjectSectionId),
+        subjectName: subject.subjectName,
+        weeks: new Map(),
+      },
+    ]));
     for (const r of rows) {
       if (!byWeek.has(r.week)) byWeek.set(r.week, []);
       byWeek.get(r.week).push({ axis: r.axis, rating: r.rating });
+
+      const subject = subjectsById.get(String(r.subjectSectionId));
+      if (subject) {
+        if (!subject.weeks.has(r.week)) subject.weeks.set(r.week, []);
+        subject.weeks.get(r.week).push({ axis: r.axis, rating: r.rating });
+      }
     }
 
     const weeksAscending = Array.from(byWeek.keys()).sort();
@@ -148,12 +164,12 @@ async function getStudentWeeklyEvaluation(req, res) {
     });
 
     const latest = weeklyEntries[weeklyEntries.length - 1];
-    const current = {
+    const current = latest ? {
       domainAverages: latest.domainAverages,
       evaluationCount: latest.evaluationCount,
       lastEvaluation: latest.week,
       riskLevel: riskLevelFromDomains(latest.domainAverages),
-    };
+    } : emptyResponse.current;
 
     const history = weeklyEntries
       .slice(0, -1)
@@ -164,7 +180,24 @@ async function getStudentWeeklyEvaluation(req, res) {
         domainAverages: entry.domainAverages,
       }));
 
-    return res.status(200).json({ success: true, data: { current, history } });
+    const subjects = Array.from(subjectsById.values()).map((subject) => {
+      const subjectWeeks = Array.from(subject.weeks.keys()).sort();
+      const latestWeek = subjectWeeks[subjectWeeks.length - 1];
+      const latestRows = latestWeek ? subject.weeks.get(latestWeek) : null;
+      const subjectCurrent = latestRows ? averageDomainsFromRows(latestRows) : null;
+      return {
+        subjectSectionId: subject.subjectSectionId,
+        subjectName: subject.subjectName,
+        current: {
+          domainAverages: subjectCurrent?.domainAverages ?? emptyDomainAverages(),
+          evaluationCount: subjectCurrent?.count ?? 0,
+          lastEvaluation: latestWeek ?? null,
+          riskLevel: riskLevelFromDomains(subjectCurrent?.domainAverages ?? emptyDomainAverages()),
+        },
+      };
+    }).sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+
+    return res.status(200).json({ success: true, data: { current, history, subjects } });
   } catch (error) {
     console.error("Error fetching student weekly evaluation:", error);
     return res.status(500).json({ success: false, message: "Internal server error." });

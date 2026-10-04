@@ -36,8 +36,35 @@ exports.getLowGradeTopicsForStudent = async (studentId) => {
        WHERE ss.status = 'Active'
          AND gs.score IS NOT NULL
          AND NOT EXISTS (
-           SELECT 1 FROM pet_topic_mastery ptm
-           WHERE ptm.student_id = ? AND ptm.topic_id = lt.id
+           SELECT 1
+           FROM pet_topic_mastery ptm
+           WHERE ptm.student_id = ?
+             AND ptm.topic_id = lt.id
+             AND NOT EXISTS (
+               SELECT 1
+               FROM grade_items reflag_gi
+               INNER JOIN grade_scores reflag_gs
+                 ON reflag_gs.item_id = reflag_gi.id
+                AND reflag_gs.student_id = ?
+               WHERE reflag_gi.topic_id = lt.id
+                 AND reflag_gs.score IS NOT NULL
+                 AND reflag_gs.updated_at > ptm.mastered_at
+                 AND (reflag_gs.score / NULLIF(reflag_gi.max_items, 0) * 100)
+                   <= lt.developing_threshold_percent
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM grade_items newer_gi
+                   INNER JOIN grade_scores newer_gs
+                     ON newer_gs.item_id = newer_gi.id
+                    AND newer_gs.student_id = ?
+                   WHERE newer_gi.topic_id = lt.id
+                     AND newer_gs.score IS NOT NULL
+                     AND (
+                       newer_gs.updated_at > reflag_gs.updated_at
+                       OR (newer_gs.updated_at = reflag_gs.updated_at AND newer_gs.id > reflag_gs.id)
+                     )
+                 )
+             )
          )
        GROUP BY lt.id, lt.topic_name, lt.mastery_threshold_percent,
                 lt.developing_threshold_percent, es.subject_name
@@ -45,7 +72,7 @@ exports.getLowGradeTopicsForStudent = async (studentId) => {
      WHERE t.average_percent <= t.developing_threshold
         OR t.latest_percent <= t.developing_threshold
      ORDER BY LEAST(t.average_percent, COALESCE(t.latest_percent, t.average_percent)) ASC`,
-    [studentId, studentId, studentId]
+    [studentId, studentId, studentId, studentId, studentId]
   );
   return rows;
 };

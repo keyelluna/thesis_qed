@@ -155,9 +155,9 @@ exports.getSectionsByGradeLevel = async (req, res) => {
 
 exports.getTeachers = async (req, res) => {
   try {
-    await Teacher.ensureGenderColumn();
+    await Teacher.ensureAvatarKeyColumn();
     const [rows] = await connection.execute(
-      `SELECT id, user_id, first_name, last_name, middle_name, email_address, contact_number, gender
+      `SELECT id, user_id, first_name, last_name, middle_name, email_address, contact_number, gender, avatar_key
        FROM teacher_table
        WHERE is_deleted = 0 AND status = 'active'
        ORDER BY last_name ASC`,

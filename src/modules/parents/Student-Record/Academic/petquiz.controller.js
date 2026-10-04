@@ -29,12 +29,12 @@ async function resolveArchiveStatus(studentId, topicId) {
      INNER JOIN grade_scores gs ON gs.item_id = gi.id AND gs.student_id = ?
      INNER JOIN learning_topics lt ON lt.id = gi.topic_id
      WHERE gi.topic_id = ? AND gs.score IS NOT NULL AND gs.updated_at > ?
-     ORDER BY gs.updated_at DESC
+     ORDER BY gs.updated_at DESC, gs.id DESC
      LIMIT 1`,
     [studentId, topicId, masteredAt]
   );
 
-  const needsReflag = latest && Number(latest.pct) < Number(latest.threshold);
+  const needsReflag = latest && Number(latest.pct) <= Number(latest.threshold);
   if (!needsReflag) return true; 
 
   // Re-flag: wipe this topic's progress so the student redoes it from scratch.
@@ -167,6 +167,9 @@ exports.getInterventionState = async (req, res) => {
     const access = await verifyParentAccess(parentUserId, studentId);
     if (!access.ok) return res.status(access.status).json({ message: access.message });
 
+    // A new low score after mastery reopens the intervention. Resolve this
+    // before creating/reading progress rows so the restarted quiz begins clean.
+    const archived = await resolveArchiveStatus(studentId, topicId);
     await ensureLevelRowsExist(studentId, topicId);
 
     const [levelRows] = await connection.query(
@@ -178,7 +181,6 @@ exports.getInterventionState = async (req, res) => {
 
     const hungerFilled = await getHungerFilled(studentId, topicId);
 
-    const archived = await resolveArchiveStatus(studentId, topicId);
     const bonus = await getBonusProgress(studentId, topicId);
 
     return res.status(200).json({

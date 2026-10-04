@@ -176,30 +176,15 @@ async function getStudentWeeklyEvaluation(req, res) {
 /**
  * GET /holisticTermAverages/students/:studentId
  * GET /holisticTermAverages/students/:studentId?termNumber=1
- * GET /holisticTermAverages/students/:studentId?preview=true
  *
  * Student's holistic averages per DOMAIN (cognitive/emotional/social/behavioral),
  * POOLED across every subject and every week — one entry per grading term.
  *
- * RELEASE GATING: a term's averages are only surfaced once that term has
- * actually ENDED — i.e. `grading_periods.end_date` is in the past. This is
- * independent of which grading period is currently "active": while Term 2
- * is the active term, parents still only see Term 1 (already finished).
- * Term 2 only unlocks once Term 2's own end_date has passed, and so on —
- * each term gates on its own end date, not on the term after it starting.
+ * VISIBILITY: the active term is returned as a live evaluation and completed
+ * terms remain available after their end date. Future terms stay hidden.
  *
- * Every term in the active school year still appears in the array (so the
- * UI can render a locked/pending state instead of nothing), but unreleased
- * terms come back with `released: false` and zeroed-out numbers — even if
- * ratings already exist in the DB for that term, they're withheld until
- * release.
- *
- * PREVIEW BYPASS: pass `?preview=true` to skip the release gate and see a
- * term's real numbers before its end_date has passed — for QA/sanity
- * checking only. This is currently NOT role-restricted (loadParentStudent
- * only checks parent-child linkage), so before this ships anywhere a parent
- * could stumble onto it, gate `preview` behind an admin/teacher check or
- * remove it entirely.
+ * Future terms still appear in the array with `released: false` and empty
+ * numbers. The active term is visible so parents can follow ongoing ratings.
  *
  * - Without `termNumber`: every term for the active school year.
  * - With `termNumber`: just that one term.
@@ -210,15 +195,14 @@ async function getStudentTermAverages(req, res) {
   try {
     const { studentId } = req.params;
     const sectionId = req.studentSectionId;
-    const { termNumber, preview } = req.query;
-    const isPreview = preview === "true";
+    const { termNumber } = req.query;
 
     // 1. Which terms are we reporting on? Pull the active school year's grading
-    // periods, computing per-term whether it has already ended (end_date in
-    // the past) — that's the release gate. Terms with zero ratings still
-    // show up here.
+    // periods, identifying the active term and whether each period has ended.
+    // Terms with zero ratings still show up here.
     const [periodRows] = await connection.execute(
       `SELECT gp.id AS grading_period_id, gp.term_number, gp.term_label,
+              gp.is_active AS is_active,
               (gp.end_date < CURDATE()) AS term_ended
        FROM grading_periods gp
        INNER JOIN school_year sy ON sy.id = gp.school_year_id
@@ -232,11 +216,12 @@ async function getStudentTermAverages(req, res) {
       return res.status(200).json({ success: true, data: [] });
     }
 
-    const isReleased = (row) => isPreview || Boolean(row.term_ended);
+    const isReleased = (row) => Boolean(row.is_active || row.term_ended);
 
     const buildEmptyTerm = (row, released = false) => ({
       termNumber: row.term_number,
       termLabel: row.term_label,
+      isActive: Boolean(row.is_active),
       released,
       domainAverages: emptyDomainAverages(),
       evaluationCount: 0,
@@ -292,8 +277,7 @@ async function getStudentTermAverages(req, res) {
     const data = periodRows.map((row) => {
       const released = isReleased(row);
 
-      // Not released yet: never send real numbers down, even if the ratings
-      // already exist in the DB — same reasoning as buildEmptyTerm.
+      // Future terms stay empty even if any ratings happen to exist already.
       if (!released) return buildEmptyTerm(row, false);
 
       const entry = byTerm.get(row.term_number);
@@ -302,6 +286,7 @@ async function getStudentTermAverages(req, res) {
       return {
         termNumber: row.term_number,
         termLabel: row.term_label,
+        isActive: Boolean(row.is_active),
         released: true,
         domainAverages: entry.domainAverages,
         evaluationCount: entry.evaluationCount,

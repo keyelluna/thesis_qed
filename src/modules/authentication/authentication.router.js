@@ -25,4 +25,5 @@ router.post("/verify-otp", authentication.verifyOtp);
 router.post("/reset-password", authentication.resetPassword);
 
 router.get("/me", verifyToken, authentication.me);
+router.put("/profile", verifyToken, authentication.updateProfile);
 module.exports = router;

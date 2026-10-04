@@ -1,5 +1,6 @@
 const connection = require("../../config/db");
 let genderColumnReady;
+let avatarKeyColumnReady;
 
 async function ensureGenderColumn() {
   if (!genderColumnReady) {
@@ -31,8 +32,39 @@ async function ensureGenderColumn() {
   return genderColumnReady;
 }
 
+async function ensureAvatarKeyColumn() {
+  if (!avatarKeyColumnReady) {
+    avatarKeyColumnReady = (async () => {
+      await ensureGenderColumn();
+      const [columns] = await connection.query(
+        `SELECT COLUMN_NAME
+         FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'teacher_table'
+           AND COLUMN_NAME = 'avatar_key'
+         LIMIT 1`,
+      );
+      if (columns.length === 0) {
+        try {
+          await connection.query(
+            "ALTER TABLE teacher_table ADD COLUMN avatar_key VARCHAR(40) NULL DEFAULT NULL AFTER gender",
+          );
+        } catch (error) {
+          if (error.code !== "ER_DUP_FIELDNAME") throw error;
+        }
+      }
+      return true;
+    })().catch((error) => {
+      avatarKeyColumnReady = undefined;
+      throw error;
+    });
+  }
+  return avatarKeyColumnReady;
+}
+
 const Teacher = {
   ensureGenderColumn,
+  ensureAvatarKeyColumn,
   //add user
   create: async ({
     userId,

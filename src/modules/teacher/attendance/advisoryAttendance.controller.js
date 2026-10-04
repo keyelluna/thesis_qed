@@ -1,5 +1,5 @@
 const connection = require("../../../../config/db");
-const { notifyAbsence } = require("../../notification/notification.service");
+const { notifyAbsence, notifyAttendanceComplete } = require("../../notification/notification.service");
 
 async function getActiveGradingPeriodId() {
   const [rows] = await connection.execute(
@@ -250,6 +250,12 @@ const upsertAdvisoryAttendance = async (req, res) => {
         } catch (notifErr) {
           console.error("Absence notification error:", notifErr);
         }
+      }
+
+      try {
+        await notifyAttendanceComplete({ classId, date });
+      } catch (notifErr) {
+        console.error("Attendance-complete notification error:", notifErr);
       }
     }
 

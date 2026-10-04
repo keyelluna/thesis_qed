@@ -7,6 +7,7 @@ const sendNotification = async ({
   studentId = null,
   gradeItemId = null,
   refKey = null,
+  targetPath = null,
   title,
   message,
   type = 'info',
@@ -36,6 +37,7 @@ const sendNotification = async ({
     studentId,
     studentName,
     refKey,
+    targetPath,
     title,
     message: finalMessage,
     type,
@@ -375,7 +377,149 @@ const notifySubjectGradeSubmission = async ({ subjectSectionId, gradingPeriodId,
   return 1;
 };
 
+const sendAttendanceComplete = async ({ classId, date }) => {
+  const [[cls]] = await db.query(
+    `SELECT c.section_id AS sectionId, c.grade_level_id AS gradeLevelId,
+            gl.grade_level AS gradeLevel, gls.section_name AS sectionName,
+            tt.first_name AS tFirst, tt.last_name AS tLast
+     FROM classes c
+     JOIN grade_level gl ON gl.id = c.grade_level_id
+     LEFT JOIN grade_level_sections gls ON gls.id = c.section_id
+     JOIN teacher_table tt ON tt.id = c.class_adviser_id
+     WHERE c.id = ?`,
+    [classId]
+  );
+  if (!cls) return 0;
+
+  const [[sy]] = await db.query(`SELECT id FROM school_year WHERE is_active = 1 LIMIT 1`);
+  if (!sy) return 0;
+
+  const rosterWhere = cls.sectionId
+    ? `s.section_id = ?`
+    : `s.section_id IS NULL AND s.grade_level_id = ?`;
+  const [[{ total }]] = await db.query(
+    `SELECT COUNT(*) AS total FROM elem_students s
+     WHERE ${rosterWhere} AND s.is_deleted = 0
+       AND s.status <> 'graduated' AND s.current_school_year_id = ?`,
+    [cls.sectionId ?? cls.gradeLevelId, sy.id]
+  );
+
+
+  const [[{ marked }]] = await db.query(
+    `SELECT COUNT(DISTINCT a.student_id) AS marked
+     FROM advisory_attendance_records a
+     JOIN elem_students s ON s.id = a.student_id
+     WHERE a.class_id = ? AND a.attendance_date = ?
+       AND s.is_deleted = 0 AND s.status <> 'graduated'
+       AND s.current_school_year_id = ?
+       AND ${rosterWhere} AND a.status IN ('P', 'A', 'L', 'E')`,
+    [classId, date, sy.id, cls.sectionId ?? cls.gradeLevelId]
+  );
+  if (Number(total) === 0 || Number(marked) < Number(total)) return 0;
+
+  const [principals] = await db.query(
+    `SELECT user_id AS userId FROM principal_table
+     WHERE is_deleted = 0 AND status = 'active'`
+  );
+
+  const refKey = `attendance-done:${classId}:${date}`;
+  const label = cls.sectionName?.trim()
+    ? `${cls.gradeLevel} - ${cls.sectionName}`
+    : cls.gradeLevel;
+  let sent = 0;
+
+  for (const { userId } of principals) {
+    if (!userId) continue;
+
+    const [existing] = await db.query(
+      `SELECT id FROM notifications
+       WHERE user_id = ? AND ref_key = ? LIMIT 1`,
+      [userId, refKey]
+    );
+    if (existing.length) continue;
+
+    await sendNotification({
+      userId,
+      refKey,
+      title: 'Attendance Completed',
+      message: `${cls.tFirst} ${cls.tLast} has completed attendance for ${label} on ${formatWeek(date)}.`,
+      type: 'success',
+    });
+    sent++;
+  }
+
+  return sent;
+};
+
+// Serialize simultaneous student saves for the same class and date.
+const attendanceNotificationsInFlight = new Map();
+const notifyAttendanceComplete = async ({ classId, date }) => {
+  const key = String(classId) + ':' + date;
+  const previous = attendanceNotificationsInFlight.get(key) || Promise.resolve();
+  const pending = previous.catch(() => {}).then(() => sendAttendanceComplete({ classId, date }));
+  attendanceNotificationsInFlight.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (attendanceNotificationsInFlight.get(key) === pending) {
+      attendanceNotificationsInFlight.delete(key);
+    }
+  }
+};
+
+const getAdvisoryGradeSheetPath = ({ gradeLevelId, sectionId, gradeLevel, gradingPeriodId }) => {
+  if (!gradeLevelId || !gradingPeriodId) return null;
+  const params = new URLSearchParams({
+    gradeLevelId: String(gradeLevelId),
+    gradingPeriodId: String(gradingPeriodId),
+  });
+  if (sectionId) params.set('sectionId', String(sectionId));
+  return '/principal/gradebooks/' + encodeURIComponent(gradeLevel) + '?' + params;
+};
+
+const notifyAdvisoryGradesSubmitted = async ({ classId, teacherId, gradingPeriodId }) => {
+  const [[info]] = await db.query(
+    `SELECT c.grade_level_id AS gradeLevelId, c.section_id AS sectionId,
+            tt.first_name AS tFirst, tt.last_name AS tLast,
+            gl.grade_level AS gradeLevel, gls.section_name AS sectionName,
+            gp.term_label AS termLabel
+     FROM classes c
+     JOIN grade_level gl ON gl.id = c.grade_level_id
+     LEFT JOIN grade_level_sections gls ON gls.id = c.section_id
+     JOIN teacher_table tt ON tt.id = ?
+     JOIN grading_periods gp ON gp.id = ?
+     WHERE c.id = ?`,
+    [teacherId, gradingPeriodId, classId]
+  );
+  if (!info) return 0;
+
+  const [principals] = await db.query(
+    `SELECT user_id AS userId FROM principal_table
+     WHERE is_deleted = 0 AND status = 'active'`
+  );
+
+  const label = info.sectionName?.trim()
+    ? `${info.gradeLevel} - ${info.sectionName}`
+    : info.gradeLevel;
+
+  let sent = 0;
+  for (const { userId } of principals) {
+    if (!userId) continue;
+    await sendNotification({
+      userId,
+      refKey: `advisory-grades:${classId}:${gradingPeriodId}:${Date.now()}`,
+      targetPath: getAdvisoryGradeSheetPath({ ...info, gradingPeriodId }),
+      title: 'Grades Submitted',
+      message: `${info.tFirst} ${info.tLast} has submitted the ${info.termLabel} grades for ${label}.`,
+      type: 'info',
+    });
+    sent++;
+  }
+  return sent;
+};
+
 module.exports = {
+  getAdvisoryGradeSheetPath,
   sendNotification,
   notifyMissedActivity,
   notifyMissingForItem,
@@ -384,4 +528,6 @@ module.exports = {
   notifyGradeVisibility,
   notifyLowGradeScore,
   notifySubjectGradeSubmission,
+  notifyAdvisoryGradesSubmitted,
+  notifyAttendanceComplete
 };

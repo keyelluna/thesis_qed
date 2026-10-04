@@ -1,6 +1,6 @@
 const connection = require("../../../../config/db");
 const { getSingleTermVisibility } = require('../../parents/Student-Record/ProgressReport/progressVisibility.controller');
-const { notifyGradeVisibility } = require('../../notification/notification.service')
+const { notifyGradeVisibility, notifyAdvisoryGradesSubmitted } = require('../../notification/notification.service')
 
 // FIX: renamed from loadAdvisorySection. Now fetches ALL advisory classes
 // for this teacher instead of just one, and lets the caller pick which
@@ -371,6 +371,16 @@ const submitAdvisoryGrades = async (req, res) => {
        ON DUPLICATE KEY UPDATE submitted_by = VALUES(submitted_by), submitted_at = CURRENT_TIMESTAMP`,
       [scope.value, gradingPeriodId, teacherId],
     );
+
+    try {
+      await notifyAdvisoryGradesSubmitted({
+        classId: req.advisorySection.classId,
+        teacherId,
+        gradingPeriodId,
+      });
+    } catch (notifErr) {
+      console.error("Advisory grade submission notification error:", notifErr);
+    }
 
     return res.status(200).json({ success: true });
   } catch (error) {

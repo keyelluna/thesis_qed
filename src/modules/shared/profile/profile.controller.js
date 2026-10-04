@@ -73,7 +73,8 @@ const getMyProfile = async (req, res) => {
     const row = rows[0];
 
     const profile = {
-      id: String(row.id),
+      // Match login and /auth/me: notifications are keyed by authentication user ID.
+      id: String(auth.id),
       userName: auth.user_name,
       role: auth.role.toUpperCase(), 
       name: buildName(row),

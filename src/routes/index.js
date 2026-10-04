@@ -14,6 +14,7 @@ router.use('/user-profile', profileRoutes);
 const authenticationRoutes = require("./../modules/authentication/authentication.router.js");
 const loginFreqencyRoutes = require("./../modules/authentication/loginfrequency.router.js")
 const userRecordRoutes = require("./../modules/admin/user-record/userRecord.router.js");
+const auditLogsRoutes = require("../modules/admin/audit-logs/auditLogs.router.js");
 const studentRecordRoutes = require("./../modules/admin/student-record/studentRecord.router.js");
 const classesManagementRoutes = require("./../modules/admin/classes-management/classManagement.router.js");
 const sectionManagementRoutes = require("./../modules/admin/section-management/section.router.js");
@@ -27,6 +28,7 @@ const gradingPeriodsRouters = require("../modules/settings/grading-periods/gradi
 router.use("/auth", authenticationRoutes);
 router.use("/analytics", loginFreqencyRoutes);
 router.use("/user", userRecordRoutes);
+router.use("/audit-logs", auditLogsRoutes);
 router.use("/student", studentRecordRoutes);
 router.use("/classes", classesManagementRoutes);
 router.use("/section", sectionManagementRoutes);

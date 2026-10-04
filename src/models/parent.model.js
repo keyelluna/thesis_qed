@@ -1,6 +1,34 @@
 const connection = require("../../config/db");
+let genderColumnReady;
+
+async function ensureGenderColumn() {
+  if (!genderColumnReady) {
+    genderColumnReady = (async () => {
+      const [columns] = await connection.query(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'parent_table'
+           AND COLUMN_NAME = 'gender' LIMIT 1`,
+      );
+      if (columns.length === 0) {
+        try {
+          await connection.query(
+            "ALTER TABLE parent_table ADD COLUMN gender ENUM('Male', 'Female') NULL DEFAULT NULL AFTER status",
+          );
+        } catch (error) {
+          if (error.code !== "ER_DUP_FIELDNAME") throw error;
+        }
+      }
+      return true;
+    })().catch((error) => {
+      genderColumnReady = undefined;
+      throw error;
+    });
+  }
+  return genderColumnReady;
+}
 
 const Parent = {
+  ensureGenderColumn,
   //add user
   create: async ({
     userId,
@@ -10,10 +38,12 @@ const Parent = {
     email,
     contactNumber,
     status,
+    gender,
   }) => {
+    await ensureGenderColumn();
     const [result] = await connection.execute(
-      `INSERT INTO parent_table (user_id, last_name, first_name, middle_name, email_address, contact_number, status) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [userId, lastName, firstName, middleName, email, contactNumber, status],
+      `INSERT INTO parent_table (user_id, last_name, first_name, middle_name, email_address, contact_number, status, gender) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [userId, lastName, firstName, middleName, email, contactNumber, status, gender || null],
     );
 
     return {
@@ -25,6 +55,7 @@ const Parent = {
       email,
       contactNumber,
       status,
+      gender: gender || null,
     };
   },
 
@@ -37,12 +68,14 @@ const Parent = {
     email,
     contactNumber,
     status,
+    gender,
   }) => {
+    await ensureGenderColumn();
     const [result] = await connection.execute(
       `UPDATE parent_table
-       SET last_name = ?, first_name = ?, middle_name = ?, email_address = ?, contact_number = ?, status = ?
+       SET last_name = ?, first_name = ?, middle_name = ?, email_address = ?, contact_number = ?, status = ?, gender = ?
        WHERE id = ?`,
-      [lastName, firstName, middleName, email, contactNumber, status, id],
+      [lastName, firstName, middleName, email, contactNumber, status, gender || null, id],
     );
 
     if (result.affectedRows === 0) {
@@ -57,6 +90,7 @@ const Parent = {
       email,
       contactNumber,
       status,
+      gender: gender || null,
     };
   },
 
@@ -110,6 +144,7 @@ softDelete: async (id) => {
 
 //find user by id
 findById: async (id) => {
+  await ensureGenderColumn();
   const [rows] = await connection.execute(
     `SELECT * FROM parent_table WHERE id = ?`,
     [id]
@@ -119,6 +154,7 @@ findById: async (id) => {
 
 //get all users (exclude soft-deleted)
 findAll: async () => {
+  await ensureGenderColumn();
   const [rows] = await connection.execute(
     `SELECT * FROM parent_table WHERE is_deleted = 0`
   );

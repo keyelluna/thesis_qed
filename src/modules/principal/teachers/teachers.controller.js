@@ -1,4 +1,5 @@
 const connection = require("../../../../config/db");
+const Teacher = require("../../../models/teacher.model");
 
 function formatTime(sqlTime) {
   // sqlTime comes back like "07:30:00" — convert to "7:30 AM"
@@ -17,12 +18,15 @@ function buildFullName(row) {
 
 exports.getTeachersDirectory = async (req, res) => {
   try {
+    await Teacher.ensureAvatarKeyColumn();
     const [rows] = await connection.query(
       `SELECT
          t.id AS teacherId,
          t.first_name,
          t.middle_name,
          t.last_name,
+         t.gender,
+         t.avatar_key,
          gl.grade_level,
          gls.section_name,
          c.room
@@ -53,6 +57,8 @@ exports.getTeachersDirectory = async (req, res) => {
         teacherMap.set(teacherId, {
           teacherId,
           fullName: buildFullName(row),
+          gender: row.gender || null,
+          avatarKey: row.avatar_key || null,
           advisories: [],
         });
       }
@@ -74,6 +80,8 @@ exports.getTeachersDirectory = async (req, res) => {
       return {
         teacherId: t.teacherId,
         fullName: t.fullName,
+        gender: t.gender,
+        avatarKey: t.avatarKey,
         // Keep these for backward compatibility with the table's existing columns
         // (shows the first/primary advisory)
         advisorySection: primary.section || null,
@@ -99,12 +107,16 @@ exports.getTeacherProfile = async (req, res) => {
   }
 
   try {
+    await Teacher.ensureAvatarKeyColumn();
     const [teacherRows] = await connection.query(
       `SELECT 
          t.id AS teacherId,
          t.first_name,
          t.middle_name,
          t.last_name,
+         t.gender,
+         t.avatar_key,
+         c.id AS class_id,
          gl.grade_level,
          gls.section_name,
          c.room
@@ -112,7 +124,8 @@ exports.getTeacherProfile = async (req, res) => {
        LEFT JOIN classes c ON c.class_adviser_id = t.id
        LEFT JOIN grade_level_sections gls ON gls.id = c.section_id
        LEFT JOIN grade_level gl ON gl.id = c.grade_level_id
-       WHERE t.id = ? AND t.is_deleted = 0`,
+       WHERE t.id = ? AND t.is_deleted = 0
+         AND (c.id IS NULL OR c.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1))`,
       [id]
     );
 
@@ -127,6 +140,7 @@ exports.getTeacherProfile = async (req, res) => {
     const advisories = teacherRows
       .filter((row) => row.section_name || row.grade_level || row.room)
       .map((row) => ({
+        classId: Number(row.class_id),
         gradeLevel: row.grade_level || "—",
         section: row.section_name || "—",
         room: row.room || "—",
@@ -134,6 +148,7 @@ exports.getTeacherProfile = async (req, res) => {
 
     const [scheduleRows] = await connection.query(
       `SELECT
+         cs.class_id,
          cs.subject_name,
          cs.start_time,
          cs.end_time,
@@ -147,6 +162,7 @@ exports.getTeacherProfile = async (req, res) => {
        LEFT JOIN grade_level gl ON gl.id = c.grade_level_id
        LEFT JOIN class_schedule_day csd ON csd.class_schedule_id = cs.id
        WHERE cs.subject_teacher_id = ?
+         AND c.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)
        ORDER BY FIELD(csd.day_of_week, 'Monday','Tuesday','Wednesday','Thursday','Friday'),
                 cs.start_time`,
       [id]
@@ -155,6 +171,7 @@ exports.getTeacherProfile = async (req, res) => {
     const schedule = scheduleRows
       .filter((row) => row.day_of_week) // skip schedules with no day assigned yet
       .map((row) => ({
+        classId: Number(row.class_id),
         day: row.day_of_week,
         time: `${formatTime(row.start_time)} - ${formatTime(row.end_time)}`,
         subject: row.subject_name,
@@ -167,6 +184,8 @@ exports.getTeacherProfile = async (req, res) => {
     return res.status(200).json({
       teacherId: String(teacher.teacherId),
       fullName: buildFullName(teacher),
+      gender: teacher.gender || null,
+      avatarKey: teacher.avatar_key || null,
       advisorySection: primary.section || "—",
       gradeLevel: primary.gradeLevel || "—",
       room: primary.room || "—",

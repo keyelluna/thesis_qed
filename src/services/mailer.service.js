@@ -53,7 +53,7 @@ async function sendCredentialsEmail({
       to: [actualRecipient],
       subject: "Your QED Account Credentials",
       html: `
-        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+        <div style="font-family: Inter, Arial, sans-serif; max-width: 480px; margin: 0 auto;">
           <h2 style="color:#8B0D0D;">Welcome to QED, ${firstName || ""}!</h2>
           <p>An account has been created for you as <strong>${roleLabel}</strong>.</p>
           <p>Here are your login credentials:</p>
@@ -120,7 +120,7 @@ async function sendPasswordResetOtpEmail({ to, otp }) {
       to: [actualRecipient],
       subject: "Your QED Password Reset Code",
       html: `
-        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+        <div style="font-family: Inter, Arial, sans-serif; max-width: 480px; margin: 0 auto;">
           <h2 style="color:#8B0D0D;">Password Reset Request</h2>
           <p>We received a request to reset your QED account password. Use the code below to continue:</p>
           <div style="margin: 20px 0; text-align: center;">
@@ -191,7 +191,7 @@ async function sendGradeVisibilityEmail({
       to: [actualRecipient],
       subject: "Grades Now Available to View",
       html: `
-        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+        <div style="font-family: Inter, Arial, sans-serif; max-width: 480px; margin: 0 auto;">
           <img
             src="cid:${LOGO_CID}"
             alt="QED School"

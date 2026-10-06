@@ -1,5 +1,9 @@
 // src/modules/shared/grades/gradeCache.service.js
 const connection = require('../../../../config/db');
+const { resolveGradeTemplateForPeriod } = require('./gradeTemplateResolution.service');
+const { normalizeExaminations } = require('./gradeTemplateConfig.service');
+const { calculateOfficialGrade } = require('./gradeComputation.service');
+const { assessmentCategoryForName } = require('./assessmentCategory.service');
 
 function computePS(totalScore, highestPossibleScore) {
   if (!highestPossibleScore) return null;
@@ -9,12 +13,6 @@ function computePS(totalScore, highestPossibleScore) {
 function computeWS(ps, weightPercent) {
   if (ps === null) return null;
   return (ps / 100) * weightPercent;
-}
-
-function computeInitialGrade(wsWW, wsPT, wsExam) {
-  const parts = [wsWW, wsPT, wsExam].filter((v) => v !== null && v !== undefined);
-  if (parts.length === 0) return null;
-  return parts.reduce((a, b) => a + b, 0);
 }
 
 // ---- Per-category aggregation, ported from AssessmentRecordsSection.studentTotals ----
@@ -54,30 +52,58 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
   );
   if (ssRows.length === 0) return;
   const { subjectId } = ssRows[0];
-  const [templateRows] = await connection.execute(
-    `SELECT ww_weight_percent AS ww, pt_weight_percent AS pt, exam_weight_percent AS exam,
-            exam_st1_subweight_percent AS st1, exam_st2_subweight_percent AS st2,
-            exam_te_subweight_percent AS te, structure_json AS structureJson
-       FROM subject_grade_templates WHERE subject_id = ? AND is_active = 1 LIMIT 1`,
-    [subjectId],
+  const [periodRows] = await connection.execute(
+    `SELECT term_number AS termNumber FROM grading_periods WHERE id = ? LIMIT 1`,
+    [gradingPeriodId],
   );
-  let template = templateRows[0] || null;
-  if (template?.structureJson && typeof template.structureJson === "string") {
-    try { template.structure = JSON.parse(template.structureJson); } catch { template = null; }
-  } else if (template?.structureJson) template.structure = template.structureJson;
+  const termNumber = Number(periodRows[0]?.termNumber || 1);
+  let template = null;
+  try {
+    const resolved = await resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, { pinIfEmpty: false });
+    if (resolved.template) {
+      template = {
+        ww: Number(resolved.template.structure.ww?.weightPercent),
+        pt: Number(resolved.template.structure.pt?.weightPercent),
+        exam: Number(resolved.template.structure.examWeightPercent || 0),
+        structure: resolved.template.structure,
+      };
+    }
+  } catch (error) {
+    console.error("Grade cache skipped because the period's pinned template could not be resolved:", error.message);
+    await connection.execute(
+      `INSERT INTO subject_grade_cache (student_id, subject_section_id, grading_period_id, average, is_complete)
+       VALUES (?, ?, ?, NULL, 0)
+       ON DUPLICATE KEY UPDATE average = NULL, is_complete = 0`,
+      [studentId, subjectSectionId, gradingPeriodId],
+    );
+    return;
+  }
+
+  const termConfiguration = template?.structure?.termConfigurations?.[String(termNumber)];
+  if (termConfiguration) template.structure = { ...template.structure, ...termConfiguration };
 
   let weights = template
-    ? { ww: Number(template.ww), pt: Number(template.pt), exam: Number(template.exam) }
+    ? {
+      ww: Number(termConfiguration?.ww?.weightPercent ?? template.ww),
+      pt: Number(termConfiguration?.pt?.weightPercent ?? template.pt),
+      exam: Number(termConfiguration?.examWeightPercent ?? template.exam),
+    }
     : null;
   if (!weights) {
     const [manualRows] = await connection.execute(
-      `SELECT assessment_type_id AS typeId, weight_percent AS weight
-         FROM subject_weight_distribution WHERE subject_id = ?`,
+      `SELECT at.assessment_name AS assessmentName, swd.weight_percent AS weight
+         FROM subject_weight_distribution swd
+         JOIN assessment_type at ON at.id = swd.assessment_type_id
+        WHERE swd.subject_id = ?`,
       [subjectId],
     );
-    const byType = Object.fromEntries(manualRows.map((row) => [Number(row.typeId), Number(row.weight)]));
-    if ([byType[1], byType[2], byType[3]].every(Number.isFinite)) {
-      weights = { ww: byType[1], pt: byType[2], exam: byType[3] };
+    const byType = {};
+    for (const row of manualRows) {
+      const category = assessmentCategoryForName(row.assessmentName);
+      if (category) byType[category] = Number(row.weight);
+    }
+    if ([byType.ww, byType.pt, byType.exam].every(Number.isFinite)) {
+      weights = { ww: byType.ww, pt: byType.pt, exam: byType.exam };
     }
   }
 
@@ -139,41 +165,49 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
         if (!totals.totalItems) { complete = false; continue; }
         ws += (computePS(totals.total, totals.highestPossible) * Number(domain.weightPercent)) / 100;
       }
-      return { ws: hasItems ? ws : null, complete: hasItems && complete };
+      return { ws: hasItems && complete ? ws : null, complete: hasItems && complete };
     }
     const totals = categoryTotals(groupItems, studentId, scoresByItemId);
-    if (!totals.totalItems) return { ws: null, complete: true };
+    if (!totals.totalItems) return { ws: null, complete: false };
     return { ws: computeWS(computePS(totals.total, totals.highestPossible), weight), complete: totals.isComplete };
   };
 
   const ww = calcGroup(wwItems, template?.structure?.ww, weights.ww);
   const pt = calcGroup(ptItems, template?.structure?.pt, weights.pt);
   let examWs = null;
-  let examComplete = true;
-  if (template?.structure?.examSubWeights) {
+  const examConfiguration = normalizeExaminations(template?.structure, weights.exam);
+  let examComplete = !examConfiguration.enabled && examItems.length === 0;
+  if (examConfiguration.enabled) {
     let combinedPs = 0;
     let hasExamItems = false;
-    for (const [examType, subWeight] of [["ST1", template.structure.examSubWeights.st1], ["ST2", template.structure.examSubWeights.st2], ["TE", template.structure.examSubWeights.te]]) {
-      const totals = categoryTotals(examItems.filter((item) => item.examType === examType), studentId, scoresByItemId);
+    examComplete = true;
+    for (const component of examConfiguration.components) {
+      const componentItems = component.key === "ALL"
+        ? examItems
+        : examItems.filter((item) => String(item.examType || "").toUpperCase() === component.key.toUpperCase());
+      const totals = categoryTotals(componentItems, studentId, scoresByItemId);
       hasExamItems ||= totals.totalItems > 0;
       if (!totals.totalItems || !totals.isComplete) examComplete = false;
-      if (totals.highestPossible) combinedPs += (computePS(totals.total, totals.highestPossible) * Number(subWeight)) / 100;
+      if (totals.highestPossible) combinedPs += (computePS(totals.total, totals.highestPossible) * Number(component.weightPercent)) / 100;
     }
-    examWs = hasExamItems ? computeWS(combinedPs, weights.exam) : null;
-  } else {
-    const totals = categoryTotals(examItems, studentId, scoresByItemId);
-    examWs = totals.totalItems ? computeWS(computePS(totals.total, totals.highestPossible), weights.exam) : null;
-    examComplete = totals.isComplete;
+    examComplete = hasExamItems && examComplete;
+    examWs = examComplete ? computeWS(combinedPs, weights.exam) : null;
   }
 
-  const initialGrade = computeInitialGrade(ww.ws, pt.ws, examWs);
   const table = template?.structure?.transmutationTable || [];
-  const transmutationRow = table.find((row) => initialGrade !== null && initialGrade >= Number(row.igMin) && initialGrade <= Number(row.igMax));
+  const officialGrade = calculateOfficialGrade({
+    ww: { ws: ww.ws, isComplete: ww.complete },
+    pt: { ws: pt.ws, isComplete: pt.complete },
+    exam: { ws: examWs, isComplete: examComplete },
+    weights,
+    examinations: examConfiguration,
+    transmutationTable: table,
+  });
   // `subject_grade_cache.average` is the published subject Term Grade. Never
   // substitute Initial Grade when an approved transmutation table is absent
   // or does not cover the calculated IG.
-  const average = transmutationRow ? Number(transmutationRow.transmuted) : null;
-  const isComplete = average !== null && ww.complete && pt.complete && examComplete;
+  const average = officialGrade.termGrade;
+  const isComplete = officialGrade.isComplete;
 
   await connection.execute(
     `INSERT INTO subject_grade_cache (student_id, subject_section_id, grading_period_id, average, is_complete)
@@ -272,7 +306,7 @@ async function recalcOverallAverage(studentId, gradingPeriodId) {
   const countedAverages = [];
   for (const ss of subjectSections) {
     const cell = cacheBySs.get(ss.id);
-    if (!cell || cell.average === null) continue;
+    if (!cell || !cell.isComplete || cell.average === null) continue;
 
     const isOwnAdvisorySubject =
       context.adviserTeacherId !== null && ss.teacherId === context.adviserTeacherId;

@@ -71,7 +71,7 @@ exports.getStudentAcademicPerformance = async (req, res) => {
           es.id            AS subject_id,
           es.subject_name,
           ss.id            AS subject_section_id,
-          sgc.average,
+          CASE WHEN sgc.is_complete = 1 THEN sgc.average ELSE NULL END AS average,
           sgc.is_complete,
           sgc.updated_at
        FROM subject_grade_cache sgc
@@ -139,7 +139,7 @@ exports.getSectionAcademicPerformance = async (req, res) => {
           st.last_name,
           st.first_name,
           es.subject_name,
-          sgc.average,
+          CASE WHEN sgc.is_complete = 1 THEN sgc.average ELSE NULL END AS average,
           sgc.is_complete
        FROM elem_students st
        INNER JOIN \`subject-section\` ss

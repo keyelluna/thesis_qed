@@ -6,6 +6,9 @@ const {
 const {
   notifyMissedActivity, notifyMissingForItem, notifyLowGradeScore, notifySubjectGradeSubmission
 } = require("../../notification/notification.service");
+const { recordSubjectGradeSubmission } = require("../../shared/grades/gradeSubmissionHistory.service");
+const { resolveGradeTemplateForPeriod } = require("../../shared/grades/gradeTemplateResolution.service");
+const { normalizeExaminations } = require("../../shared/grades/gradeTemplateConfig.service");
 
 // Filter para sa current (active) school year lang.
 // ACTIVE_SY_ID ay subquery na nagbabalik ng ID ng active na school year.
@@ -14,6 +17,14 @@ const ACTIVE_SY_ID = `(SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)`;
 // Roster filter (alias: s = elem_students): hindi isasama ang graduated
 // at ang mga estudyanteng wala sa current school year.
 const ROSTER_FILTER = `s.is_deleted = 0 AND s.status <> 'graduated' AND s.current_school_year_id = ${ACTIVE_SY_ID}`;
+
+async function pinTemplateToGradingPeriod(subjectSectionId, gradingPeriodId) {
+  if (!gradingPeriodId) return;
+  await resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, {
+    pinIfEmpty: true,
+    assignmentSource: "first_assessment",
+  });
+}
 
 async function getActiveGradingPeriodId() {
   const [rows] = await connection.execute(
@@ -246,21 +257,26 @@ const addItem = async (req, res) => {
       });
     }
 
-    const [templateRows] = await connection.execute(
-      `SELECT t.structure_json AS structureJson
-         FROM \`subject-section\` ss
-         JOIN subject_grade_templates t ON t.subject_id = ss.subject_id AND t.is_active = 1
-        WHERE ss.id = ? LIMIT 1`,
-      [subjectSectionId],
+    const gradingPeriodId = term || (await getActiveGradingPeriodId());
+    if (!gradingPeriodId) return res.status(400).json({ success: false, message: "gradingPeriodId is required." });
+    await pinTemplateToGradingPeriod(subjectSectionId, gradingPeriodId);
+    const [periodRows] = await connection.execute(
+      `SELECT term_number AS termNumber FROM grading_periods WHERE id = ? LIMIT 1`,
+      [gradingPeriodId],
     );
-    let structure;
-    try {
-      const raw = templateRows[0]?.structureJson;
-      structure = typeof raw === "string" ? JSON.parse(raw) : raw;
-    } catch {
-      structure = null;
-    }
+    const termNumber = Number(periodRows[0]?.termNumber || 1);
+    const resolvedTemplate = await resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, { pinIfEmpty: false });
+    let structure = resolvedTemplate.template?.structure;
+    structure = structure?.termConfigurations?.[String(termNumber)]
+      ? { ...structure, ...structure.termConfigurations[String(termNumber)] }
+      : structure;
     const group = tab === "writtenWorks" ? structure?.ww : tab === "performanceTask" ? structure?.pt : null;
+    if (tab === "exams") {
+      const examinations = normalizeExaminations(structure, structure?.examWeightPercent);
+      if (!examinations.enabled) return res.status(400).json({ success: false, message: "This pinned grade template has no Examination section." });
+      const accepted = examinations.components.some((component) => component.key.toUpperCase() === "ALL" || component.key.toUpperCase() === String(examType || "").toUpperCase());
+      if (!accepted) return res.status(400).json({ success: false, message: "Choose an examination component supported by the pinned grade template." });
+    }
     if (group?.domains?.length > 1 && !templateDomainId) {
       return res.status(400).json({ success: false, message: "A template domain is required for this assessment item." });
     }
@@ -270,8 +286,6 @@ const addItem = async (req, res) => {
 
     const safeActivityName = activityName || topic;
     const safeFormat = format || "Activity";
-    const gradingPeriodId = term || (await getActiveGradingPeriodId());
-
     const [dupe] = await connection.execute(
       `SELECT id FROM grade_items
        WHERE subject_section_id = ? AND tab = ? AND item_date = ?
@@ -316,8 +330,8 @@ const addItem = async (req, res) => {
   } catch (error) {
     console.error("Error creating grade item:", error);
     return res
-      .status(500)
-      .json({ success: false, message: "Internal server error." });
+      .status(error.statusCode || 500)
+      .json({ success: false, message: error.statusCode ? error.message : "Internal server error." });
   }
 };
 
@@ -728,29 +742,19 @@ const submitSubjectGrades = async (req, res) => {
         .json({ success: false, message: "gradingPeriodId is required." });
     }
 
-    // Submission is the point where this subject's official Term Grades are
-    // released to the adviser/principal. Validate server-side so a direct API
-    // call cannot publish incomplete scores or untransmuted Initial Grades.
-    const [templateRows] = await connection.execute(
-      `SELECT structure_json AS structureJson
-       FROM subject_grade_templates t
-       INNER JOIN \`subject-section\` ss ON ss.subject_id = t.subject_id
-       WHERE ss.id = ? AND t.is_active = 1 LIMIT 1`,
-      [subjectSectionId],
-    );
-    let transmutationTable = [];
-    try {
-      const structure = typeof templateRows[0]?.structureJson === "string"
-        ? JSON.parse(templateRows[0].structureJson)
-        : templateRows[0]?.structureJson;
-      transmutationTable = structure?.transmutationTable || [];
-    } catch {
-      transmutationTable = [];
-    }
+    // Submission publishes the Term Grades produced by the template version
+    // pinned to this period. Never reinterpret an unpinned historical period
+    // using whatever version happens to be active now.
+    const resolved = await resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, { pinIfEmpty: false });
+    const baseStructure = resolved.template?.structure;
+    const structure = baseStructure?.termConfigurations?.[String(resolved.termNumber)]
+      ? { ...baseStructure, ...baseStructure.termConfigurations[String(resolved.termNumber)] }
+      : baseStructure;
+    const transmutationTable = structure?.transmutationTable || [];
     if (!transmutationTable.length) {
       return res.status(400).json({
         success: false,
-        message: "An active approved template with transmutation rules is required before submitting Term Grades.",
+        message: "The template assigned to this grading period must include transmutation rules before Term Grades can be submitted.",
       });
     }
 
@@ -783,6 +787,8 @@ const submitSubjectGrades = async (req, res) => {
       [subjectSectionId, gradingPeriodId, teacherId],
     );
 
+    await recordSubjectGradeSubmission({ subjectSectionId, gradingPeriodId, teacherId });
+
     await notifySubjectGradeSubmission({
       subjectSectionId,
       gradingPeriodId,
@@ -793,8 +799,8 @@ const submitSubjectGrades = async (req, res) => {
   } catch (error) {
     console.error("Error submitting subject grades:", error);
     return res
-      .status(500)
-      .json({ success: false, message: "Internal server error." });
+      .status(error.statusCode || 500)
+      .json({ success: false, message: error.statusCode ? error.message : "Internal server error." });
   }
 };
 

@@ -43,14 +43,19 @@ async function loadAdvisoryClasses(req, res, next) {
     }
     const teacherId = teacherRows[0].id;
 
+    const activeSchoolYearId = await getActiveSchoolYearId();
+    if (!activeSchoolYearId) {
+      return res.status(200).json({ success: true, data: [] });
+    }
+
     const [classRows] = await connection.execute(
       `SELECT c.id AS classId, c.section_id, gls.section_name AS sectionName,
               gl.grade_level AS gradeLevel
        FROM classes c
        LEFT JOIN grade_level_sections gls ON c.section_id = gls.id
        INNER JOIN grade_level gl ON c.grade_level_id = gl.id
-       WHERE c.class_adviser_id = ?`,
-      [teacherId],
+       WHERE c.class_adviser_id = ? AND c.school_year_id = ? AND c.status = 'Active'`,
+      [teacherId, activeSchoolYearId],
     );
 
     req.teacherId = teacherId;
@@ -110,7 +115,7 @@ const getAdvisorySectionsList = async (req, res) => {
     const formattedTerms = terms.map((t) => ({
       ...t,
       id: String(t.id),
-      isActive: !!t.isActive,
+      isActive: Number(t.isActive) === 1,
     }));
 
     const sections = await Promise.all(
@@ -183,10 +188,8 @@ const getAdvisoryAttendance = async (req, res) => {
     let resolvedTermId = null;
     if (allPeriods !== "true") {
       resolvedTermId = term || (await getActiveGradingPeriodId());
-      if (resolvedTermId) {
-        sql += ` AND a.grading_period_id = ?`;
-        params.push(resolvedTermId);
-      }
+      sql += ` AND a.grading_period_id = ?`;
+      params.push(resolvedTermId);
     }
 
     const [rows] = await connection.execute(sql, params);
@@ -219,7 +222,7 @@ const upsertAdvisoryAttendance = async (req, res) => {
     const { classId, section_id: sectionId } = req.advisorySection;
     const { teacherId } = req;
     const { studentId, date, term } = req.body;
-    const status = req.body.status ?? null;
+    const status = req.body.status;
 
     if (!studentId || !date) {
       return res
@@ -227,7 +230,93 @@ const upsertAdvisoryAttendance = async (req, res) => {
         .json({ success: false, message: "studentId and date are required." });
     }
 
-    const gradingPeriodId = term || (await getActiveGradingPeriodId());
+    const parsedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date)) ? new Date(`${date}T00:00:00Z`) : null;
+    if (!parsedDate || Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date) {
+      return res.status(400).json({ success: false, message: "date must be a valid YYYY-MM-DD date." });
+    }
+
+    if (status === undefined) {
+      return res.status(400).json({ success: false, message: "status is required." });
+    }
+    if (status !== null && !["P", "A", "L", "E"].includes(status)) {
+      return res.status(400).json({ success: false, message: "status must be P, A, L, E, or null." });
+    }
+
+    const activeSchoolYearId = await getActiveSchoolYearId();
+    if (!activeSchoolYearId) {
+      return res.status(400).json({ success: false, message: "No active school year is available." });
+    }
+
+    const [[todayRow]] = await connection.query(
+      `SELECT DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS today`,
+    );
+    const today = todayRow?.today;
+    if (!today || date > today) {
+      return res.status(400).json({ success: false, message: "Attendance cannot be recorded for a future date." });
+    }
+
+    const activePeriodId = await getActiveGradingPeriodId();
+    const requestedPeriodId = term || activePeriodId;
+
+    const [existingRows] = await connection.execute(
+      `SELECT grading_period_id AS gradingPeriodId
+       FROM advisory_attendance_records
+       WHERE class_id = ? AND student_id = ? AND attendance_date = ?
+       LIMIT 1`,
+      [classId, studentId, date],
+    );
+    const existingPeriodId = existingRows[0]?.gradingPeriodId ?? null;
+
+    if (!existingPeriodId && status === null) {
+      return res.status(200).json({ success: true, termId: requestedPeriodId ? String(requestedPeriodId) : null });
+    }
+
+    if (existingPeriodId && term && String(term) !== String(existingPeriodId)) {
+      return res.status(400).json({ success: false, message: "This attendance mark belongs to a different grading period." });
+    }
+
+    const gradingPeriodId = existingPeriodId || requestedPeriodId;
+    if (!gradingPeriodId) {
+      return res.status(400).json({ success: false, message: "No active grading period is available." });
+    }
+
+    const [periodRows] = await connection.execute(
+      `SELECT gp.id, gp.is_active AS isActive,
+              DATE_FORMAT(gp.start_date, '%Y-%m-%d') AS startDate,
+              DATE_FORMAT(gp.end_date, '%Y-%m-%d') AS endDate
+       FROM grading_periods gp
+       WHERE gp.id = ? AND gp.school_year_id = ?
+         AND ? BETWEEN DATE(gp.start_date) AND DATE(gp.end_date)
+       LIMIT 1`,
+      [gradingPeriodId, activeSchoolYearId, date],
+    );
+    const period = periodRows[0];
+    if (!period) {
+      return res.status(400).json({ success: false, message: "The attendance date must fall within its grading period." });
+    }
+
+    if (date === today && (String(gradingPeriodId) !== String(activePeriodId) || Number(period.isActive) !== 1)) {
+      return res.status(400).json({ success: false, message: "Attendance can only be marked today while the active grading period is open." });
+    }
+
+    if (!existingPeriodId && date !== today) {
+      return res.status(400).json({ success: false, message: "New attendance can only be marked for today. Existing past marks may be edited." });
+    }
+
+    const [studentRows] = await connection.execute(
+      `SELECT s.id
+       FROM elem_students s
+       INNER JOIN classes c ON c.id = ? AND c.grade_level_id = s.grade_level_id
+       WHERE s.id = ? AND s.current_school_year_id = ?
+         AND s.is_deleted = 0 AND s.status <> 'graduated'
+         AND ((c.section_id IS NOT NULL AND s.section_id = c.section_id)
+           OR (c.section_id IS NULL AND s.section_id IS NULL))
+       LIMIT 1`,
+      [classId, studentId, activeSchoolYearId],
+    );
+    if (studentRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Student is not enrolled in this advisory class for the active school year." });
+    }
 
     if (status === null) {
       await connection.execute(
@@ -235,6 +324,21 @@ const upsertAdvisoryAttendance = async (req, res) => {
          WHERE class_id = ? AND student_id = ? AND attendance_date = ?`,
         [classId, studentId, date],
       );
+    } else if (existingPeriodId) {
+      await connection.execute(
+        `UPDATE advisory_attendance_records
+         SET status = ?, recorded_by = ?
+         WHERE class_id = ? AND student_id = ? AND attendance_date = ?`,
+        [status, teacherId, classId, studentId, date],
+      );
+
+      if (status === "A") {
+        try {
+          await notifyAbsence({ studentId, date });
+        } catch (notifErr) {
+          console.error("Absence notification error:", notifErr);
+        }
+      }
     } else {
       await connection.execute(
         `INSERT INTO advisory_attendance_records

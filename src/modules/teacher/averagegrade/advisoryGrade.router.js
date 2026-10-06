@@ -6,6 +6,7 @@ const {
   getAdvisorySections,
   getAdvisoryGradebook,
   getSubmissionStatus,
+  getSubmissionHistory,
   submitAdvisoryGrades,
   getGradeVisibility,
   setGradeVisibility,
@@ -16,6 +17,7 @@ const verifyToken = require("../../authentication/authentication.middleware");
 router.get("/sections", verifyToken, loadAdvisorySections, getAdvisorySections);
 router.get("/gradebook", verifyToken, loadAdvisorySections, getAdvisoryGradebook);
 router.get("/submission", verifyToken, loadAdvisorySections, getSubmissionStatus);
+router.get("/submission/logs", verifyToken, loadAdvisorySections, getSubmissionHistory);
 router.post("/submission", verifyToken, loadAdvisorySections, submitAdvisoryGrades);
 router.get("/visibility", verifyToken, loadAdvisorySections, getGradeVisibility);
 router.post("/visibility", verifyToken, loadAdvisorySections, setGradeVisibility);

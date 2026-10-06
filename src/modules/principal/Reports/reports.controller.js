@@ -52,6 +52,7 @@ async function getSubjectGradeAverages(gradingPeriodId, schoolYearId) {
      JOIN elem_students st ON st.id = sgc.student_id
      WHERE sgc.grading_period_id = ?
        AND ss.school_year_id = ?
+       AND sgc.is_complete = 1
        AND sgc.average IS NOT NULL
        AND st.is_deleted = 0
        AND st.status <> 'graduated'

@@ -24,8 +24,21 @@ function findExact(grid, text, row, start, end) {
 }
 
 function numeric(value, scale = 1) {
+  if (value === null || value === undefined || (typeof value === "string" && !value.trim())) {
+    throw new Error("A required grading value is missing or invalid in the uploaded template.");
+  }
   const n = Number(value);
-  return Number.isFinite(n) ? Math.round(n * scale * 100) / 100 : 0;
+  if (!Number.isFinite(n)) throw new Error("A required grading value is missing or invalid in the uploaded template.");
+  return Math.round(n * scale * 100) / 100;
+}
+
+function categoryWeight(value, label) {
+  if (value === null || value === undefined || (typeof value === "string" && !value.trim())) {
+    throw new Error(`${label} weight is missing or invalid; expected a numeric fraction from 0 to 1.`);
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 1) throw new Error(`${label} weight is missing or invalid; expected a numeric fraction from 0 to 1.`);
+  return Math.round(n * 10000) / 100;
 }
 
 function parseGroup(grid, key, start, end, domainRow, headerRow, weightsRow) {
@@ -44,9 +57,10 @@ function parseGroup(grid, key, start, end, domainRow, headerRow, weightsRow) {
           if (/^\d+$/.test(String(grid[headerRow]?.[c] ?? "").trim())) scoreColumns.push(c + 1);
         }
         return { id: entry.label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""), label: entry.label,
-          weightPercent: numeric(grid[weightsRow]?.[wsCol], 100), scoreColumns };
+          weightPercent: categoryWeight(grid[weightsRow]?.[wsCol], entry.label), scoreColumns };
       })
-    : [{ id: "default", label: "", weightPercent: numeric(grid[weightsRow]?.[findExact(grid, "WS", headerRow, start, end)], 100), scoreColumns: (() => { const cols = []; for (let c = start; c <= end; c++) { if (String(grid[headerRow]?.[c] ?? "").trim().toLowerCase() === "total") break; if (/^\d+$/.test(String(grid[headerRow]?.[c] ?? "").trim())) cols.push(c + 1); } return cols; })() }];
+    : [{ id: "default", label: "", weightPercent: categoryWeight(grid[weightsRow]?.[findExact(grid, "WS", headerRow, start, end)], key), scoreColumns: (() => { const cols = []; for (let c = start; c <= end; c++) { if (/^(total|ps|ws)$/i.test(String(grid[headerRow]?.[c] ?? "").trim())) break; if (/^\d+$/.test(String(grid[headerRow]?.[c] ?? "").trim())) cols.push(c + 1); } return cols; })() }];
+  if (domains.some((domain) => !domain.scoreColumns.length)) throw new Error(`${key} has a domain with no numbered raw score columns.`);
   return { key, weightPercent: Math.round(domains.reduce((sum, d) => sum + d.weightPercent, 0) * 100) / 100, domains };
 }
 
@@ -61,29 +75,21 @@ function parseGradeTemplate(fileBuffer) {
   const exPos = findCell(grid, /EXAMINATIONS/i);
   const igPos = findCell(grid, /^Initial Grade$/i);
   const hpPos = findCell(grid, /HIGHEST POSSIBLE SCORE/i);
-  if (!wwPos || !ptPos || !exPos || !igPos || !hpPos) throw new Error("Could not locate the grading sections and score headers in 'TERM 1'.");
+  if (!wwPos || !ptPos || !igPos || !hpPos || (exPos && exPos[1] <= ptPos[1])) throw new Error("Could not locate the grading sections and score headers in 'TERM 1'.");
 
   const weightsRow = hpPos[0];
   const headerRow = weightsRow - 1;
   const domainRow = headerRow - 1;
   const ww = parseGroup(grid, "writtenWorks", wwPos[1], ptPos[1] - 1, domainRow, headerRow, weightsRow);
-  const pt = parseGroup(grid, "performanceTask", ptPos[1], exPos[1] - 1, domainRow, headerRow, weightsRow);
-  const examStart = exPos[1], examEnd = igPos[1] - 1;
-  const st1Col = findExact(grid, "WS ST1", headerRow, examStart, examEnd);
-  const st2Col = findExact(grid, "WS ST2", headerRow, examStart, examEnd);
-  const teCol = findExact(grid, "WS TE", headerRow, examStart, examEnd);
-  const examPsCol = findExact(grid, "PS", headerRow, examStart, examEnd);
-  const st1ScoreCol = findExact(grid, "ST1", headerRow, examStart, examEnd);
-  const st2ScoreCol = findExact(grid, "ST2", headerRow, examStart, examEnd);
-  const teScoreCol = findExact(grid, "TE", headerRow, examStart, examEnd);
-  const examCol = findExact(grid, "WS", headerRow, examStart, examEnd);
-  if ([st1Col, st2Col, teCol, examCol].some((v) => v === null)) throw new Error("Could not locate Exam ST1/ST2/TE and WS columns.");
-
-  const examSubWeights = { st1: numeric(grid[weightsRow]?.[st1Col]), st2: numeric(grid[weightsRow]?.[st2Col]), te: numeric(grid[weightsRow]?.[teCol]) };
-  const examWeightPercent = numeric(grid[weightsRow]?.[examCol], 100);
+  const pt = parseGroup(grid, "performanceTask", ptPos[1], (exPos?.[1] ?? igPos[1]) - 1, domainRow, headerRow, weightsRow);
+  const examinations = exPos ? parseExaminations(grid, headerRow, weightsRow, exPos[1], igPos[1] - 1) : { enabled: false, categoryWeightPercent: 0, components: [], outputs: {} };
+  const examWeightPercent = examinations.categoryWeightPercent;
   const weightSum = ww.weightPercent + pt.weightPercent + examWeightPercent;
-  if (Math.abs(weightSum - 100) > 0.5) throw new Error(`WW + PT + Exam weights read ${weightSum}%, expected 100%.`);
-  if (Math.abs(examSubWeights.st1 + examSubWeights.st2 + examSubWeights.te - 100) > 0.5) throw new Error("ST1 + ST2 + TE sub-weights must total 100%.");
+  if (Math.abs(weightSum - 100) > 0.5) throw new Error(`WW + PT${examinations.enabled ? " + Exam" : ""} weights read ${weightSum}%, expected 100%.`);
+  const examKeys = new Set(examinations.components.map((component) => component.key.toUpperCase()));
+  const examSubWeights = examKeys.has("ST1") && examKeys.has("ST2") && examKeys.has("TE")
+    ? Object.fromEntries(examinations.components.map((component) => [component.key.toLowerCase(), component.weightPercent]))
+    : undefined;
 
   const helperGrid = readGrid(helper, 120, 20);
   const igMin = findCell(helperGrid, /^IG \(Min\.?\)$/i);
@@ -99,7 +105,7 @@ function parseGradeTemplate(fileBuffer) {
   }
   if (!transmutationTable.length || !descriptorTable.length) throw new Error("The HELPER transmutation or descriptor table is empty.");
 
-  const structure = { ww, pt, examWeightPercent, examSubWeights, transmutationTable, descriptorTable };
+  const structure = { ww, pt, examWeightPercent, examinations, examSubWeights, transmutationTable, descriptorTable };
 
   let activeGender = null;
   const studentRows = [];
@@ -125,10 +131,10 @@ function parseGradeTemplate(fileBuffer) {
     nameColumn,
     studentRows,
     finalColumns,
-    examScoreColumns: { ST1: st1ScoreCol + 1, ST2: st2ScoreCol + 1, TE: teScoreCol + 1 },
-    examWeightedScoreColumns: { ST1: st1Col + 1, ST2: st2Col + 1, TE: teCol + 1 },
-    examPsColumn: examPsCol === null ? undefined : examPsCol + 1,
-    examWeightedScoreColumn: examCol + 1,
+    examScoreColumns: Object.fromEntries(examinations.components.map((component) => [component.key, component.scoreColumn + 1])),
+    examWeightedScoreColumns: Object.fromEntries(examinations.components.filter((component) => component.weightedScoreColumn !== undefined).map((component) => [component.key, component.weightedScoreColumn + 1])),
+    examPsColumn: examinations.outputs.percentageScoreColumn === undefined ? undefined : examinations.outputs.percentageScoreColumn + 1,
+    examWeightedScoreColumn: examinations.outputs.weightedScoreColumn === undefined ? undefined : examinations.outputs.weightedScoreColumn + 1,
   };
   structure.layout = layout;
   return {
@@ -136,9 +142,39 @@ function parseGradeTemplate(fileBuffer) {
     wwWeightPercent: ww.weightPercent,
     ptWeightPercent: pt.weightPercent,
     examWeightPercent,
-    examSt1SubweightPercent: examSubWeights.st1,
-    examSt2SubweightPercent: examSubWeights.st2,
-    examTeSubweightPercent: examSubWeights.te,
+    examSt1SubweightPercent: examSubWeights?.st1 ?? 0,
+    examSt2SubweightPercent: examSubWeights?.st2 ?? 0,
+    examTeSubweightPercent: examSubWeights?.te ?? 0,
+  };
+}
+
+function parseExaminations(grid, headerRow, weightsRow, start, end) {
+  const exact = (label) => findExact(grid, label, headerRow, start, end);
+  const keys = ["ST1", "ST2", "TE"].filter((key) => exact(key) !== null);
+  const overallWs = exact("WS");
+  const ps = exact("PS");
+  if (!keys.length || overallWs === null || ps === null) throw new Error("The Examination section is ambiguous or missing its PS/WS outputs.");
+  const categoryValue = grid[weightsRow]?.[overallWs];
+  const categoryRaw = categoryValue === null || categoryValue === undefined || (typeof categoryValue === "string" && !categoryValue.trim()) ? NaN : Number(categoryValue);
+  if (!Number.isFinite(categoryRaw) || categoryRaw < 0 || categoryRaw > 1) throw new Error("Examination weight is missing or invalid.");
+  const components = keys.length === 3
+    ? keys.map((key) => {
+      const weighted = exact(`WS ${key}`);
+      if (weighted === null) throw new Error(`Examination component ${key} is missing its WS output.`);
+      const weightPercent = numeric(grid[weightsRow]?.[weighted]);
+      if (weightPercent < 0 || weightPercent > 100) throw new Error(`${key} examination component weight is invalid.`);
+      return { key, label: key, scoreColumn: exact(key), weightedScoreColumn: weighted, weightPercent };
+    })
+    : keys.length === 1 && keys[0] === "TE" && exact("WS TE") === null
+      ? [{ key: "TE", label: "TE", scoreColumn: exact("TE"), weightPercent: 100 }]
+      : null;
+  if (!components) throw new Error("Unsupported Examination layout. Supported layouts are ST1/ST2/TE with matching WS outputs, or a single TE input with PS and WS.");
+  if (Math.abs(components.reduce((sum, component) => sum + component.weightPercent, 0) - 100) > 0.5) throw new Error("Examination component weights must total 100%.");
+  return {
+    enabled: true,
+    categoryWeightPercent: Math.round(categoryRaw * 10000) / 100,
+    components,
+    outputs: { percentageScoreColumn: ps, weightedScoreColumn: overallWs },
   };
 }
 

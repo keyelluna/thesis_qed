@@ -1,7 +1,5 @@
 const connection = require('../../../../../config/db');
 
-const ADVISORY_EXAM_TYPES = ["ST1", "ST2", "TE"];
-
 /**
  * Access-control middleware: verifies the logged-in parent actually has
  * this student as a linked child (via `parent_student`) before returning
@@ -43,36 +41,6 @@ async function loadParentStudent(req, res, next) {
     console.error("Error verifying parent-student access:", error);
     return res.status(500).json({ success: false, message: "Internal server error." });
   }
-}
-
-/**
- * Computes a single subject's ST1/ST2/TE average for one student, exactly
- * mirroring the formula used in getAdvisoryGradebook (advisoryGrading
- * controller) — each exam type is converted to a percentage of its max,
- * then averaged across all three. Only complete (all 3 present) subjects
- * produce a non-null average.
- */
-function computeSubjectAverage(items, scoreByItemId) {
-  const byType = {};
-  for (const type of ADVISORY_EXAM_TYPES) {
-    const item = items.find((i) => i.examType === type);
-    if (!item) {
-      byType[type] = null;
-      continue;
-    }
-    const score = scoreByItemId.get(item.id);
-    byType[type] = score === undefined || score === null ? null : { score, max: item.maxItems };
-  }
-  const present = ADVISORY_EXAM_TYPES.filter((t) => byType[t] !== null);
-  const isComplete = present.length === ADVISORY_EXAM_TYPES.length;
-  const average = isComplete
-    ? Math.round(
-        (present.reduce((sum, t) => sum + (byType[t].score / byType[t].max) * 100, 0) /
-          ADVISORY_EXAM_TYPES.length) *
-          10
-      ) / 10
-    : null;
-  return { average, isComplete };
 }
 
 /**
@@ -120,31 +88,25 @@ async function getStudentTermPerformance(req, res) {
     const periodIds = periods.map((p) => p.id);
     const periodPlaceholders = periodIds.map(() => "?").join(",");
 
-    // All ST1/ST2/TE items across every subject-section and every term
-    const [items] = await connection.execute(
-      `SELECT id, subject_section_id AS subjectSectionId, grading_period_id AS gradingPeriodId,
-              exam_type AS examType, max_items AS maxItems
-       FROM grade_items
-       WHERE subject_section_id IN (${ssPlaceholders}) AND tab = 'exams'
-         AND exam_type IN ('ST1','ST2','TE') AND grading_period_id IN (${periodPlaceholders})`,
-      [...subjectSectionIds, ...periodIds]
+    // Use the authoritative, template-aware cache. Recomputing from fixed
+    // ST1/ST2/TE items here would disagree with no-exam and variable-exam
+    // templates, and could publish a partial grade.
+    const [cacheRows] = await connection.execute(
+      `SELECT subject_section_id AS subjectSectionId,
+              grading_period_id AS gradingPeriodId,
+              average,
+              is_complete AS isComplete
+       FROM subject_grade_cache
+       WHERE student_id = ?
+         AND subject_section_id IN (${ssPlaceholders})
+         AND grading_period_id IN (${periodPlaceholders})`,
+      [studentId, ...subjectSectionIds, ...periodIds]
     );
-
-    // This student's scores for those items
-    let scores = [];
-    if (items.length > 0) {
-      const itemIds = items.map((i) => i.id);
-      const itemPlaceholders = itemIds.map(() => "?").join(",");
-      const [scoreRows] = await connection.execute(
-        `SELECT item_id AS itemId, score
-         FROM grade_scores
-         WHERE student_id = ? AND item_id IN (${itemPlaceholders})`,
-        [studentId, ...itemIds]
-      );
-      scores = scoreRows;
-    }
-    const scoreByItemId = new Map(
-      scores.map((s) => [s.itemId, s.score === null ? null : Number(s.score)])
+    const gradeBySubjectAndPeriod = new Map(
+      cacheRows.map((row) => [
+        `${row.subjectSectionId}_${row.gradingPeriodId}`,
+        row.isComplete && row.average !== null ? Number(row.average) : null,
+      ])
     );
 
     // Which (section, term) pairs has the advisory teacher submitted?
@@ -159,18 +121,12 @@ async function getStudentTermPerformance(req, res) {
     const terms = periods.map((period, index) => {
       const isSubmitted = submittedPeriodIds.has(period.id);
 
-      const subjects = subjectSections.map((ss) => {
-        const subjItems = items.filter(
-          (i) => i.subjectSectionId === ss.subjectSectionId && i.gradingPeriodId === period.id
-        );
-        const { average } = computeSubjectAverage(subjItems, scoreByItemId);
-        return {
-          subject: ss.subjectName,
-          grade: average ?? 0,
-        };
-      });
+      const subjects = subjectSections.map((ss) => ({
+        subject: ss.subjectName,
+        grade: gradeBySubjectAndPeriod.get(`${ss.subjectSectionId}_${period.id}`) ?? null,
+      }));
 
-      const validAverages = subjects.map((s) => s.grade).filter((g) => g > 0);
+      const validAverages = subjects.map((s) => s.grade).filter((grade) => grade !== null);
       const overallAverage =
         validAverages.length > 0
           ? Math.round((validAverages.reduce((a, b) => a + b, 0) / validAverages.length) * 100) / 100

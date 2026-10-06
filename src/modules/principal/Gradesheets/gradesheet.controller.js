@@ -746,7 +746,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
         `${row.studentId}:${row.subjectSectionId}`,
         {
           average:
-            row.average !== null
+            Boolean(row.isComplete) && row.average !== null
               ? Number(row.average)
               : null,
           isComplete: Boolean(row.isComplete),
@@ -899,6 +899,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
 
         const visibleAverage =
           status === "submitted" &&
+          cache.isComplete &&
           cache.average !== null
             ? cache.average
             : null;

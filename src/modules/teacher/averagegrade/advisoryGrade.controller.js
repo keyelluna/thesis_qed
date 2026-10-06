@@ -1,6 +1,7 @@
 const connection = require("../../../../config/db");
 const { getSingleTermVisibility } = require('../../parents/Student-Record/ProgressReport/progressVisibility.controller');
 const { notifyGradeVisibility, notifyAdvisoryGradesSubmitted } = require('../../notification/notification.service')
+const { recordAdvisoryGradeSubmission, getAdvisorySubmissionHistory } = require('../../shared/grades/gradeSubmissionHistory.service');
 
 // FIX: renamed from loadAdvisorySection. Now fetches ALL advisory classes
 // for this teacher instead of just one, and lets the caller pick which
@@ -176,7 +177,7 @@ const getAdvisoryGradebook = async (req, res) => {
     const cacheByKey = new Map(
       cacheRows.map((r) => [
         `${r.studentId}:${r.subjectSectionId}`,
-        { average: r.average, isComplete: !!r.isComplete },
+        { average: r.isComplete && r.average !== null ? r.average : null, isComplete: !!r.isComplete },
       ]),
     );
 
@@ -245,9 +246,9 @@ const getAdvisoryGradebook = async (req, res) => {
 
         grades[String(ss.subjectSectionId)] = {
           status,
-          termGrade: status === "submitted" && cell.average !== null ? Number(cell.average) : null,
+          termGrade: status === "submitted" && cell.isComplete && cell.average !== null ? Number(cell.average) : null,
           average:
-            status === "submitted" && cell.average !== null
+            status === "submitted" && cell.isComplete && cell.average !== null
               ? Number(cell.average)
               : null,
           submittedByName: submission ? submission.submittedByName : null,
@@ -352,6 +353,22 @@ const getSubmissionStatus = async (req, res) => {
   }
 };
 
+const getSubmissionHistory = async (req, res) => {
+  try {
+    const { gradingPeriodId } = req.query;
+    if (!gradingPeriodId) {
+      return res.status(400).json({ success: false, message: "gradingPeriodId is required." });
+    }
+
+    const { section_id: sectionId, gradeLevelId } = req.advisorySection;
+    const logs = await getAdvisorySubmissionHistory({ sectionId, gradeLevelId, gradingPeriodId });
+    return res.status(200).json({ success: true, data: logs });
+  } catch (error) {
+    console.error("Error fetching grade submission history:", error);
+    return res.status(500).json({ success: false, message: "Unable to load grade submission history." });
+  }
+};
+
 const submitAdvisoryGrades = async (req, res) => {
   try {
     const { gradingPeriodId } = req.body;
@@ -371,6 +388,13 @@ const submitAdvisoryGrades = async (req, res) => {
        ON DUPLICATE KEY UPDATE submitted_by = VALUES(submitted_by), submitted_at = CURRENT_TIMESTAMP`,
       [scope.value, gradingPeriodId, teacherId],
     );
+
+    await recordAdvisoryGradeSubmission({
+      sectionId: req.advisorySection.section_id,
+      gradeLevelId: req.advisorySection.gradeLevelId,
+      gradingPeriodId,
+      teacherId,
+    });
 
     try {
       await notifyAdvisoryGradesSubmitted({
@@ -566,6 +590,7 @@ module.exports = {
   getAdvisorySections,
   getAdvisoryGradebook,
   getSubmissionStatus,
+  getSubmissionHistory,
   submitAdvisoryGrades,
   getGradeVisibility,
   setGradeVisibility,

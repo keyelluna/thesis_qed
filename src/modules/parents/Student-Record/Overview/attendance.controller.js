@@ -43,6 +43,25 @@ exports.getMonthlyAttendance = async (req, res) => {
       });
     }
 
+    const authUserId = req.user?.userId;
+    if (!authUserId) {
+      return res.status(401).json({ success: false, message: "Unauthorized." });
+    }
+    const [parentRows] = await connection.query(
+      `SELECT id FROM parent_table WHERE user_id = ? AND is_deleted = 0 LIMIT 1`,
+      [authUserId],
+    );
+    if (parentRows.length === 0) {
+      return res.status(403).json({ success: false, message: "Parent account required." });
+    }
+    const [ownershipRows] = await connection.query(
+      `SELECT 1 FROM parent_student WHERE parent_id = ? AND student_id = ? LIMIT 1`,
+      [parentRows[0].id, student_id],
+    );
+    if (ownershipRows.length === 0) {
+      return res.status(403).json({ success: false, message: "You are not authorized to view this student's attendance." });
+    }
+
     // Check muna kung existing yung student (para may proper 404 kung wala)
     const [studentRows] = await connection.query(
       `SELECT id, student_number, last_name, first_name, middle_name, grade_level_id, section_id
@@ -64,14 +83,21 @@ exports.getMonthlyAttendance = async (req, res) => {
     //    = distinct attendance_date na may record sa advisory_attendance_records,
     //    naka-scope sa section ng student (dati walang section filter, kaya
     //    posibleng magkaiba ang bilang depende sa records ng ibang section)
-    const [schoolDaysRows] = await connection.query(
-      `SELECT COUNT(DISTINCT attendance_date) AS school_days
-       FROM advisory_attendance_records
-       WHERE section_id = ?
-         AND MONTH(attendance_date) = ?
-         AND YEAR(attendance_date) = ?`,
-      [student.section_id, monthNum, yearNum]
-    );
+    const [schoolDaysRows] = student.section_id
+      ? await connection.query(
+          `SELECT COUNT(DISTINCT attendance_date) AS school_days
+           FROM advisory_attendance_records
+           WHERE section_id = ? AND MONTH(attendance_date) = ? AND YEAR(attendance_date) = ?`,
+          [student.section_id, monthNum, yearNum],
+        )
+      : await connection.query(
+          `SELECT COUNT(DISTINCT aar.attendance_date) AS school_days
+           FROM advisory_attendance_records aar
+           INNER JOIN classes c ON c.id = aar.class_id
+           WHERE c.grade_level_id = ? AND c.section_id IS NULL
+             AND MONTH(aar.attendance_date) = ? AND YEAR(aar.attendance_date) = ?`,
+          [student.grade_level_id, monthNum, yearNum],
+        );
 
     const schoolDays = schoolDaysRows[0].school_days || 0;
 

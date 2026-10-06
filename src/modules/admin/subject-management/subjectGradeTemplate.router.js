@@ -27,6 +27,7 @@ router.get('/getActiveGradeTemplate/:subjectId', gradeTemplate.getActiveGradeTem
 // route resolves subject_id internally via the join in the controller.
 router.get('/getActiveGradeTemplateBySection/:subjectSectionId', gradeTemplate.getActiveGradeTemplateBySection);
 router.get('/downloadActiveGradeTemplateBySection/:subjectSectionId', verifyToken, gradeTemplate.downloadActiveGradeTemplateBySection);
+router.get('/exportGradeTemplateBySection/:subjectSectionId', verifyToken, gradeTemplate.exportGradeTemplateBySection);
 // Combined lookup: resolves template-vs-manual precedence server-side so
 // the frontend only ever needs one call and one source of truth.
 router.get('/getEffectiveWeights/:subjectSectionId', gradeTemplate.getEffectiveWeights);

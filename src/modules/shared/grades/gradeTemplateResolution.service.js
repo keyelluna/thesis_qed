@@ -1,5 +1,4 @@
-const fs = require("fs");
-const crypto = require("crypto");
+const templateStorage = require("../../../services/templateStorage.service");
 const connection = require("../../../../config/db");
 
 function parseJson(value, label) {
@@ -14,7 +13,7 @@ function parseJson(value, label) {
   }
 }
 
-function assertTemplateIntegrity(template, subjectId, { requireWorkbook = false } = {}) {
+function assertTemplateIntegrity(template, subjectId) {
   if (!template || Number(template.subjectId) !== Number(subjectId)) {
     const error = new Error("The pinned grade template does not match this subject."); error.statusCode = 409; throw error;
   }
@@ -24,15 +23,6 @@ function assertTemplateIntegrity(template, subjectId, { requireWorkbook = false 
   const structure = parseJson(template.structureJson, "grading configuration");
   let exportMap = null;
   if (template.exportMapJson) exportMap = parseJson(template.exportMapJson, "export map");
-  if (requireWorkbook) {
-    if (!template.filePath || !fs.existsSync(template.filePath)) {
-      const error = new Error("The pinned grade template workbook is unavailable."); error.statusCode = 409; throw error;
-    }
-    const actual = crypto.createHash("sha256").update(fs.readFileSync(template.filePath)).digest("hex");
-    if (actual !== String(template.checksum).toLowerCase()) {
-      const error = new Error("The pinned grade template workbook failed checksum verification."); error.statusCode = 409; throw error;
-    }
-  }
   return { ...template, structure, exportMap };
 }
 
@@ -51,7 +41,7 @@ async function readScope(subjectSectionId, gradingPeriodId) {
 
 async function readPinned(subjectSectionId, gradingPeriodId) {
   const [rows] = await connection.execute(
-    `SELECT t.id AS templateId, t.subject_id AS subjectId, t.file_name AS fileName, t.file_path AS filePath,
+    `SELECT t.id AS templateId, t.subject_id AS subjectId, t.file_name AS fileName, t.file_path AS filePath, t.storage_key AS storageKey,
             t.checksum_sha256 AS checksum, t.structure_json AS structureJson,
             t.export_map_json AS exportMapJson
        FROM subject_grade_template_periods p
@@ -78,7 +68,7 @@ async function resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, 
 
   if (!pinned) {
     const [activeRows] = await connection.execute(
-      `SELECT id AS templateId, subject_id AS subjectId, file_name AS fileName, file_path AS filePath,
+      `SELECT id AS templateId, subject_id AS subjectId, file_name AS fileName, file_path AS filePath, storage_key AS storageKey,
               checksum_sha256 AS checksum, structure_json AS structureJson,
               export_map_json AS exportMapJson
          FROM subject_grade_templates WHERE subject_id = ? AND is_active = 1 LIMIT 1`,
@@ -105,7 +95,7 @@ async function resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, 
       );
       if (!currentPins.length) {
         const [currentActive] = await conn.execute(
-          `SELECT id AS templateId, subject_id AS subjectId, file_name AS fileName, file_path AS filePath,
+          `SELECT id AS templateId, subject_id AS subjectId, file_name AS fileName, file_path AS filePath, storage_key AS storageKey,
                   checksum_sha256 AS checksum, structure_json AS structureJson,
                   export_map_json AS exportMapJson
              FROM subject_grade_templates WHERE subject_id = ? AND is_active = 1 LIMIT 1`,
@@ -131,7 +121,8 @@ async function resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, 
   }
 
   if (!pinned?.templateId) { const error = new Error("The grading period has a template assignment whose template version no longer exists."); error.statusCode = 409; throw error; }
-  const template = assertTemplateIntegrity(pinned, scope.subjectId, { requireWorkbook });
+  const template = assertTemplateIntegrity(pinned, scope.subjectId);
+  if (requireWorkbook) template.workbookBuffer = await templateStorage.getTemplate(template);
   return { ...scope, template };
 }
 

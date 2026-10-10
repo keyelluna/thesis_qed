@@ -1,5 +1,7 @@
 //ENVIRONMENT VARIABLES
 require('dotenv').config();
+// Optional private local storage settings; existing environment values take precedence.
+require('dotenv').config({ path: require('node:path').join(__dirname, '.env.storage.local'), quiet: true });
 
 const express = require('express');
 const { createServer } = require('http');

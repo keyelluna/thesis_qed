@@ -1,2 +1,5 @@
 .env
+.env.*
+!.env.example
+!.env.storage.example
 node_modules/

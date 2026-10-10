@@ -1,6 +1,6 @@
-const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const templateStorage = require("../../../services/templateStorage.service");
 const connection = require("../../../../config/db");
 const { parseGradeTemplate } = require("./services/gradeTemplateParser.service");
 const { createGradeTemplateWorkbookMap } = require("./services/gradeTemplateWorkbookMap.service");
@@ -10,12 +10,10 @@ const { resolveGradeTemplateForPeriod } = require("../../shared/grades/gradeTemp
 const { assertMappedCapacity } = require("./services/gradeTemplateCapacity.service");
 const { assessmentCategoryForName } = require("../../shared/grades/assessmentCategory.service");
 
-const UPLOAD_DIR = path.join(__dirname, "../../../../uploads/grade-templates");
-
-function ensureUploadDir() {
-  if (!fs.existsSync(UPLOAD_DIR)) {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  }
+function safeTemplateFailure(res, error, fallback) {
+  // statusCode is only set by QED validation/storage errors. Provider exceptions are sanitized in storage.
+  const status = [400, 401, 403, 404, 409, 422, 503].includes(error.statusCode) ? error.statusCode : 500;
+  return res.status(status).json({ success: false, message: status === 500 ? fallback : error.message });
 }
 
 async function refreshSubjectGradeCache(subjectId) {
@@ -64,7 +62,7 @@ exports.uploadGradeTemplate = async (req, res) => {
   }
 
   const conn = await connection.getConnection();
-  let persistedFilePath = null;
+  const checksum = templateStorage.sha256(req.file.buffer);
 
   try {
     await conn.beginTransaction();
@@ -84,24 +82,21 @@ exports.uploadGradeTemplate = async (req, res) => {
       [subjectId]
     );
 
-    ensureUploadDir();
-    const safeFileName = `${subjectId}-${Date.now()}-${crypto.randomUUID()}-${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    const filePath = path.join(UPLOAD_DIR, safeFileName);
-    fs.writeFileSync(filePath, req.file.buffer);
-    persistedFilePath = filePath;
+    const storageKey = await templateStorage.storeTemplate({ bytes: req.file.buffer, checksum });
 
     const [result] = await conn.query(
       `INSERT INTO subject_grade_templates
-        (subject_id, file_name, file_path, checksum_sha256,
+        (subject_id, file_name, file_path, storage_key, checksum_sha256,
          ww_weight_percent, pt_weight_percent, exam_weight_percent,
          exam_st1_subweight_percent, exam_st2_subweight_percent, exam_te_subweight_percent,
          structure_json, export_map_json, uploaded_by, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         subjectId,
         req.file.originalname,
-        filePath,
-        crypto.createHash("sha256").update(req.file.buffer).digest("hex"),
+        "",
+        storageKey,
+        checksum,
         parsed.wwWeightPercent,
         parsed.ptWeightPercent,
         parsed.examWeightPercent,
@@ -136,17 +131,7 @@ exports.uploadGradeTemplate = async (req, res) => {
   } catch (error) {
     try { await conn.rollback(); } catch { /* transaction may already be closed */ }
     conn.release();
-    if (persistedFilePath) {
-      try {
-        const [storedRows] = await connection.query(
-          `SELECT id FROM subject_grade_templates WHERE file_path = ? LIMIT 1`,
-          [persistedFilePath],
-        );
-        if (!storedRows.length && fs.existsSync(persistedFilePath)) fs.unlinkSync(persistedFilePath);
-      } catch (cleanupError) {
-        console.error("Could not verify failed-upload workbook cleanup:", cleanupError.message);
-      }
-    }
+    // Never delete an object on ambiguous DB commit failure. Unreferenced objects can be reviewed manually.
     console.error("Database Error:", error);
 
     if (error.code === "ER_DUP_ENTRY") {
@@ -155,7 +140,7 @@ exports.uploadGradeTemplate = async (req, res) => {
         message: "This subject already has an active template. Please retry.",
       });
     }
-    return res.status(500).json({ success: false, message: "Database error occurred." });
+    return safeTemplateFailure(res, error, "Could not save the official grade template.");
   }
 };
 
@@ -268,7 +253,7 @@ exports.getEffectiveWeights = async (req, res) => {
       const [templateRows] = await connection.query(
         `SELECT ww_weight_percent AS ww, pt_weight_percent AS pt, exam_weight_percent AS exam,
                 exam_st1_subweight_percent AS st1, exam_st2_subweight_percent AS st2, exam_te_subweight_percent AS te,
-                structure_json AS structureJson, file_path AS filePath, id AS templateId,
+                structure_json AS structureJson, file_path AS filePath, storage_key AS storageKey, id AS templateId,
                 checksum_sha256 AS checksum, export_map_json AS exportMapJson
            FROM subject_grade_templates WHERE subject_id = ? AND is_active = 1 LIMIT 1`,
         [sectionRows[0].subjectId],
@@ -288,6 +273,7 @@ exports.getEffectiveWeights = async (req, res) => {
       te: resolved.template.te,
       structureJson: resolved.template.structure,
       filePath: resolved.template.filePath,
+      storageKey: resolved.template.storageKey,
       templateId: resolved.template.templateId,
       checksum: resolved.template.checksum,
       exportMapJson: resolved.template.exportMapJson,
@@ -335,8 +321,8 @@ exports.getEffectiveWeights = async (req, res) => {
           || !templateStructure.termConfigurations
           || !storedMap
           || Number(storedMap.version) < 3;
-        if (needsWorkbookRefresh && t.filePath && fs.existsSync(t.filePath)) {
-          const masterBuffer = fs.readFileSync(t.filePath);
+        if (needsWorkbookRefresh && await templateStorage.templateExists(t)) {
+          const masterBuffer = await templateStorage.getTemplate(t);
           const actualChecksum = crypto.createHash("sha256").update(masterBuffer).digest("hex");
           if (t.checksum && t.checksum !== actualChecksum) {
             throw new Error(`Stored grade template ${t.templateId} failed checksum verification.`);
@@ -431,19 +417,22 @@ exports.downloadActiveGradeTemplateBySection = async (req, res) => {
   }
   try {
     const [rows] = await connection.query(
-      `SELECT t.file_path AS filePath, t.file_name AS fileName
+      `SELECT t.file_path AS filePath, t.storage_key AS storageKey, t.checksum_sha256 AS checksum, t.file_name AS fileName
          FROM \`subject-section\` ss
          JOIN subject_grade_templates t ON t.subject_id = ss.subject_id AND t.is_active = 1
         WHERE ss.id = ? LIMIT 1`,
       [subjectSectionId],
     );
-    if (!rows.length || !fs.existsSync(rows[0].filePath)) {
+    if (!rows.length) {
       return res.status(404).json({ success: false, message: "The active grade template file is unavailable." });
     }
-    return res.download(rows[0].filePath, rows[0].fileName);
+    const bytes = await templateStorage.getTemplate(rows[0]);
+    res.setHeader("Content-Type", templateStorage.XLSX_TYPE);
+    res.attachment(rows[0].fileName);
+    return res.status(200).send(bytes);
   } catch (error) {
     console.error("Grade template download error:", error);
-    return res.status(500).json({ success: false, message: "Could not download the active grade template." });
+    return safeTemplateFailure(res, error, "Could not download the active grade template.");
   }
 };
 
@@ -504,7 +493,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
       return res.status(404).json({ success: false, message: "No official grade template is configured for this subject." });
     }
     const template = resolved.template;
-    const masterBuffer = fs.readFileSync(template.filePath);
+    const masterBuffer = template.workbookBuffer;
     const checksum = template.checksum;
     let exportMap = template.exportMap;
     let refreshExportMap = !exportMap || Number(exportMap.version) < 3;
@@ -659,6 +648,6 @@ exports.exportGradeTemplateBySection = async (req, res) => {
     return res.status(200).send(exportBuffer);
   } catch (error) {
     console.error("Official grade template export error:", error);
-    return res.status(500).json({ success: false, message: "Could not export the official grade template." });
+    return safeTemplateFailure(res, error, "Could not export the official grade template.");
   }
 };

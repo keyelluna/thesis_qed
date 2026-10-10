@@ -1,3 +1,4 @@
+const { getTeacherScheduleRows } = require('../../../services/teacherSchedule.service');
 const connection = require('../../../../config/db');
 
 const ACTIVE_SY_SUBQUERY = '(SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)';
@@ -34,8 +35,6 @@ const getDashboardSummary = async (req, res) => {
     return res.status(200).json({
       success: true,
       name: teacherName,
-      classesToday: 4,
-      pendingGrades: 14,
     });
   } catch (error) {
     console.error("Error fetching dashboard summary:", error);
@@ -85,7 +84,7 @@ const getDashboardStats = async (req, res) => {
     // belong to the currently active school year (via elem_students.current_school_year_id),
     // and only count advisory classes that belong to the active school year.
     const [advisoryCountRows] = await connection.execute(
-      `SELECT COUNT(*) AS advisoryClassCount
+      `SELECT COUNT(DISTINCT st.id) AS advisoryClassCount
        FROM elem_students st
        INNER JOIN classes c
          ON (
@@ -185,7 +184,7 @@ const getAttendanceSummary = async (req, res) => {
     );
 
     if (advisoryRows.length === 0) {
-      return res.status(200).json({ success: true, present: 0, absent: 0, late: 0 });
+      return res.status(200).json({ success: true, present: 0, absent: 0, late: 0, recordedCount: 0, hasAdvisory: false });
     }
 
     const classIds = advisoryRows.map((r) => r.id);
@@ -193,13 +192,14 @@ const getAttendanceSummary = async (req, res) => {
 
     const [rows] = await connection.execute(
       `SELECT
+         COUNT(status) AS recordedCount,
          SUM(CASE WHEN status = 'P' THEN 1 ELSE 0 END) AS present,
          SUM(CASE WHEN status = 'A' THEN 1 ELSE 0 END) AS absent,
          SUM(CASE WHEN status = 'L' THEN 1 ELSE 0 END) AS late
        FROM advisory_attendance_records
        WHERE class_id IN (${placeholders})
-         AND attendance_date = CURDATE()`,
-      classIds
+         AND attendance_date = ?`,
+      [...classIds, new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())]
     );
 
     const row = rows[0] || {};
@@ -207,6 +207,8 @@ const getAttendanceSummary = async (req, res) => {
     return res.status(200).json({
       success: true,
       present: Number(row.present) || 0,
+      recordedCount: Number(row.recordedCount) || 0,
+      hasAdvisory: true,
       absent: Number(row.absent) || 0,
       late: Number(row.late) || 0,
     });
@@ -283,6 +285,7 @@ const formatTime = (timeStr) => {
 
 const getTodaysAgenda = async (req, res) => {
   try {
+    const weekly = req.path === '/schedule';
     const authId = req.user?.userId;
 
     if (!authId) {
@@ -310,30 +313,11 @@ const getTodaysAgenda = async (req, res) => {
     });
 
     // class_schedule_day only has Monday-Friday, so weekends return an empty agenda.
-    const [rows] = await connection.execute(
-      `SELECT
-         cs.id,
-         cs.subject_name,
-         cs.start_time,
-         cs.end_time,
-         c.room,
-         gl.grade_level,
-         gls.section_name
-       FROM class_schedule cs
-       INNER JOIN class_schedule_day csd ON csd.class_schedule_id = cs.id
-       INNER JOIN classes c ON c.id = cs.class_id
-       INNER JOIN grade_level gl ON gl.id = c.grade_level_id
-       LEFT JOIN grade_level_sections gls ON gls.id = c.section_id
-       WHERE cs.subject_teacher_id = ?
-         AND csd.day_of_week = ?
-         AND c.status = 'Active'
-         AND c.school_year_id = ${ACTIVE_SY_SUBQUERY}
-       ORDER BY cs.start_time ASC`,
-      [teacherId, today]
-    );
+    const rows = await getTeacherScheduleRows(teacherId, weekly ? null : today);
 
     const agenda = rows.map((row) => ({
       id: row.id,
+      dayOfWeek: row.day_of_week,
       subjectName: row.subject_name,
       className: row.section_name
         ? `${row.grade_level} - ${row.section_name}`

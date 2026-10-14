@@ -3,7 +3,7 @@ const { getAdvisoryGradeSheetPath } = require('./notification.service');
 
 exports.getNotifications = async (req, res, next) => {
   try {
-    const { userId } = req.params;
+    const userId = req.notificationOwner;
 
     const [notifs] = await connection.query(
       `SELECT n.id, n.user_id, n.title, n.message, n.type, n.student_id, n.ref_key,
@@ -38,8 +38,8 @@ exports.markAsRead = async (req, res, next) => {
     const { id } = req.params;
 
     await connection.query(
-      `UPDATE notifications SET is_read = true WHERE id = ?`,
-      [id]
+      `UPDATE notifications SET is_read = true WHERE id = ? AND user_id = ?`,
+      [id, req.notificationOwner]
     );
 
     res.json({ success: true });
@@ -50,7 +50,7 @@ exports.markAsRead = async (req, res, next) => {
 
 exports.markAllAsRead = async (req, res, next) => {
   try {
-    const { userId } = req.params;
+    const userId = req.notificationOwner;
 
     await connection.query(
       `UPDATE notifications SET is_read = true WHERE user_id = ? AND is_read = false`,

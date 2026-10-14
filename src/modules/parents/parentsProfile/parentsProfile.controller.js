@@ -14,7 +14,7 @@ exports.getUser = async (req, res) => {
     const query = `
       SELECT id, CONCAT(first_name, ' ', last_name) AS full_name, contact_number, email_address, address
       FROM parent_table
-      WHERE user_id = ?
+      WHERE user_id = ? AND is_deleted = 0
     `;
 
     const [rows] = await connection.execute(

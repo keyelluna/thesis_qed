@@ -13,7 +13,7 @@ async function loadParentStudent(req, res, next) {
     }
 
     const [parentRows] = await connection.execute(
-      `SELECT id FROM parent_table WHERE user_id = ?`,
+      `SELECT id FROM parent_table WHERE user_id = ? AND is_deleted = 0`,
       [authId]
     );
     if (parentRows.length === 0) {
@@ -24,7 +24,7 @@ async function loadParentStudent(req, res, next) {
     const { studentId } = req.params;
 
     const [linkRows] = await connection.execute(
-      `SELECT es.id, es.section_id
+      `SELECT es.id, es.section_id, es.grade_level_id
        FROM elem_students es
        INNER JOIN parent_student ps ON ps.student_id = es.id
        WHERE es.id = ? AND ps.parent_id = ? AND es.is_deleted = 0`,
@@ -36,6 +36,7 @@ async function loadParentStudent(req, res, next) {
 
     req.parentId = parentId;
     req.studentSectionId = linkRows[0].section_id;
+    req.studentGradeLevelId = linkRows[0].grade_level_id;
     next();
   } catch (error) {
     console.error("Error verifying parent-student access:", error);
@@ -48,22 +49,26 @@ async function loadParentStudent(req, res, next) {
  * match the parent-side `Term[]` type:
  *   { key, label, released, releaseDate?, average?, subjects: SubjectGrade[] }
  *
- * A term is only marked `released` if the advisory teacher has actually
- * submitted grades for that grading period (grade_submissions) — mirrors
- * the teacher-side "Submit Class Grades" gate so parents never see
- * in-progress numbers.
+ * Parents receive grades only after advisory submission, the term end date,
+ * and the adviser's visibility release for this student and grading period.
  */
 async function getStudentTermPerformance(req, res) {
   try {
     const { studentId } = req.params;
     const sectionId = req.studentSectionId;
+    const gradeLevelId = req.studentGradeLevelId;
 
     const [periods] = await connection.execute(
-      `SELECT gp.id, gp.term_number AS termNumber, gp.term_label AS termLabel
+      `SELECT gp.id, gp.term_number AS termNumber, gp.term_label AS termLabel,
+              gp.school_year_id AS schoolYearId,
+              COALESCE(gv.is_visible, 0) AS isVisible,
+              (CURDATE() >= gp.end_date) AS termEnded
        FROM grading_periods gp
        INNER JOIN school_year sy ON gp.school_year_id = sy.id
+       LEFT JOIN grade_visibility gv ON gv.grading_period_id = gp.id AND gv.student_id = ?
        WHERE sy.is_active = 1
-       ORDER BY gp.term_number ASC`
+       ORDER BY gp.term_number ASC`,
+      [studentId]
     );
 
     if (periods.length === 0) {
@@ -74,9 +79,12 @@ async function getStudentTermPerformance(req, res) {
       `SELECT ss.id AS subjectSectionId, es.subject_name AS subjectName
        FROM \`subject-section\` ss
        INNER JOIN elem_subjects es ON ss.subject_id = es.id
-       WHERE ss.section_id = ? AND ss.status = 'Active'
+       WHERE ${sectionId !== null
+         ? '(ss.section_id = ? OR (ss.section_id IS NULL AND es.grade_level_id = ?))'
+         : 'ss.section_id IS NULL AND es.grade_level_id = ?'}
+         AND ss.status = 'Active' AND ss.school_year_id = ?
        ORDER BY es.subject_name ASC`,
-      [sectionId]
+      sectionId !== null ? [sectionId, gradeLevelId, periods[0].schoolYearId] : [gradeLevelId, periods[0].schoolYearId]
     );
 
     if (subjectSections.length === 0) {
@@ -113,13 +121,15 @@ async function getStudentTermPerformance(req, res) {
     const [submissions] = await connection.execute(
       `SELECT grading_period_id AS gradingPeriodId
        FROM grade_submissions
-       WHERE section_id = ? AND grading_period_id IN (${periodPlaceholders})`,
-      [sectionId, ...periodIds]
+       WHERE ${sectionId !== null ? 'section_id = ?' : 'section_id IS NULL AND grade_level_id = ?'}
+         AND grading_period_id IN (${periodPlaceholders})`,
+      [sectionId ?? gradeLevelId, ...periodIds]
     );
     const submittedPeriodIds = new Set(submissions.map((s) => s.gradingPeriodId));
 
-    const terms = periods.map((period, index) => {
-      const isSubmitted = submittedPeriodIds.has(period.id);
+    const terms = periods.map((period) => {
+      const isSubmitted = submittedPeriodIds.has(period.id) &&
+        Number(period.isVisible) === 1 && Number(period.termEnded) === 1;
 
       const subjects = subjectSections.map((ss) => ({
         subject: ss.subjectName,

@@ -1,4 +1,5 @@
 const connection = require("../../../../config/db");
+const { studentReadScope } = require('./studentRecord.authorization');
 
 // ADD NEW STUDENT
 exports.addNewStudent = async (req, res) => {
@@ -252,25 +253,27 @@ exports.getStudentById = async (req, res) => {
   const { id } = req.params;
 
   try {
+    const scope = studentReadScope(req, 's');
     const studentQuery = `
       SELECT 
-        id,
-        student_number,
-        last_name,
-        first_name,
-        middle_name,
-        learner_reference_number,
-        gender,
-        grade_level_id,
-        section_id,
-        parent_guardian_name
-      FROM elem_students
-      WHERE id = ?
-  AND is_deleted = 0
-  AND status <> 'graduated'
+        s.id,
+        s.student_number,
+        s.last_name,
+        s.first_name,
+        s.middle_name,
+        s.learner_reference_number,
+        s.gender,
+        s.grade_level_id,
+        s.section_id,
+        s.parent_guardian_name
+      FROM elem_students s
+      WHERE s.id = ?
+  AND s.is_deleted = 0
+  AND s.status <> 'graduated'
+  AND ${scope.sql}
     `;
 
-    const [rows] = await connection.query(studentQuery, [id]);
+    const [rows] = await connection.query(studentQuery, [id, ...scope.params]);
 
     if (rows.length === 0) {
       return res.status(404).json({
@@ -294,6 +297,7 @@ exports.getStudentById = async (req, res) => {
 
 exports.getAllStudents = async (req, res) => {
   try {
+    const scope = studentReadScope(req, 's');
     const query = `
             SELECT 
                 s.*,
@@ -306,10 +310,11 @@ exports.getAllStudents = async (req, res) => {
             WHERE s.is_deleted = 0
               AND sy.is_active = 1
               AND s.status != 'graduated'
+              AND ${scope.sql}
             ORDER BY s.grade_level_id ASC
         `;
 
-    const [students] = await connection.query(query);
+    const [students] = await connection.query(query, scope.params);
 
     return res.status(200).json({
       success: true,
@@ -329,13 +334,15 @@ exports.getAllStudents = async (req, res) => {
 //GET THE TOTAL NUMBER OF STUDENTS
 exports.getTotalStudents = async (req, res) => {
   try {
+    const scope = studentReadScope(req, 'es');
     const [rows] = await connection.execute(
       `SELECT COUNT(*) AS total
        FROM elem_students es
        JOIN school_year sy ON sy.id = es.current_school_year_id
        WHERE es.is_deleted = 0
          AND sy.is_active = 1
-         AND es.status != 'graduated'`,
+         AND es.status != 'graduated'
+         AND ${scope.sql}`, scope.params,
     );
 
     return res.status(200).json({
@@ -355,6 +362,7 @@ exports.getTotalStudents = async (req, res) => {
 //get all grade evel studentt
 exports.getAllGrade = async (req, res) => {
   try {
+    const scope = studentReadScope(req, 's');
     const [gradeLevels] = await connection.query(
       `
       SELECT s.*
@@ -364,8 +372,9 @@ exports.getAllGrade = async (req, res) => {
       WHERE s.is_deleted = 0
         AND sy.is_active = 1
         AND s.status <> 'graduated'
+        AND ${scope.sql}
       ORDER BY s.id ASC
-      `,
+      `, scope.params,
     );
 
     return res.status(200).json({

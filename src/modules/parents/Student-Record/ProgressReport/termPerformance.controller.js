@@ -12,7 +12,7 @@ async function getActiveSchoolYearId() {
 async function verifyStudentAccess(req, res, next) {
   try {
     const authId = req.user?.userId;
-    const role = req.user?.role;
+    const role = typeof req.user?.role === 'string' ? req.user.role.toLowerCase() : '';
     if (!authId || !role) {
       return res.status(401).json({ success: false, message: "Unauthorized." });
     }
@@ -21,7 +21,7 @@ async function verifyStudentAccess(req, res, next) {
     const activeSchoolYearId = await getActiveSchoolYearId();
 
     const [studentRows] = await connection.execute(
-      `SELECT id, section_id AS sectionId, current_school_year_id AS schoolYearId, status
+      `SELECT id, section_id AS sectionId, grade_level_id AS gradeLevelId, current_school_year_id AS schoolYearId, status
        FROM elem_students
        WHERE id = ? AND is_deleted = 0`,
       [studentId]
@@ -74,7 +74,7 @@ async function verifyStudentAccess(req, res, next) {
 
     if (role === "parent") {
       const [parentRows] = await connection.execute(
-        `SELECT id FROM parent_table WHERE user_id = ?`,
+        `SELECT id FROM parent_table WHERE user_id = ? AND is_deleted = 0`,
         [authId]
       );
       if (parentRows.length === 0) {
@@ -116,7 +116,9 @@ async function getStudentMeta(studentId, schoolYearId) {
      LEFT JOIN grade_level gl ON es.grade_level_id = gl.id
      LEFT JOIN grade_level_sections gls ON es.section_id = gls.id
      LEFT JOIN classes c
-            ON c.section_id = es.section_id AND c.school_year_id = ?
+            ON ((es.section_id IS NOT NULL AND c.section_id = es.section_id)
+                OR (es.section_id IS NULL AND c.section_id IS NULL AND c.grade_level_id = es.grade_level_id))
+           AND c.school_year_id = ? AND c.status = 'Active'
      LEFT JOIN teacher_table t ON c.class_adviser_id = t.id
      LEFT JOIN school_year sy ON sy.id = ?
      WHERE es.id = ?
@@ -136,17 +138,20 @@ async function getStudentMeta(studentId, schoolYearId) {
 
 const getTermPerformance = async (req, res) => {
   try {
-    const { id: studentId, sectionId, schoolYearId: studentSchoolYearId } = req.student;
+    const { id: studentId, sectionId, gradeLevelId, schoolYearId: studentSchoolYearId } = req.student;
     const activeSchoolYearId = req.activeSchoolYearId;
 
     const meta = await getStudentMeta(studentId, activeSchoolYearId);
 
     const [gradingPeriods] = await connection.execute(
-      `SELECT id, term_number AS termNumber, term_label AS termLabel
-       FROM grading_periods
-       WHERE school_year_id = ?
-       ORDER BY term_number ASC`,
-      [activeSchoolYearId]
+      `SELECT gp.id, gp.term_number AS termNumber, gp.term_label AS termLabel,
+              COALESCE(gv.is_visible, 0) AS isVisible,
+              (CURDATE() >= gp.end_date) AS termEnded
+       FROM grading_periods gp
+       LEFT JOIN grade_visibility gv ON gv.grading_period_id = gp.id AND gv.student_id = ?
+       WHERE gp.school_year_id = ?
+       ORDER BY gp.term_number ASC`,
+      [studentId, activeSchoolYearId]
     );
 
     const shell = (released) =>
@@ -162,7 +167,7 @@ const getTermPerformance = async (req, res) => {
       !activeSchoolYearId ||
       studentSchoolYearId !== activeSchoolYearId;
 
-    if (gradingPeriods.length === 0 || sectionId === null || notInActiveYear) {
+    if (gradingPeriods.length === 0 || notInActiveYear) {
       return res.status(200).json({ success: true, meta, data: shell(false) });
     }
 
@@ -172,24 +177,30 @@ const getTermPerformance = async (req, res) => {
     const [submissionRows] = await connection.execute(
       `SELECT grading_period_id AS gradingPeriodId
        FROM grade_submissions
-       WHERE section_id = ? AND grading_period_id IN (${periodPlaceholders})`,
-      [sectionId, ...periodIds]
+       WHERE ${sectionId !== null ? 'section_id = ?' : 'section_id IS NULL AND grade_level_id = ?'}
+         AND grading_period_id IN (${periodPlaceholders})`,
+      [sectionId ?? gradeLevelId, ...periodIds]
     );
     const releasedPeriodIds = new Set(submissionRows.map((r) => r.gradingPeriodId));
+    const canRelease = (gp) => releasedPeriodIds.has(gp.id) &&
+      (String(req.user?.role).toLowerCase() !== 'parent' || (Number(gp.isVisible) === 1 && Number(gp.termEnded) === 1));
 
     const [subjectSections] = await connection.execute(
       `SELECT ss.id, es.subject_name AS subjectName
        FROM \`subject-section\` ss
        INNER JOIN elem_subjects es ON ss.subject_id = es.id
-       WHERE ss.section_id = ? AND ss.status = 'Active' AND ss.school_year_id = ?`,
-      [sectionId, activeSchoolYearId]
+       WHERE ${sectionId !== null
+         ? '(ss.section_id = ? OR (ss.section_id IS NULL AND es.grade_level_id = ?))'
+         : 'ss.section_id IS NULL AND es.grade_level_id = ?'}
+         AND ss.status = 'Active' AND ss.school_year_id = ?`,
+      sectionId !== null ? [sectionId, gradeLevelId, activeSchoolYearId] : [gradeLevelId, activeSchoolYearId]
     );
 
     if (subjectSections.length === 0) {
       return res.status(200).json({
         success: true,
         meta,
-        data: shell((id) => releasedPeriodIds.has(id)),
+        data: shell((id) => canRelease(gradingPeriods.find(gp => gp.id === id))),
       });
     }
 
@@ -239,7 +250,7 @@ const getTermPerformance = async (req, res) => {
     }
 
     const data = gradingPeriods.map((gp) => {
-      const released = releasedPeriodIds.has(gp.id);
+      const released = canRelease(gp);
       return {
         key: `term_${gp.id}`,
         label: gp.termLabel || TERM_LABEL_FALLBACK(gp.termNumber),

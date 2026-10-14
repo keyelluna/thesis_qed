@@ -4,6 +4,8 @@ const { resolveGradeTemplateForPeriod } = require('./gradeTemplateResolution.ser
 const { normalizeExaminations } = require('./gradeTemplateConfig.service');
 const { calculateOfficialGrade } = require('./gradeComputation.service');
 const { assessmentCategoryForName } = require('./assessmentCategory.service');
+const ACTIVE_SCHOOL_YEAR = '(SELECT id FROM school_year WHERE is_active = 1 ORDER BY id DESC LIMIT 1)';
+const CURRENT_ROSTER = `is_deleted = 0 AND status <> 'graduated' AND current_school_year_id = ${ACTIVE_SCHOOL_YEAR}`;
 
 function computePS(totalScore, highestPossibleScore) {
   if (!highestPossibleScore) return null;
@@ -229,7 +231,7 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
 async function getStudentAdvisoryContext(studentId) {
   const [studentRows] = await connection.execute(
     `SELECT section_id AS sectionId, grade_level_id AS gradeLevelId
-     FROM elem_students WHERE id = ? AND is_deleted = 0`,
+     FROM elem_students WHERE id = ? AND ${CURRENT_ROSTER}`,
     [studentId]
   );
   if (studentRows.length === 0) return null;
@@ -237,8 +239,8 @@ async function getStudentAdvisoryContext(studentId) {
 
   const [classRows] = await connection.execute(
     sectionId
-      ? `SELECT class_adviser_id AS adviserTeacherId FROM classes WHERE section_id = ?`
-      : `SELECT class_adviser_id AS adviserTeacherId FROM classes WHERE section_id IS NULL AND grade_level_id = ?`,
+      ? `SELECT class_adviser_id AS adviserTeacherId FROM classes WHERE section_id = ? AND school_year_id = ${ACTIVE_SCHOOL_YEAR} AND status = 'Active'`
+      : `SELECT class_adviser_id AS adviserTeacherId FROM classes WHERE section_id IS NULL AND grade_level_id = ? AND school_year_id = ${ACTIVE_SCHOOL_YEAR} AND status = 'Active'`,
     [sectionId || gradeLevelId]
   );
   const adviserTeacherId = classRows.length ? classRows[0].adviserTeacherId : null;
@@ -261,6 +263,7 @@ async function getActiveSubjectSectionsForScope(context) {
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON ss.subject_id = es.id
          WHERE ss.status = 'Active'
+           AND ss.school_year_id = ${ACTIVE_SCHOOL_YEAR}
            AND (
              ss.section_id = ?
              OR (ss.section_id IS NULL AND es.grade_level_id = ?)
@@ -271,7 +274,8 @@ async function getActiveSubjectSectionsForScope(context) {
         `SELECT ss.id, ss.teacher_id AS teacherId
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON ss.subject_id = es.id
-         WHERE ss.status = 'Active' AND ss.section_id IS NULL AND es.grade_level_id = ?`,
+         WHERE ss.status = 'Active' AND ss.section_id IS NULL AND es.grade_level_id = ?
+           AND ss.school_year_id = ${ACTIVE_SCHOOL_YEAR}`,
         [gradeLevelId]
       );
   return rows;
@@ -360,11 +364,11 @@ async function recalcAllStudentsForSubject(subjectSectionId, gradingPeriodId) {
 
   const [students] = sectionId
     ? await connection.execute(
-        `SELECT id FROM elem_students WHERE section_id = ? AND is_deleted = 0`,
+        `SELECT id FROM elem_students WHERE section_id = ? AND ${CURRENT_ROSTER}`,
         [sectionId]
       )
     : await connection.execute(
-        `SELECT id FROM elem_students WHERE grade_level_id = ? AND section_id IS NULL AND is_deleted = 0`,
+        `SELECT id FROM elem_students WHERE grade_level_id = ? AND section_id IS NULL AND ${CURRENT_ROSTER}`,
         [gradeLevelId]
       );
 

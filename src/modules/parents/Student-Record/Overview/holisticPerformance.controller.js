@@ -54,7 +54,7 @@ async function loadParentStudent(req, res, next) {
     }
 
     const [parentRows] = await connection.execute(
-      `SELECT id FROM parent_table WHERE user_id = ?`,
+      `SELECT id FROM parent_table WHERE user_id = ? AND is_deleted = 0`,
       [authId]
     );
     if (parentRows.length === 0) {

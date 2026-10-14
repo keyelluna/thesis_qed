@@ -5,6 +5,9 @@ const parentsProfileController = require("./parentsProfile.controller");
 
 //welcome banner
 //get user name
-router.get("/", verifyToken, parentsProfileController.getUser);
+const { requireParent } = require('../parentAccess.middleware');
+router.use(verifyToken, requireParent);
+
+router.get("/", parentsProfileController.getUser);
 
 module.exports = router;

@@ -2,15 +2,17 @@ const express = require("express");
 const router = express.Router();
 const verifyToken = require("../../authentication/authentication.middleware");
 const reportsController = require("./reports.controller");
+const requireSchoolRead = require("../requireSchoolRead.middleware");
 
-router.get("/term-options", verifyToken, reportsController.getTermOptions);
+router.use(verifyToken, requireSchoolRead);
+
+router.get("/term-options", reportsController.getTermOptions);
 router.get(
   "/subject-ranking",
-  verifyToken,
   reportsController.getSubjectRanking,
 );
-router.get("/grade-options", verifyToken, reportsController.getGradeOptions);
-router.get("/holistic", verifyToken, reportsController.getHolisticRows);
-router.get("/view-options", verifyToken, reportsController.getViewOptions);
+router.get("/grade-options", reportsController.getGradeOptions);
+router.get("/holistic", reportsController.getHolisticRows);
+router.get("/view-options", reportsController.getViewOptions);
 
 module.exports = router;

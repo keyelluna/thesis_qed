@@ -1,3 +1,4 @@
+const { studentBelongsToSubject } = require('./subjectStudent.authorization');
 const connection = require('../../../../config/db');
 const { loadSubjectSection } = require('./subjectGrading.controller');
 
@@ -230,16 +231,8 @@ const createIntervention = async (req, res) => {
       });
     }
 
-    const [studentCheck] = await connection.execute(
-      `SELECT s.id FROM elem_students s
-       WHERE s.id = ? AND ${rosterFilter("s")}`,
-      [studentId]
-    );
-    if (studentCheck.length === 0) {
-      return res.status(403).json({
-        success: false,
-        message: "This student is not enrolled in the current school year.",
-      });
+    if (!(await studentBelongsToSubject(studentId,req.subjectSection))) {
+      return res.status(403).json({success:false,message:"This student is not enrolled in your class."});
     }
 
     const [topicCheck] = await connection.execute(

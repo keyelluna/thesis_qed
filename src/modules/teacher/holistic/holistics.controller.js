@@ -1,6 +1,8 @@
+const { studentBelongsToSubject } = require('../gradebook/subjectStudent.authorization');
 const connection = require('../../../../config/db');
 const { loadSubjectSection } = require('../gradebook/subjectGrading.controller');
 const { notifyWeeklyEvaluationIfComplete } = require('../../notification/notification.service');
+const { studentReadScope } = require('../../admin/student-record/studentRecord.authorization');
 
 const ACTIVE_SY_ID = `(SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)`;
 
@@ -189,7 +191,7 @@ const getHolistic = async (req, res) => {
 
 const upsertHolistic = async (req, res) => {
   try {
-    const { id: subjectSectionId, section_id: sectionId } = req.subjectSection;
+    const { id: subjectSectionId } = req.subjectSection;
     const { studentId, axis, value, weekStartDate: requestedWeekStartDate, termNumber: requestedTermNumber } = req.body;
 
     if (!studentId || !axis || !value) {
@@ -207,16 +209,8 @@ const upsertHolistic = async (req, res) => {
       return res.status(423).json({ success: false, message: "Weekly holistic records are locked for the weekend. Recording opens Monday." });
     }
 
-    if (sectionId) {
-      // Kailangang enrolled at nasa current school year ang estudyante (hindi graduated).
-      const [studentCheck] = await connection.execute(
-        `SELECT s.id FROM elem_students s
-         WHERE s.id = ? AND s.section_id = ? AND ${rosterFilter("s")}`,
-        [studentId, sectionId]
-      );
-      if (studentCheck.length === 0) {
-        return res.status(403).json({ success: false, message: "This student is not enrolled in your class." });
-      }
+    if (!(await studentBelongsToSubject(studentId,req.subjectSection))) {
+      return res.status(403).json({success:false,message:"This student is not enrolled in your class."});
     }
 
     await connection.execute(
@@ -487,11 +481,12 @@ const getStudentHolisticProfile = async (req, res) => {
     }
     const teacherId = teacherRows[0].id;
 
+    const scope = studentReadScope(req, 'st');
     const [studentRows] = await connection.execute(
       `SELECT st.id, CONCAT(st.last_name, ', ', st.first_name, ' ', COALESCE(st.middle_name, '')) AS name, st.section_id
        FROM elem_students st
-       WHERE st.id = ? AND ${rosterFilter("st")}`,
-      [studentId]
+       WHERE st.id = ? AND ${rosterFilter("st")} AND ${scope.sql}`,
+      [studentId, ...scope.params]
     );
     if (studentRows.length === 0) {
       return res.status(404).json({ success: false, message: "Student not found." });

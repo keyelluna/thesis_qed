@@ -4,11 +4,12 @@ const router = express.Router();
 
 const AttendanceController = require("./attendance.controller");
 const verifyToken = require("../../../authentication/authentication.middleware");
+const { requireParent } = require('../../parentAccess.middleware');
+router.use(verifyToken, requireParent);
 
-router.get("/my-children", verifyToken, AttendanceController.getMyChildren);
+router.get("/my-children", AttendanceController.getMyChildren);
 router.get(
   "/summary/:studentId",
-  verifyToken,
   AttendanceController.getAttendanceSummary,
 );
 

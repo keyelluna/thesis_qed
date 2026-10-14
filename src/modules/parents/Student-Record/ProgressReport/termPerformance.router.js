@@ -4,26 +4,25 @@ const router = express.Router();
 const verifyToken = require("../../../authentication/authentication.middleware");
 const termPerformanceController = require("./termPerformance.controller");
 const progressVisibilityController = require("./progressVisibility.controller");
+const { requireStudentIdentity } = require('../../../admin/student-record/studentRecord.authorization');
+router.use(verifyToken, requireStudentIdentity);
 
 router.get(
   "/:studentId/term-performance",
-  verifyToken,
   termPerformanceController.verifyStudentAccess,
 );
 router.get(
   "/:studentId/term-performance",
-  verifyToken,
   termPerformanceController.getTermPerformance,
 );
 
 router.get(
   "/:studentId/term-performance",
-  verifyToken,
   progressVisibilityController.getStudentTermPerformance,
 );
 router.get(
   "/:studentId/visibility",
-  verifyToken,
+  termPerformanceController.verifyStudentAccess,
   progressVisibilityController.getVisibilityStatus,
 );
 

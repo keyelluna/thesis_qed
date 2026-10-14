@@ -2,13 +2,17 @@ const express = require("express");
 const router = express.Router();
 const verifyToken = require('../../authentication/authentication.middleware');
 const studentRecord = require("./studentRecord.controller");
+const requireAdmin = require('../../authentication/requireAdmin.middleware');
+const { requireStudentIdentity } = require('./studentRecord.authorization');
 
-router.post("/addNewStudent", verifyToken, studentRecord.addNewStudent);
-router.put("/updateStudent/:id", verifyToken, studentRecord.updateStudent);
-router.get("/viewStudent/:id", verifyToken, studentRecord.getStudentById);
-router.get('/totalStudents', verifyToken, studentRecord.getTotalStudents);
-router.get('/allStudents', verifyToken, studentRecord.getAllStudents);
-router.get('/allGrade', verifyToken, studentRecord.getAllGrade);
-router.put("/deleteStudent/:id", verifyToken, studentRecord.softDeleteStudent);
+router.use(verifyToken, requireStudentIdentity);
+
+router.post("/addNewStudent", requireAdmin, studentRecord.addNewStudent);
+router.put("/updateStudent/:id", requireAdmin, studentRecord.updateStudent);
+router.get("/viewStudent/:id", studentRecord.getStudentById);
+router.get('/totalStudents', studentRecord.getTotalStudents);
+router.get('/allStudents', studentRecord.getAllStudents);
+router.get('/allGrade', studentRecord.getAllGrade);
+router.put("/deleteStudent/:id", requireAdmin, studentRecord.softDeleteStudent);
 
 module.exports = router;

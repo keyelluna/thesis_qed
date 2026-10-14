@@ -3,15 +3,16 @@ const router = express.Router();
 const verifyToken = require("../../../authentication/authentication.middleware");
 const studentTermPerformanceController = require("./studentTermPerformance.controller");
 
+const { requireParent } = require('../../parentAccess.middleware');
+router.use(verifyToken, requireParent);
+
 router.get(
   "/students/:studentId/term-performance",
-  verifyToken,
   studentTermPerformanceController.loadParentStudent,
 );
 
 router.get(
   "/students/:studentId/term-performance",
-  verifyToken,
   studentTermPerformanceController.getStudentTermPerformance,
 );
 

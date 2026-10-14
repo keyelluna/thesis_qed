@@ -4,11 +4,13 @@ const router = express.Router();
 const verifyToken = require("../../authentication/authentication.middleware");
 const dailyUpdateController = require("./dailyUpdate.controller");
 
+const { requireParent } = require('../parentAccess.middleware');
+router.use(verifyToken, requireParent);
+
 router.get(
   "/parent",
-  verifyToken,
   dailyUpdateController.getDailyUpdatesForParent,
 );
-router.get("/:studentId", verifyToken, dailyUpdateController.getDailyUpdate);
+router.get("/:studentId", dailyUpdateController.getDailyUpdate);
 
 module.exports = router;

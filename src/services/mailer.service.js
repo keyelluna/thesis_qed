@@ -2,7 +2,8 @@ const fs = require("fs");
 const path = require("path");
 const { Resend } = require("resend");
 const resend = new Resend(process.env.RESEND_API_KEY);
-const DEV_EMAIL_OVERRIDE = "kimlourenluna.dev@gmail.com";
+const DEV_EMAIL_OVERRIDE = process.env.NODE_ENV !== "production"
+  ? (process.env.QED_TEST_EMAIL_RECIPIENT || "") : "";
 const APP_BASE_URL = "http://localhost:5173";
 
 const logoPath = path.join(__dirname, "../assets/images/QED_Logo.png");
@@ -38,33 +39,35 @@ async function sendCredentialsEmail({
     return { skipped: true };
   }
 
+  const from = process.env.QED_CREDENTIAL_EMAIL_FROM ||
+    (process.env.NODE_ENV !== "production" ? "QED School <onboarding@resend.dev>" : "");
+  if (!from) return { sent: false };
+  const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g,
+    char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+
   const roleLabel = ROLE_LABELS[role?.toUpperCase()] || role;
 
   const actualRecipient = DEV_EMAIL_OVERRIDE || to;
-  if (DEV_EMAIL_OVERRIDE) {
-    console.log(
-      `[DEV MODE] Credentials email intended for ${to} is being redirected to ${DEV_EMAIL_OVERRIDE} (no verified domain yet).`,
-    );
-  }
+  // Explicit non-production redirection; never log account details.
 
   try {
     const { data, error } = await resend.emails.send({
-      from: "QED School <onboarding@resend.dev>", // palitan kapag verified na yung sarili niyong domain
+      from,
       to: [actualRecipient],
       subject: "Your QED Account Credentials",
       html: `
         <div style="font-family: Inter, Arial, sans-serif; max-width: 480px; margin: 0 auto;">
-          <h2 style="color:#8B0D0D;">Welcome to QED, ${firstName || ""}!</h2>
-          <p>An account has been created for you as <strong>${roleLabel}</strong>.</p>
+          <h2 style="color:#8B0D0D;">Welcome to QED, ${escapeHtml(firstName)}!</h2>
+          <p>An account has been created for you as <strong>${escapeHtml(roleLabel)}</strong>.</p>
           <p>Here are your login credentials:</p>
           <table style="border-collapse: collapse; margin: 12px 0;">
             <tr>
               <td style="padding:6px 12px; font-weight:bold;">Username</td>
-              <td style="padding:6px 12px;">${userName}</td>
+              <td style="padding:6px 12px;">${escapeHtml(userName)}</td>
             </tr>
             <tr>
               <td style="padding:6px 12px; font-weight:bold;">Password</td>
-              <td style="padding:6px 12px;">${password}</td>
+              <td style="padding:6px 12px;">${escapeHtml(password)}</td>
             </tr>
           </table>
           <p style="color:#B91C1C; font-size:13px;">
@@ -73,7 +76,7 @@ async function sendCredentialsEmail({
           ${
             DEV_EMAIL_OVERRIDE
               ? `<p style="color:#6B7280; font-size:11px; margin-top:16px; border-top:1px solid #E5E7EB; padding-top:8px;">
-                  [DEV MODE] This was actually meant for: ${to}
+                  [DEV MODE] This was actually meant for: ${escapeHtml(to)}
                 </p>`
               : ""
           }
@@ -82,13 +85,13 @@ async function sendCredentialsEmail({
     });
 
     if (error) {
-      console.error("Resend send error:", error);
+      console.error("Credential email was rejected by the provider.");
       return { sent: false, error };
     }
 
-    return { sent: true, data };
+    return { sent: true, redirected: Boolean(DEV_EMAIL_OVERRIDE) };
   } catch (err) {
-    console.error("sendCredentialsEmail failed:", err);
+    console.error("Credential email delivery failed.");
     return { sent: false, error: err };
   }
 }
@@ -107,16 +110,15 @@ async function sendPasswordResetOtpEmail({ to, otp }) {
     return { skipped: true };
   }
 
+  const from = process.env.QED_CREDENTIAL_EMAIL_FROM ||
+    (process.env.NODE_ENV !== "production" ? "QED School <onboarding@resend.dev>" : "");
+  if (!from) return { sent: false };
+
   const actualRecipient = DEV_EMAIL_OVERRIDE || to;
-  if (DEV_EMAIL_OVERRIDE) {
-    console.log(
-      `[DEV MODE] OTP email intended for ${to} is being redirected to ${DEV_EMAIL_OVERRIDE} (no verified domain yet).`,
-    );
-  }
 
   try {
     const { data, error } = await resend.emails.send({
-      from: "QED School <onboarding@resend.dev>", // palitan kapag verified na yung sarili niyong domain
+      from,
       to: [actualRecipient],
       subject: "Your QED Password Reset Code",
       html: `
@@ -143,13 +145,13 @@ async function sendPasswordResetOtpEmail({ to, otp }) {
     });
 
     if (error) {
-      console.error("Resend send error:", error);
+      console.error("Recovery email was rejected by the provider.");
       return { sent: false, error };
     }
 
     return { sent: true, data };
   } catch (err) {
-    console.error("sendPasswordResetOtpEmail failed:", err);
+    console.error("Recovery email delivery failed.");
     return { sent: false, error: err };
   }
 }

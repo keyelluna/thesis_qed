@@ -4,7 +4,6 @@ const Admin = require("../../../models/admin.model");
 const Parent = require("../../../models/parent.model");
 const TotalUsers = require("../../../models/totalUser.model");
 const totalUser = require("../../../models/totalUser.model");
-const { sendCredentialsEmail } = require("../../../services/mailer.service");
 const connection = require("../../../../config/db");
 
 const roleModelMap = {
@@ -12,128 +11,6 @@ const roleModelMap = {
   principal: Principal,
   admin:Admin,
   parent: Parent,
-};
-
-// Checks if an email is already used by ANY role, not just the one being
-// created. findByEmail() on each Model is scoped to that model's own table
-// only, so a per-role check alone would miss e.g. the same email existing
-// as both a teacher and a parent.
-async function findEmailAcrossAllRoles(email) {
-  for (const [roleName, Model] of Object.entries(roleModelMap)) {
-    if (typeof Model.findByEmail !== "function") continue;
-    const existing = await Model.findByEmail(email);
-    if (existing) {
-      return roleName;
-    }
-  }
-  return null;
-}
-
-// createUser only ever runs for brand-new users — the frontend already
-// created the qed_authentication row via /api/auth/register before calling
-// this endpoint, and `userId` here IS that row's id. If anything below
-// fails, that auth row is orphaned (valid login credentials, no profile
-// record to go with them) unless we clean it up ourselves.
-async function rollbackAuthAccount(userId) {
-  if (!userId) return;
-  try {
-    await connection.query("DELETE FROM qed_authentication WHERE id = ?", [
-      userId,
-    ]);
-  } catch (err) {
-    console.error("Failed to roll back orphaned auth account:", err);
-  }
-}
-
-exports.createUser = async (req, res) => {
-  const {
-    userId,
-    lastName,
-    firstName,
-    middleName,
-    role,
-    email,
-    contactNumber,
-    status,
-    userName,
-    generatedPassword,
-    gender,
-  } = req.body;
-
-  try {
-    const normalizedRole = role?.toLowerCase();
-    const Model = roleModelMap[normalizedRole];
-
-    if (!Model) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid role selected.",
-      });
-    }
-
-    if (normalizedRole !== "admin" && !["Male", "Female"].includes(gender)) {
-      return res.status(400).json({ success: false, message: "Select this user's gender." });
-    }
-
-    const conflictingRole = await findEmailAcrossAllRoles(email);
-    if (conflictingRole) {
-      await rollbackAuthAccount(userId);
-      return res.status(409).json({
-        success: false,
-        message:
-          conflictingRole === normalizedRole
-            ? "Email address is already in use."
-            : `Email address is already in use by an existing ${conflictingRole} account.`,
-      });
-    }
-
-    const newUser = await Model.create({
-      userId,
-      lastName,
-      firstName,
-      middleName,
-      email,
-      contactNumber,
-      status,
-      gender,
-    });
-
-    // Send login credentials to the new user's email. Only fires for brand
-    // new accounts (userName/generatedPassword are only sent by the frontend
-    // on create, never on edit). Non-blocking on failure — kung ma-fail yung
-    // email, hindi dapat mag-fail yung buong "add user" request.
-    if (userName && generatedPassword) {
-      sendCredentialsEmail({
-        to: email,
-        firstName,
-        userName,
-        password: generatedPassword,
-        role: normalizedRole,
-      }).catch((err) => {
-        console.error("Failed to send credentials email:", err);
-      });
-    }
-
-    res.status(201).json({
-      success: true,
-      message: `User successfully added to ${normalizedRole}_table!`,
-      data: newUser,
-    });
-  } catch (error) {
-    console.error("Database Error:", error);
-    await rollbackAuthAccount(userId);
-
-    if (error.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({
-        success: false,
-        message: "Email address is already in use.",
-      });
-    }
-
-    res
-      .status(500)
-      .json({ success: false, message: "Database error occurred." });
-  }
 };
 
 // UPDATE USER
@@ -152,8 +29,8 @@ exports.editUser = async (req, res) => {
   } = req.body;
 
   try {
-    const normalizedRole = role?.toLowerCase();
-    const Model = roleModelMap[normalizedRole];
+    const normalizedRole = typeof role === "string" ? role.toLowerCase() : "";
+    const Model = Object.hasOwn(roleModelMap, normalizedRole) ? roleModelMap[normalizedRole] : undefined;
 
     if (!Model) {
       return res.status(400).json({
@@ -217,8 +94,8 @@ exports.getUserById = async (req, res) => {
   const { id, role } = req.params;
 
   try {
-    const normalizedRole = role?.toLowerCase();
-    const Model = roleModelMap[normalizedRole];
+    const normalizedRole = typeof role === "string" ? role.toLowerCase() : "";
+    const Model = Object.hasOwn(roleModelMap, normalizedRole) ? roleModelMap[normalizedRole] : undefined;
 
     if (!Model) {
       return res.status(400).json({
@@ -312,8 +189,8 @@ exports.softDeleteUser = async (req, res) => {
   const { role } = req.body;
 
   try {
-    const normalizedRole = role?.toLowerCase();
-    const Model = roleModelMap[normalizedRole];
+    const normalizedRole = typeof role === "string" ? role.toLowerCase() : "";
+    const Model = Object.hasOwn(roleModelMap, normalizedRole) ? roleModelMap[normalizedRole] : undefined;
 
     if (!Model) {
       return res.status(400).json({

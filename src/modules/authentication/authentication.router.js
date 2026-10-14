@@ -4,7 +4,7 @@ const authentication = require("./authentication.controller");
 const verifyToken = require("./authentication.middleware");
 
 //saving authentication
-router.post("/register", authentication.register);
+router.post("/register", verifyToken, require("./requireAdmin.middleware"), require("../admin/user-record/provisionAccount.controller").provisionAccount);
 
 //login user
 router.post("/login", authentication.login);

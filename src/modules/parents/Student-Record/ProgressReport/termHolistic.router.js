@@ -3,9 +3,11 @@ const router = express.Router();
 const verifyToken = require("../../../authentication/authentication.middleware");
 const termHolisticController = require("./termHolistic.controller");
 
+const { requireParent } = require('../../parentAccess.middleware');
+router.use(verifyToken, requireParent);
+
 router.get(
   "/:studentId",
-  verifyToken,
   termHolisticController.loadParentStudent,
   termHolisticController.getStudentTermAverages,
 );

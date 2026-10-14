@@ -1,6 +1,7 @@
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const cookie = require("cookie");
+const { notificationOwner } = require('./src/modules/notification/notification.identity');
 
 let io = null;
 
@@ -26,6 +27,7 @@ function initSocket(httpServer, allowedOrigins) {
       if (!token) return next(new Error("No token provided"));
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (!notificationOwner(decoded)) return next(new Error("Authentication failed"));
       socket.userId = decoded.userId;
       socket.userRole = decoded.role;
 

@@ -3,6 +3,7 @@ const router = express.Router();
 const multer = require("multer");
 const gradeTemplate = require("./subjectGradeTemplate.controller");
 const verifyToken = require("../../authentication/authentication.middleware");
+const requireAdmin = require('../../authentication/requireAdmin.middleware');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -16,20 +17,21 @@ const upload = multer({
 router.post(
   '/uploadGradeTemplate/:subjectId',
   verifyToken,
+  requireAdmin,
   upload.single('template'),
   gradeTemplate.uploadGradeTemplate
 );
 
 // Admin-side lookup: caller already has the real subject_id.
-router.get('/getActiveGradeTemplate/:subjectId', gradeTemplate.getActiveGradeTemplate);
+router.get('/getActiveGradeTemplate/:subjectId', verifyToken, gradeTemplate.getActiveGradeTemplate);
 
 // Teacher-side lookup: caller only has the subject-section id; this
 // route resolves subject_id internally via the join in the controller.
-router.get('/getActiveGradeTemplateBySection/:subjectSectionId', gradeTemplate.getActiveGradeTemplateBySection);
+router.get('/getActiveGradeTemplateBySection/:subjectSectionId', verifyToken, gradeTemplate.getActiveGradeTemplateBySection);
 router.get('/downloadActiveGradeTemplateBySection/:subjectSectionId', verifyToken, gradeTemplate.downloadActiveGradeTemplateBySection);
 router.get('/exportGradeTemplateBySection/:subjectSectionId', verifyToken, gradeTemplate.exportGradeTemplateBySection);
 // Combined lookup: resolves template-vs-manual precedence server-side so
 // the frontend only ever needs one call and one source of truth.
-router.get('/getEffectiveWeights/:subjectSectionId', gradeTemplate.getEffectiveWeights);
+router.get('/getEffectiveWeights/:subjectSectionId', verifyToken, gradeTemplate.getEffectiveWeights);
 
 module.exports = router;

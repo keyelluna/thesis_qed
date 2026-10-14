@@ -4,12 +4,15 @@ const verifyToken = require("../../authentication/authentication.middleware");
 const linkedChildrenController = require("./linkedChildren.controller");
 
 //search student
+const { requireParent } = require('../parentAccess.middleware');
+router.use(verifyToken, requireParent);
+
 router.post("/", linkedChildrenController.getChildren);
 
 //verified
-router.post("/confirm", verifyToken, linkedChildrenController.linkedChildren);
+router.post("/confirm", linkedChildrenController.linkedChildren);
 
 //get enrolled children
-router.get("/", verifyToken, linkedChildrenController.getEnrolledChildren);
+router.get("/", linkedChildrenController.getEnrolledChildren);
 
 module.exports = router;

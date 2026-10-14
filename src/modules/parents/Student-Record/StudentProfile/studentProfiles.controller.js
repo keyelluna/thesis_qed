@@ -1,5 +1,6 @@
 // modules/.../studentProfiles.controller.js
 const connection = require('../../../../../config/db');
+const { studentReadScope } = require('../../../admin/student-record/studentRecord.authorization');
 
 /**
  * GET /:studentId
@@ -9,6 +10,7 @@ async function getStudentProfile(req, res) {
   const { studentId } = req.params;
 
   try {
+    const scope = studentReadScope(req, 's');
     const [rows] = await connection.query(
       `SELECT 
          s.id,
@@ -33,9 +35,9 @@ async function getStudentProfile(req, res) {
        LEFT JOIN classes c ON c.section_id = s.section_id
        LEFT JOIN teacher_table t ON c.class_adviser_id = t.id
        LEFT JOIN school_year sy ON sy.is_active = 1
-       WHERE s.id = ? AND s.is_deleted = 0
+       WHERE s.id = ? AND s.is_deleted = 0 AND ${scope.sql}
        LIMIT 1`,
-      [studentId]
+      [studentId, ...scope.params]
     );
 
     if (rows.length === 0) {

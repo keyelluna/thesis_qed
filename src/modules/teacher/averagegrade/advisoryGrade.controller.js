@@ -2,6 +2,11 @@ const connection = require("../../../../config/db");
 const { getSingleTermVisibility } = require('../../parents/Student-Record/ProgressReport/progressVisibility.controller');
 const { notifyGradeVisibility, notifyAdvisoryGradesSubmitted } = require('../../notification/notification.service')
 const { recordAdvisoryGradeSubmission, getAdvisorySubmissionHistory } = require('../../shared/grades/gradeSubmissionHistory.service');
+const ACTIVE_SCHOOL_YEAR = '(SELECT id FROM school_year WHERE is_active = 1 ORDER BY id DESC LIMIT 1)';
+const currentRoster = (alias = '') => {
+  const prefix = alias ? `${alias}.` : '';
+  return `${prefix}current_school_year_id = ${ACTIVE_SCHOOL_YEAR} AND ${prefix}status <> 'graduated'`;
+};
 
 // FIX: renamed from loadAdvisorySection. Now fetches ALL advisory classes
 // for this teacher instead of just one, and lets the caller pick which
@@ -36,6 +41,8 @@ async function loadAdvisorySections(req, res, next) {
        LEFT JOIN grade_level_sections gls ON c.section_id = gls.id
        INNER JOIN grade_level gl ON c.grade_level_id = gl.id
        WHERE c.class_adviser_id = ?
+         AND c.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 ORDER BY id DESC LIMIT 1)
+         AND c.status = 'Active'
        ORDER BY gl.grade_level ASC, gls.section_name ASC`,
       [teacherId],
     );
@@ -127,6 +134,7 @@ const getAdvisoryGradebook = async (req, res) => {
            FROM \`subject-section\` ss
            INNER JOIN elem_subjects es ON ss.subject_id = es.id
            WHERE ss.status = 'Active'
+             AND ss.school_year_id = ${ACTIVE_SCHOOL_YEAR}
              AND (
                ss.section_id = ?
                OR (ss.section_id IS NULL AND es.grade_level_id = ?)
@@ -137,6 +145,7 @@ const getAdvisoryGradebook = async (req, res) => {
            FROM \`subject-section\` ss
            INNER JOIN elem_subjects es ON ss.subject_id = es.id
            WHERE ss.status = 'Active'
+             AND ss.school_year_id = ${ACTIVE_SCHOOL_YEAR}
              AND ss.section_id IS NULL
              AND es.grade_level_id = ?
            ORDER BY es.subject_name ASC`,
@@ -158,10 +167,12 @@ const getAdvisoryGradebook = async (req, res) => {
         ? `SELECT id, gender, first_name AS firstName, middle_name AS middleName, last_name AS lastName
            FROM elem_students
            WHERE section_id = ? AND is_deleted = 0
+             AND ${currentRoster()}
            ORDER BY last_name ASC, first_name ASC`
         : `SELECT id, gender, first_name AS firstName, middle_name AS middleName, last_name AS lastName
            FROM elem_students
            WHERE grade_level_id = ? AND section_id IS NULL AND is_deleted = 0
+             AND ${currentRoster()}
            ORDER BY last_name ASC, first_name ASC`,
       [sectionId || gradeLevelId],
     );
@@ -436,6 +447,7 @@ const getGradeVisibility = async (req, res) => {
            LEFT JOIN parent_student ps ON ps.student_id = es.id
            LEFT JOIN parent_table pt ON pt.id = ps.parent_id AND pt.is_deleted = 0
            WHERE es.section_id = ? AND es.is_deleted = 0
+             AND ${currentRoster('es')}
            ORDER BY es.last_name ASC, es.first_name ASC`
         : `SELECT es.id, es.gender, es.first_name AS firstName, es.middle_name AS middleName, es.last_name AS lastName,
                   pt.first_name AS parentFirstName, pt.last_name AS parentLastName, pt.middle_name AS parentMiddleName,
@@ -444,6 +456,7 @@ const getGradeVisibility = async (req, res) => {
            LEFT JOIN parent_student ps ON ps.student_id = es.id
            LEFT JOIN parent_table pt ON pt.id = ps.parent_id AND pt.is_deleted = 0
            WHERE es.grade_level_id = ? AND es.section_id IS NULL AND es.is_deleted = 0
+             AND ${currentRoster('es')}
            ORDER BY es.last_name ASC, es.first_name ASC`,
       [sectionId || gradeLevelId],
     );
@@ -518,8 +531,8 @@ const setGradeVisibility = async (req, res) => {
     if (applyToAll) {
       const [rosterRows] = await connection.execute(
         sectionId
-          ? `SELECT id FROM elem_students WHERE section_id = ? AND is_deleted = 0`
-          : `SELECT id FROM elem_students WHERE grade_level_id = ? AND section_id IS NULL AND is_deleted = 0`,
+          ? `SELECT id FROM elem_students WHERE section_id = ? AND is_deleted = 0 AND ${currentRoster()}`
+          : `SELECT id FROM elem_students WHERE grade_level_id = ? AND section_id IS NULL AND is_deleted = 0 AND ${currentRoster()}`,
         [sectionId || gradeLevelId],
       );
       targetIds = rosterRows.map((r) => r.id);
@@ -534,8 +547,8 @@ const setGradeVisibility = async (req, res) => {
     const idPlaceholders = targetIds.map(() => "?").join(",");
     const [validRows] = await connection.execute(
       sectionId
-        ? `SELECT id FROM elem_students WHERE id IN (${idPlaceholders}) AND section_id = ? AND is_deleted = 0`
-        : `SELECT id FROM elem_students WHERE id IN (${idPlaceholders}) AND grade_level_id = ? AND section_id IS NULL AND is_deleted = 0`,
+        ? `SELECT id FROM elem_students WHERE id IN (${idPlaceholders}) AND section_id = ? AND is_deleted = 0 AND ${currentRoster()}`
+        : `SELECT id FROM elem_students WHERE id IN (${idPlaceholders}) AND grade_level_id = ? AND section_id IS NULL AND is_deleted = 0 AND ${currentRoster()}`,
       [...targetIds, sectionId || gradeLevelId],
     );
     const validIds = validRows.map((r) => r.id);

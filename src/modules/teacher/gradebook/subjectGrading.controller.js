@@ -1,3 +1,5 @@
+const { studentBelongsToSubject } = require('./subjectStudent.authorization');
+const { requireTeacherStudentIdentity } = require('../../admin/student-record/studentRecord.authorization');
 const connection = require("../../../../config/db");
 const {
   recalcStudentSubject,
@@ -72,8 +74,12 @@ async function loadSubjectSection(req, res, next) {
         });
     }
 
+    let authorized=false;
+    requireTeacherStudentIdentity(req,res,()=>{authorized=true;});
+    if(!authorized)return;
+
     const [teacherRows] = await connection.execute(
-      `SELECT id FROM teacher_table WHERE user_id = ?`,
+      `SELECT id FROM teacher_table WHERE user_id = ? AND is_deleted = 0`,
       [authId],
     );
     if (teacherRows.length === 0) {
@@ -497,6 +503,10 @@ const upsertScore = async (req, res) => {
       return res.status(403).json({ success: false, message: "This item does not belong to your class." });
     }
 
+    if (!(await studentBelongsToSubject(studentId,req.subjectSection))) {
+      return res.status(403).json({success:false,message:"This student is not enrolled in your class."});
+    }
+
     await connection.execute(
       `INSERT INTO grade_scores (item_id, student_id, score)
        VALUES (?, ?, ?)
@@ -622,7 +632,7 @@ const getHolistic = async (req, res) => {
 
 const upsertHolistic = async (req, res) => {
   try {
-    const { id: subjectSectionId, section_id: sectionId } = req.subjectSection;
+    const { id: subjectSectionId } = req.subjectSection;
     const {
       studentId,
       axis,
@@ -664,21 +674,8 @@ const upsertHolistic = async (req, res) => {
         });
     }
 
-    if (sectionId) {
-      // Kailangang enrolled at nasa current school year ang estudyante (hindi graduated).
-      const [studentCheck] = await connection.execute(
-        `SELECT s.id FROM elem_students s
-         WHERE s.id = ? AND s.section_id = ? AND ${ROSTER_FILTER}`,
-        [studentId, sectionId],
-      );
-      if (studentCheck.length === 0) {
-        return res
-          .status(403)
-          .json({
-            success: false,
-            message: "This student is not enrolled in your class.",
-          });
-      }
+    if (!(await studentBelongsToSubject(studentId,req.subjectSection))) {
+      return res.status(403).json({success:false,message:"This student is not enrolled in your class."});
     }
 
     await connection.execute(

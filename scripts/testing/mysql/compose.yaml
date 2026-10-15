@@ -1,0 +1,20 @@
+services:
+  mysql:
+    image: mysql:8.4
+    ports:
+      - "127.0.0.1:3307:3306"
+    environment:
+      MYSQL_DATABASE: qed_release_test
+      MYSQL_USER: qed_test
+      MYSQL_PASSWORD: ${QED_TEST_MYSQL_PASSWORD:?Set a disposable test password privately}
+      MYSQL_ROOT_PASSWORD: ${QED_TEST_MYSQL_ROOT_PASSWORD:?Set a separate disposable root password privately}
+    volumes:
+      - qed_release_mysql_data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysql -uroot -e 'SELECT 1' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+volumes:
+  qed_release_mysql_data:

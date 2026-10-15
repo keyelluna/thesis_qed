@@ -4,7 +4,8 @@ const { Resend } = require("resend");
 const resend = new Resend(process.env.RESEND_API_KEY);
 const DEV_EMAIL_OVERRIDE = process.env.NODE_ENV !== "production"
   ? (process.env.QED_TEST_EMAIL_RECIPIENT || "") : "";
-const APP_BASE_URL = "http://localhost:5173";
+const APP_BASE_URL = process.env.NODE_ENV === "production"
+  ? "https://qed-front-end-6upk.vercel.app" : "http://localhost:5173";
 
 const logoPath = path.join(__dirname, "../assets/images/QED_Logo.png");
 const logoBase64 = fs.readFileSync(logoPath).toString("base64");
@@ -178,18 +179,21 @@ async function sendGradeVisibilityEmail({
   }
 
   const actualRecipient = DEV_EMAIL_OVERRIDE || to;
+  const from = process.env.QED_CREDENTIAL_EMAIL_FROM ||
+    (process.env.NODE_ENV !== "production" ? "QED School <onboarding@resend.dev>" : "");
+  if (!from) return { sent: false };
+  const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g,
+    char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   if (DEV_EMAIL_OVERRIDE) {
-    console.log(
-      `[DEV MODE] Grade visibility email intended for ${to} is being redirected to ${DEV_EMAIL_OVERRIDE} (no verified domain yet).`,
-    );
+    console.log("[DEV MODE] Grade visibility email uses the configured test recipient.");
   }
 
-  const progressReportPath = `/parent/students/${studentId}?tab=progressReport`;
+  const progressReportPath = `/parent/students/${encodeURIComponent(studentId)}?tab=progressReport`;
   const ctaUrl = `${APP_BASE_URL}/login?redirect=${encodeURIComponent(progressReportPath)}`;
 
   try {
     const { data, error } = await resend.emails.send({
-      from: "QED School <onboarding@resend.dev>",
+      from,
       to: [actualRecipient],
       subject: "Grades Now Available to View",
       html: `
@@ -200,7 +204,7 @@ async function sendGradeVisibilityEmail({
            style="width:120px; max-width:120px; display:block; margin:0 auto 16px;"
           />
           <h2 style="color:#8B0D0D;">Grades Released</h2>
-          <p>${studentFirstName}'s grades for <strong>${termLabel}</strong> are now available to view in the QED parent portal.</p>
+          <p>${escapeHtml(studentFirstName)}'s grades for <strong>${escapeHtml(termLabel)}</strong> are now available to view in the QED parent portal.</p>
           <div style="margin: 24px 0; text-align: center;">
             <a href="${ctaUrl}" style="display:inline-block; background:#8B0D0D; color:#ffffff; text-decoration:none; font-weight:bold; padding:12px 28px; border-radius:8px; font-size:14px;">View Progress Report</a>
           </div>
@@ -210,7 +214,7 @@ async function sendGradeVisibilityEmail({
           ${
             DEV_EMAIL_OVERRIDE
               ? `<p style="color:#6B7280; font-size:11px; margin-top:16px; border-top:1px solid #E5E7EB; padding-top:8px;">
-                  [DEV MODE] This was actually meant for: ${to}
+                  [DEV MODE] This was actually meant for: ${escapeHtml(to)}
                 </p>`
               : ""
           }
@@ -226,13 +230,13 @@ async function sendGradeVisibilityEmail({
     });
 
     if (error) {
-      console.error("Resend send error:", error);
+      console.error("Grade visibility email was rejected by the provider.");
       return { sent: false, error };
     }
 
     return { sent: true, data };
   } catch (err) {
-    console.error("sendGradeVisibilityEmail failed:", err);
+    console.error("Grade visibility email delivery failed.");
     return { sent: false, error: err };
   }
 }

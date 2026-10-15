@@ -20,3 +20,28 @@ for(const kind of ['otp','grade-visibility'])test('production '+kind+' retains i
 test('recovery email uses the configured production sender',async()=>{const m=load('production');await m.sendPasswordResetOtpEmail({to:data.to,otp:'123456'});assert.equal(messages[0].from,'QED Fixture <sender@example.invalid>');});
 test('recovery without a production sender does not attempt delivery',async()=>{const m=load('production');delete process.env.QED_CREDENTIAL_EMAIL_FROM;assert.equal((await m.sendPasswordResetOtpEmail({to:data.to,otp:'123456'})).sent,false);assert.equal(messages.length,0);});
 for(const failure of ['rejected','throw'])test('recovery provider '+failure+' does not log code or recipient',async()=>{const m=load('production');outcome=failure==='throw'?'throw':{error:{message:'123456 '+data.to},data:null};const logs=[];const saved=console.error;console.error=(...args)=>logs.push(args.join(' '));try{assert.equal((await m.sendPasswordResetOtpEmail({to:data.to,otp:'123456'})).sent,false);assert(!logs.join(' ').includes('123456'));assert(!logs.join(' ').includes(data.to));}finally{console.error=saved;outcome={data:{id:'fixture'},error:null};}});
+
+for(const env of ['production','development'])test('grade visibility link and sender match '+env,async()=>{
+ const m=load(env);await m.sendGradeVisibilityEmail({to:data.to,studentId:'101',studentFirstName:'Fixture',termLabel:'First Term'});
+ assert.equal(messages[0].from,'QED Fixture <sender@example.invalid>');
+ const href=messages[0].html.match(/href="([^"]+)"/)[1],url=new URL(href);
+ assert.equal(url.origin,env==='production'?'https://qed-front-end-6upk.vercel.app':'http://localhost:5173');
+ assert.equal(url.pathname,'/login');assert.equal(url.searchParams.get('redirect'),'/parent/students/101?tab=progressReport');
+ if(env==='production')assert(!messages[0].html.includes('localhost'));
+});
+test('grade visibility without a production sender does not attempt delivery',async()=>{
+ const m=load('production');delete process.env.QED_CREDENTIAL_EMAIL_FROM;
+ assert.equal((await m.sendGradeVisibilityEmail({to:data.to,studentId:'101',studentFirstName:'Fixture',termLabel:'First Term'})).sent,false);assert.equal(messages.length,0);
+});
+test('grade visibility escapes display values and encodes the child path segment',async()=>{
+ const m=load('production');await m.sendGradeVisibilityEmail({to:data.to,studentId:'101?other=2',studentFirstName:'<script>fixture</script>',termLabel:'<img src=x>'});
+ assert(!messages[0].html.includes('<script>fixture</script>'));assert(!messages[0].html.includes('<img src=x>'));
+ assert(messages[0].html.includes('&lt;script&gt;fixture&lt;/script&gt;'));
+ const url=new URL(messages[0].html.match(/href="([^"]+)"/)[1]);assert.equal(url.searchParams.get('redirect'),'/parent/students/101%3Fother%3D2?tab=progressReport');
+});
+for(const failure of ['rejected','throw'])test('grade visibility provider '+failure+' does not log recipient or provider details',async()=>{
+ const m=load('production');outcome=failure==='throw'?'throw':{error:{message:'private-provider-detail '+data.to},data:null};
+ const logs=[],saved=console.error;console.error=(...args)=>logs.push(args.join(' '));
+ try{assert.equal((await m.sendGradeVisibilityEmail({to:data.to,studentId:'101',studentFirstName:'Fixture',termLabel:'First Term'})).sent,false);assert(!logs.join(' ').includes(data.to));assert(!logs.join(' ').includes('private-provider-detail'));}
+ finally{console.error=saved;outcome={data:{id:'fixture'},error:null};}
+});

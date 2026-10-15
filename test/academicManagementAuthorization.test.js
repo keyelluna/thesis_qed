@@ -79,7 +79,12 @@ for (const [method, path, body, status, mutations] of operations) {
   for (const role of ['PRINCIPAL', 'TEACHER', 'PARENT', 'UNKNOWN', undefined, null, [], {}, 123, ' ADMIN ']) {
     test(`${method} ${path}: ${JSON.stringify(role)} denied before connection or SQL`, async () => {
       const result = await request(method, path, body, token(role));
-      assert.deepEqual(result, { status: 403, body: { success: false, message: 'Administrator access is required.' } });
+      // Valid non-Admin sessions reach role authorization; malformed roles now
+      // fail earlier at the common session boundary. Both must prevent all SQL.
+      const validRole = ['PRINCIPAL', 'TEACHER', 'PARENT'].includes(role);
+      assert.deepEqual(result, { status: 403, body: validRole
+        ? { success: false, message: 'Administrator access is required.' }
+        : { message: 'Invalid or expired token.' } });
       assert.equal(calls.length, 0); assert.equal(writes, 0);
     });
   }

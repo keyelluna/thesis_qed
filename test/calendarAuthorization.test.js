@@ -79,7 +79,9 @@ for (const operation of operations) {
     test(`${name}: signed ${role ?? "missing-role"} identity is forbidden before database access`, async () => {
       const result = await request(operation, token(role));
       assert.equal(result.status, 403);
-      assert.deepEqual(result.body, { success: false, message: "Calendar management requires Admin or Principal access." });
+      assert.deepEqual(result.body, ["TEACHER", "PARENT"].includes(role)
+        ? { success: false, message: "Calendar management requires Admin or Principal access." }
+        : { message: "Invalid or expired token." });
       assert.equal(calls.length, 0);
     });
   }

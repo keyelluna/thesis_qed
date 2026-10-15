@@ -2,6 +2,8 @@ const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const cookie = require("cookie");
 const { notificationOwner } = require('./src/modules/notification/notification.identity');
+const { validSessionClaims } = require('./src/modules/authentication/sessionClaims');
+const { socketOriginAllowed } = require('./src/security/originPolicy');
 
 let io = null;
 
@@ -10,6 +12,7 @@ const userSockets = new Map();
 
 function initSocket(httpServer, allowedOrigins) {
   io = new Server(httpServer, {
+    allowRequest: (req, callback) => callback(null, socketOriginAllowed(req.headers)),
     cors: {
       origin: allowedOrigins,
       methods: ["GET", "POST"],
@@ -26,8 +29,8 @@ function initSocket(httpServer, allowedOrigins) {
       const { token } = cookie.parse(rawCookie);
       if (!token) return next(new Error("No token provided"));
 
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      if (!notificationOwner(decoded)) return next(new Error("Authentication failed"));
+      const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+      if (!validSessionClaims(decoded) || !notificationOwner(decoded)) return next(new Error("Authentication failed"));
       socket.userId = decoded.userId;
       socket.userRole = decoded.role;
 

@@ -111,7 +111,8 @@ for (const period of ["weekly", "monthly", "yearly"]) {
     ["object", { role: "ADMIN" }], ["whitespace", " ADMIN "],
   ];
   for (const [name, role] of roles) test(`${period}: signed ${name} role denied before controller/database`, async () => {
-    denied(await request(`?period=${period}`, token(role)), 403, forbidden);
+    denied(await request(`?period=${period}`, token(role)), 403,
+      ["PRINCIPAL", "TEACHER", "PARENT"].includes(role) ? forbidden : invalidToken);
   });
   for (const invalid of ["malformed", "expired", "wrong-signature", "unsigned", "not-active"]) {
     test(`${period}: ${invalid} JWT retains authentication denial contract`, async () => {
@@ -140,7 +141,7 @@ test("spoofed role without authentication cannot bypass JWT verification", async
   denied(await request("?role=ADMIN", undefined, { role: "ADMIN" }, { "X-Role": "ADMIN" }), 401, { message: "No token provided." });
 });
 test("signed string payload without a role cannot authorize analytics", async () => {
-  denied(await request("?period=weekly", jwt.sign("ADMIN", secret)), 403, forbidden);
+  denied(await request("?period=weekly", jwt.sign("ADMIN", secret)), 403, invalidToken);
 });
 test("default period and case-insensitive period keep authorized response contract", async () => {
   for (const query of ["", "?period=WEEKLY"]) {

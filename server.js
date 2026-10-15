@@ -12,6 +12,7 @@ const moment = require('moment');
 const apiRoutes = require('./src/routes/index.js');
 const { initSocket } = require('./socket.js');
 const auditLog = require('./src/modules/shared/audit/auditLog.service.js');
+const { approvedOrigins, requireMutationOrigin } = require('./src/security/originPolicy');
 
 const app = express();
 
@@ -23,7 +24,7 @@ app.use(logger);
 
 app.use(cookieParser());
 
-const allowedOrigins = ['http://localhost:5173', 'https://qed-front-end-6upk.vercel.app'];
+const allowedOrigins = approvedOrigins();
 
 const corsOptions = {
   origin: allowedOrigins,
@@ -32,6 +33,7 @@ const corsOptions = {
   credentials: true,
 };
 app.use(cors(corsOptions));
+app.use('/api', requireMutationOrigin);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

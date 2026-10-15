@@ -37,7 +37,10 @@ const JWT_EXPIRES_IN = "1h";
 
 exports.login = async (req, res) => {
   try {
-    const { userName, password } = req.body;
+    const { userName, password } = req.body || {};
+    if (typeof userName !== 'string' || !userName || typeof password !== 'string' || !password) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
 
     const [rows] = await connection.execute(
       "SELECT * FROM qed_authentication WHERE user_name = ? LIMIT 1",
@@ -52,7 +55,7 @@ exports.login = async (req, res) => {
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(401).json({ message: "Invalid Password" });
+      return res.status(401).json({ message: "Invalid credentials" });
     }
 
     const roleKey = String(user.role).toLowerCase();
@@ -71,17 +74,17 @@ exports.login = async (req, res) => {
     );
 
     if (profileRows.length === 0) {
-      return res.status(403).json({ message: "User profile not found." });
+      return res.status(403).json({ message: "Invalid credentials" });
     }
 
     const profile = profileRows[0];
 
     if (profile.is_deleted === 1) {
-      return res.status(403).json({ message: "Account has been deleted." });
+      return res.status(403).json({ message: "Invalid credentials" });
     }
 
     if (profile.status && profile.status.toLowerCase() === "inactive") {
-      return res.status(403).json({ message: "Account is inactive." });
+      return res.status(403).json({ message: "Invalid credentials" });
     }
 
     // ✅ i-log ang successful login para sa Daily Login Frequency analytics
@@ -108,7 +111,7 @@ exports.login = async (req, res) => {
     const token = jwt.sign(
       { userId: user.id, userName: user.user_name, role: user.role },
       JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN },
+      { algorithm: 'HS256', expiresIn: JWT_EXPIRES_IN },
     );
 
     return res

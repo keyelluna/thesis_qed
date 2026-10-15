@@ -1,5 +1,5 @@
 const connection = require("../../../../config/db");
-const jwt = require("jsonwebtoken");
+const { actorFromRequest } = require('./auditActor');
 
 let tableReady;
 
@@ -54,22 +54,6 @@ function changedFieldNames(body) {
   const ignored = /password|token|secret|otp|email|contact|phone|address|cookie|authorization/i;
   const names = Object.keys(body).filter((key) => !ignored.test(key)).slice(0, 30);
   return names.length ? JSON.stringify(names) : null;
-}
-
-function actorFromRequest(req) {
-  if (req.user?.userId) return req.user;
-  const token = req.cookies?.token;
-  if (!token || !process.env.JWT_SECRET) return null;
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    return {
-      userId: decoded.userId ?? decoded.id ?? null,
-      userName: decoded.userName ?? null,
-      role: decoded.role ?? null,
-    };
-  } catch {
-    return null;
-  }
 }
 
 async function recordAuditEvent(event) {

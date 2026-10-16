@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { Resend } = require("resend");
+const { readMockPasswordResetConfig, allowsMockPasswordReset, TEST_SENDER } = require("./mockPasswordReset.config");
 const resend = new Resend(process.env.RESEND_API_KEY);
 const DEV_EMAIL_OVERRIDE = process.env.NODE_ENV !== "production"
   ? (process.env.QED_TEST_EMAIL_RECIPIENT || "") : "";
@@ -103,7 +104,7 @@ async function sendCredentialsEmail({
  * @param {string} params.to
  * @param {string} params.otp
  */
-async function sendPasswordResetOtpEmail({ to, otp }) {
+async function sendPasswordResetOtpEmail({ to, otp, accountId }) {
   if (!to) {
     console.warn(
       "sendPasswordResetOtpEmail: no recipient email, skipping send.",
@@ -111,11 +112,15 @@ async function sendPasswordResetOtpEmail({ to, otp }) {
     return { skipped: true };
   }
 
-  const from = process.env.QED_CREDENTIAL_EMAIL_FROM ||
-    (process.env.NODE_ENV !== "production" ? "QED School <onboarding@resend.dev>" : "");
+  const mock = readMockPasswordResetConfig();
+  if (mock.mode === "invalid" || (mock.mode === "on" && !allowsMockPasswordReset(mock, accountId))) {
+    return { sent: false };
+  }
+  const from = mock.mode === "on" ? TEST_SENDER : (process.env.QED_CREDENTIAL_EMAIL_FROM ||
+    (process.env.NODE_ENV !== "production" ? "QED School <onboarding@resend.dev>" : ""));
   if (!from) return { sent: false };
 
-  const actualRecipient = DEV_EMAIL_OVERRIDE || to;
+  const actualRecipient = mock.mode === "on" ? mock.recipient : (DEV_EMAIL_OVERRIDE || to);
 
   try {
     const { data, error } = await resend.emails.send({
@@ -135,7 +140,7 @@ async function sendPasswordResetOtpEmail({ to, otp }) {
             This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.
           </p>
           ${
-            DEV_EMAIL_OVERRIDE
+            mock.mode === "off" && DEV_EMAIL_OVERRIDE
               ? `<p style="color:#6B7280; font-size:11px; margin-top:16px; border-top:1px solid #E5E7EB; padding-top:8px;">
                   [DEV MODE] This was actually meant for: ${to}
                 </p>`

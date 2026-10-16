@@ -5,6 +5,7 @@ const connection = require("../../../config/db");
 const ROLE_TABLES = require("../../../config/roleTables");
 const { sendPasswordResetOtpEmail } = require("../../services/mailer.service");
 const { recoveryLimits } = require("./recoveryRateLimit");
+const { readMockPasswordResetConfig, allowsMockPasswordReset } = require("../../services/mockPasswordReset.config");
 
 const genericRequest = { message: "If the account information matches, a recovery code will be emailed." };
 const invalidOtp = { message: "Invalid or expired OTP." };
@@ -37,15 +38,19 @@ exports.forgotPassword = async (req, res) => {
   // Same public response for valid/unknown accounts, wrong email, blocked roles,
   // rate limits and provider failures; no account-existence disclosure in bodies.
   if (!recoveryLimits.allow("request", req, userName)) return res.status(200).json(genericRequest);
+  const mock = readMockPasswordResetConfig();
+  if (mock.mode === "invalid") return res.status(200).json(genericRequest);
   try {
     const [rows] = await connection.execute("SELECT id, role FROM qed_authentication WHERE user_name = ? AND is_deleted = 0 LIMIT 1", [userName]);
     const record = rows[0];
+    // Check server-selected account IDs before generating or persisting a code.
+    if (mock.mode === "on" && !allowsMockPasswordReset(mock, record?.id)) return res.status(200).json(genericRequest);
     if (!record || !(await profileEligible(record, email))) return res.status(200).json(genericRequest);
     const otp = crypto.randomInt(100000, 1000000).toString();
     const expires = new Date(Date.now() + 10 * 60 * 1000);
     await connection.execute("UPDATE qed_authentication SET password_reset_otp = ?, otp_expires_at = ? WHERE id = ?", [otp, expires, record.id]);
     let delivery;
-    try { delivery = await sendPasswordResetOtpEmail({ to: email, otp }); } catch { delivery = { sent: false }; }
+    try { delivery = await sendPasswordResetOtpEmail({ to: email, otp, accountId: record.id }); } catch { delivery = { sent: false }; }
     if (!delivery?.sent) {
       // Do not clear a newer code issued while the provider was pending.
       await connection.execute("UPDATE qed_authentication SET password_reset_otp = NULL, otp_expires_at = NULL WHERE id = ? AND password_reset_otp = ?", [record.id, otp]);

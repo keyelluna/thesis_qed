@@ -59,7 +59,7 @@ function replaceCell(xml, cellAddress, value) {
     node = `${typedOpening}><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
   }
 
-  if (existing) return xml.replace(cellPattern, node);
+  if (existing) return xml.replace(cellPattern, () => node);
 
   const sheetDataMatch = xml.match(/<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/i);
   if (!sheetDataMatch) throw new Error("Worksheet XML has no sheetData section.");
@@ -266,6 +266,56 @@ function assertWorkbookFormulaStructurePreserved(originalBuffer, outputBuffer) {
   }
 }
 
+// Cache only the two verified name-link shapes; never evaluate grading formulas.
+function learnerNameCaches(originalBuffer, writes, map) {
+  const workbook = XLSX.read(originalBuffer, { type: "buffer", cellFormula: true });
+  const caches = {};
+  for (const term of map.terms || []) {
+    for (const row of term.studentRows || []) {
+      if (!Object.hasOwn(writes["INPUT DATA"] || {}, row.nameInputCell)) continue;
+      const address = XLSX.utils.encode_cell({ r: row.row - 1, c: row.nameColumn - 1 });
+      const formula = workbook.Sheets[term.sheetName]?.[address]?.f;
+      const reference = "(?:'INPUT DATA'|INPUT DATA)!\\$?([A-Z]{1,3})\\$?(\\d+)";
+      const direct = typeof formula === "string" && formula.match(new RegExp(`^\\s*${reference}\\s*$`, "i"));
+      const conditional = typeof formula === "string" && formula.match(new RegExp(
+        `^\\s*IF\\(\\s*${reference}\\s*=\\s*""\\s*,\\s*""\\s*,\\s*${reference}\\s*\\)\\s*$`, "i",
+      ));
+      const matchesSource = (letters, number) => `${letters.toUpperCase()}${Number(number)}` === row.nameInputCell;
+      if (!(direct && matchesSource(direct[1], direct[2]))
+          && !(conditional && matchesSource(conditional[1], conditional[2]) && matchesSource(conditional[3], conditional[4]))) {
+        throw new Error(`Export refused: unverified learner-name formula at ${term.sheetName}!${address}.`);
+      }
+      const value = writes["INPUT DATA"][row.nameInputCell];
+      if (value !== null && value !== undefined && typeof value !== "string") {
+        throw new Error(`Export refused: learner name at INPUT DATA!${row.nameInputCell} is not text.`);
+      }
+      // A direct reference to an empty cell evaluates to zero in Excel.
+      (caches[term.sheetName] ||= {})[address] = direct && !value ? 0 : value ?? "";
+    }
+  }
+  return caches;
+}
+
+function replaceLearnerNameCache(xml, address, value) {
+  const pattern = new RegExp(`(<c\\b(?=[^>]*\\br="${address}")[^>]*>)([\\s\\S]*?)(<\\/c>)`, "i");
+  let found = false;
+  const updated = xml.replace(pattern, (_node, opening, content, closing) => {
+    if (!/<f\b[^>]*(?:\/>|>[\s\S]*?<\/f>)/i.test(content)) {
+      throw new Error(`Export refused: learner-name formula XML missing at ${address}.`);
+    }
+    found = true;
+    const typed = opening.replace(/\s+t="[^"]*"/i, "").replace(/>$/, typeof value === "number" ? ">" : ' t="str">');
+    const cached = `<v>${escapeXml(value)}</v>`;
+    const valuePattern = /<v\b[^>]*(?:\/>|>[\s\S]*?<\/v>)/i;
+    const body = valuePattern.test(content)
+      ? content.replace(valuePattern, () => cached)
+      : content.replace(/(<f\b[^>]*(?:\/>|>[\s\S]*?<\/f>))/i, (formula) => formula + cached);
+    return typed + body + closing;
+  });
+  if (!found) throw new Error(`Export refused: learner-name cell XML missing at ${address}.`);
+  return updated;
+}
+
 async function patchOfficialWorkbook(originalBuffer, writes, map) {
   assertNoFormulaWrites(originalBuffer, writes);
   for (const [sheetName, cells] of Object.entries(writes)) {
@@ -283,6 +333,7 @@ async function patchOfficialWorkbook(originalBuffer, writes, map) {
   const relationshipsXml = await relationshipsFile.async("string");
   const paths = resolveWorksheetPaths(zip, workbookXml, relationshipsXml);
   const percentageScoreWidths = getPercentageScoreColumnWidths(originalBuffer, map);
+  const nameCaches = learnerNameCaches(originalBuffer, writes, map);
 
   for (const [sheetName, cells] of Object.entries(writes)) {
     const path = paths.get(sheetName);
@@ -290,6 +341,13 @@ async function patchOfficialWorkbook(originalBuffer, writes, map) {
     const file = zip.file(path);
     let xml = await file.async("string");
     for (const [cellAddress, value] of Object.entries(cells)) xml = replaceCell(xml, cellAddress, value);
+    zip.file(path, xml, { createFolders: false });
+  }
+  for (const [sheetName, cells] of Object.entries(nameCaches)) {
+    const path = paths.get(sheetName);
+    if (!path) throw new Error(`Could not resolve the worksheet part for ${sheetName}.`);
+    let xml = await zip.file(path).async("string");
+    for (const [address, value] of Object.entries(cells)) xml = replaceLearnerNameCache(xml, address, value);
     zip.file(path, xml, { createFolders: false });
   }
   for (const [sheetName, widths] of Object.entries(percentageScoreWidths)) {

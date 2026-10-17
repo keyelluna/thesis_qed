@@ -41,6 +41,13 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api', auditLog.auditMutationRequests);
 app.use('/api', apiRoutes);
 
+app.get("/health", (req, res) => {
+  return res.status(200).json({
+    status: "healthy",
+    service: "QED Backend",
+  });
+});
+
 app.use((req, res) => {
   res.status(404).json({
     success: false,

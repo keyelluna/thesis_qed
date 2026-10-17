@@ -28,7 +28,7 @@ const allowedOrigins = approvedOrigins();
 
 const corsOptions = {
   origin: allowedOrigins,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], // ← dinagdag ang PATCH
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], 
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
 };

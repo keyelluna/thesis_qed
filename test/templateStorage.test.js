@@ -190,9 +190,36 @@ test("export retrieves inactive pinned A even after B becomes active; OOXML and 
   assert.deepEqual(fake.objects.get(a), f.bytes);
   const original = await JSZip.loadAsync(f.bytes); const exported = await JSZip.loadAsync(res.body);
   assert.deepEqual(Object.keys(exported.files).sort(), Object.keys(original.files).sort());
-  // Only the existing patcher's INPUT DATA/TERM worksheets and workbook recalculation XML can change.
+  const source = XLSX.read(f.bytes, { type: 'buffer', cellFormula: true });
+  const workbookXml = await original.file('xl/workbook.xml').async('string');
+  const relationships = await original.file('xl/_rels/workbook.xml.rels').async('string');
+  const finalTag = [...workbookXml.matchAll(/<sheet\b[^>]*>/g)].find(([tag]) => /\bname="FINAL GRADES"/.test(tag))?.[0];
+  const finalId = finalTag?.match(/\br:id="([^"]+)"/)?.[1];
+  const finalRelationship = [...relationships.matchAll(/<Relationship\b[^>]*>/g)].find(([tag]) => tag.match(/\bId="([^"]+)"/)?.[1] === finalId)?.[0];
+  const finalTarget = finalRelationship?.match(/\bTarget="([^"]+)"/)?.[1];
+  const finalPath = finalTarget?.startsWith('/') ? finalTarget.slice(1) : `xl/${finalTarget}`;
+  const nameInputs = new Set(f.map.terms.flatMap(term => term.studentRows.map(row => row.nameInputCell)));
+  const nameCells = new Set(Object.entries(source.Sheets['FINAL GRADES']).filter(([, cell]) => {
+    const reference = "(?:'INPUT DATA'|INPUT DATA)!\\$?([A-Z]+)\\$?(\\d+)";
+    const direct = cell?.f?.match(new RegExp(`^\\s*${reference}\\s*$`, 'i'));
+    const conditional = cell?.f?.match(new RegExp(`^\\s*IF\\(\\s*${reference}\\s*=\\s*""\\s*,\\s*""\\s*,\\s*${reference}\\s*\\)\\s*$`, 'i'));
+    const match = direct || conditional;
+    if (!match || (conditional && `${conditional[1]}${Number(conditional[2])}` !== `${conditional[3]}${Number(conditional[4])}`)) return false;
+    return nameInputs.has(`${match[1].toUpperCase()}${Number(match[2])}`);
+  }).map(([address]) => address));
+  assert.ok(nameCells.size > 0);
+  const stripNameCaches = xml => xml.replace(/<c\b[^>]*?(?:\/>|>[\s\S]*?<\/c>)/g, node => {
+    if (!nameCells.has(node.match(/\br="([A-Z]+\d+)"/)?.[1])) return node;
+    return node.replace(/\s+t="[^"]*"/, '').replace(/<v\b[^>]*(?:\/>|>[\s\S]*?<\/v>)/, '');
+  });
+  // Existing export behavior also refreshes verified FINAL GRADES learner-name
+  // caches. Permit only cache/type changes there, preserving every other byte.
   for (const name of Object.keys(original.files).filter((name) => !original.files[name].dir)) {
     if (name === "xl/workbook.xml" || /^xl\/worksheets\/sheet[1-4]\.xml$/.test(name)) continue;
+    if (name === finalPath) {
+      assert.equal(stripNameCaches(await exported.file(name).async('string')), stripNameCaches(await original.file(name).async('string')));
+      continue;
+    }
     assert.deepEqual(await exported.file(name).async("nodebuffer"), await original.file(name).async("nodebuffer"), `unchanged package part ${name}`);
   }
   const before = XLSX.read(f.bytes, { type: "buffer", cellFormula: true }); const after = XLSX.read(res.body, { type: "buffer", cellFormula: true });

@@ -5,6 +5,7 @@ const reportsController = require("./reports.controller");
 const requireSchoolRead = require("../requireSchoolRead.middleware");
 
 router.use(verifyToken, requireSchoolRead);
+router.get('/examination-performance', require('./examinationAnalytics.controller').getExaminationAnalytics);
 
 router.get("/term-options", reportsController.getTermOptions);
 router.get(

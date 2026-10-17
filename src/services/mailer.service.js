@@ -5,6 +5,9 @@ const { readMockPasswordResetConfig, allowsMockPasswordReset, TEST_SENDER } = re
 const resend = new Resend(process.env.RESEND_API_KEY);
 const DEV_EMAIL_OVERRIDE = process.env.NODE_ENV !== "production"
   ? (process.env.QED_TEST_EMAIL_RECIPIENT || "") : "";
+// Temporary thesis credential delivery until a sending domain is available.
+const CREDENTIAL_EMAIL_OVERRIDE = DEV_EMAIL_OVERRIDE ||
+  (process.env.NODE_ENV === "development" ? "kimlourenluna.dev@gmail.com" : "");
 const APP_BASE_URL = process.env.NODE_ENV === "production"
   ? "https://qed-front-end-6upk.vercel.app" : "http://localhost:5173";
 
@@ -49,7 +52,7 @@ async function sendCredentialsEmail({
 
   const roleLabel = ROLE_LABELS[role?.toUpperCase()] || role;
 
-  const actualRecipient = DEV_EMAIL_OVERRIDE || to;
+  const actualRecipient = CREDENTIAL_EMAIL_OVERRIDE || to;
   // Explicit non-production redirection; never log account details.
 
   try {
@@ -76,7 +79,7 @@ async function sendCredentialsEmail({
             Please log in and change your password as soon as possible.
           </p>
           ${
-            DEV_EMAIL_OVERRIDE
+            CREDENTIAL_EMAIL_OVERRIDE
               ? `<p style="color:#6B7280; font-size:11px; margin-top:16px; border-top:1px solid #E5E7EB; padding-top:8px;">
                   [DEV MODE] This was actually meant for: ${escapeHtml(to)}
                 </p>`
@@ -91,7 +94,7 @@ async function sendCredentialsEmail({
       return { sent: false, error };
     }
 
-    return { sent: true, redirected: Boolean(DEV_EMAIL_OVERRIDE) };
+    return { sent: true, redirected: Boolean(CREDENTIAL_EMAIL_OVERRIDE) };
   } catch (err) {
     console.error("Credential email delivery failed.");
     return { sent: false, error: err };

@@ -160,6 +160,11 @@
 
 // module.exports = connection;
 
+require("dotenv").config({
+  path: require("node:path").join(__dirname, "../.env"),
+  quiet: true,
+});
+
 const mysql = require("mysql2");
 
 const POOL_CONNECTION_LIMIT = 2;

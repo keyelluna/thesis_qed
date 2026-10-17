@@ -293,6 +293,22 @@ function learnerNameCaches(originalBuffer, writes, map) {
       (caches[term.sheetName] ||= {})[address] = direct && !value ? 0 : value ?? "";
     }
   }
+  // FINAL GRADES links to the same roster inputs. Cache those verified name
+  // links too, so viewers that do not recalculate formulas still show learners.
+  const nameInputs = new Set((map.terms || []).flatMap(term => (term.studentRows || []).map(row => row.nameInputCell)));
+  for (const [address, cell] of Object.entries(workbook.Sheets['FINAL GRADES'] || {})) {
+    if (!cell?.f) continue;
+    const reference = "(?:'INPUT DATA'|INPUT DATA)!\\$?([A-Z]{1,3})\\$?(\\d+)";
+    const direct = cell.f.match(new RegExp(`^\\s*${reference}\\s*$`, 'i'));
+    const conditional = cell.f.match(new RegExp(`^\\s*IF\\(\\s*${reference}\\s*=\\s*""\\s*,\\s*""\\s*,\\s*${reference}\\s*\\)\\s*$`, 'i'));
+    const match = direct || conditional;
+    if (!match) continue;
+    const source = `${match[1].toUpperCase()}${Number(match[2])}`;
+    if (conditional && source !== `${conditional[3].toUpperCase()}${Number(conditional[4])}`) continue;
+    if (!nameInputs.has(source) || !Object.hasOwn(writes['INPUT DATA'] || {}, source)) continue;
+    const value = writes['INPUT DATA'][source];
+    (caches['FINAL GRADES'] ||= {})[address] = direct && !value ? 0 : value ?? '';
+  }
   return caches;
 }
 

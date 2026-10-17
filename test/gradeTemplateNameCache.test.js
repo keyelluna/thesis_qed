@@ -55,6 +55,15 @@ for (const file of files) test(`learner caches, formulas, scores and untouched X
   const baseline = await patchOfficialWorkbook(original, { 'INPUT DATA': {}, [term.sheetName]: scoreWrites }, map);
   const output = await patchOfficialWorkbook(original, { 'INPUT DATA': inputs, [term.sheetName]: scoreWrites }, map);
   const reopened = XLSX.read(output, { type: 'buffer', cellFormula: true });
+  const finalNameAddresses = Object.entries(source.Sheets['FINAL GRADES']).filter(([, cell]) => {
+    const match = cell?.f?.match(/'INPUT DATA'!\$?([A-Z]+)\$?(\d+)/);
+    return match && Object.hasOwn(inputs, `${match[1]}${match[2]}`);
+  }).map(([address]) => address);
+  assert.ok(finalNameAddresses.length > 0);
+  for (const address of finalNameAddresses) {
+    const match = source.Sheets['FINAL GRADES'][address].f.match(/'INPUT DATA'!\$?([A-Z]+)\$?(\d+)/);
+    assert.equal(reopened.Sheets['FINAL GRADES'][address].v, inputs[`${match[1]}${match[2]}`] ?? '');
+  }
   for (const mappedTerm of map.terms) {
     for (const row of mappedTerm.studentRows) {
       const address = nameAddress(row);
@@ -71,6 +80,7 @@ for (const file of files) test(`learner caches, formulas, scores and untouched X
     'INPUT DATA': Object.fromEntries(Object.keys(inputs).map(address => [address, null])),
   }, map);
   const clearedWorkbook = XLSX.read(cleared, { type: 'buffer', cellFormula: true });
+  for (const address of finalNameAddresses) assert.equal(clearedWorkbook.Sheets['FINAL GRADES'][address].v, '');
   for (const t of map.terms) for (const row of t.studentRows) {
     assert.equal(clearedWorkbook.Sheets[t.sheetName][nameAddress(row)].v, '', 'removed learners leave no stale name');
   }
@@ -83,6 +93,7 @@ for (const file of files) test(`learner caches, formulas, scores and untouched X
   const paths = worksheetPaths(beforeZip, await beforeZip.file('xl/workbook.xml').async('string'),
     await beforeZip.file('xl/_rels/workbook.xml.rels').async('string'));
   const allowed = new Map([[paths.get('INPUT DATA'), new Set(Object.keys(inputs))],
+    [paths.get('FINAL GRADES'), new Set(finalNameAddresses)],
     ...map.terms.map(t => [paths.get(t.sheetName), new Set(t.studentRows.map(nameAddress))])]);
   assert.deepEqual(Object.keys(afterZip.files).sort(), Object.keys(beforeZip.files).sort());
   for (const [part, entry] of Object.entries(beforeZip.files)) {

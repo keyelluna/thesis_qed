@@ -1,3 +1,5 @@
+const connection = require('./config/db.js');
+
 //ENVIRONMENT VARIABLES
 require('dotenv').config();
 // Optional private local storage settings; existing environment values take precedence.
@@ -46,6 +48,24 @@ app.get("/health", (req, res) => {
     status: "healthy",
     service: "QED Backend",
   });
+});
+
+app.get("/health/database", async (req, res) => {
+  try {
+    await connection.query("SELECT 1");
+
+    return res.status(200).json({
+      status: "healthy",
+      database: "connected",
+    });
+  } catch (error) {
+    console.error("Database health check failed:", error.code);
+
+    return res.status(503).json({
+      status: "unhealthy",
+      database: "unavailable",
+    });
+  }
 });
 
 app.use((req, res) => {

@@ -66,3 +66,17 @@ test('existing school reader rejects teachers, parents, anonymous and missing id
  assert.ok(router.indexOf('router.use(verifyToken, requireSchoolRead)')<router.indexOf("router.get('/examination-performance'"));
 });
 
+
+test('comparison cohorts match exact student-section memberships without exposing identities', () => {
+ const values=[row(1,60,100,{sectionId:3}),row(2,80,100,{sectionId:3}),row(2,90,100,{itemId:2,subjectId:2,subjectSectionId:2,sectionId:3}),row(1,100,100,{itemId:2,subjectId:2,subjectSectionId:2,sectionId:3})];
+ const r=summarize(values);
+ assert.equal(r.rows[0].comparisonCohort,r.rows[1].comparisonCohort);
+ assert.equal(r.summary.students,2);assert.equal(r.summary.count,4);
+ assert.ok(!JSON.stringify(r.rows).includes('members'));
+ assert.ok(!JSON.stringify(r.rows).includes('studentId'));
+ const changed=values.map((v,i)=>i===3?{...v,studentId:9}:v);
+ assert.notEqual(summarize(changed).rows[0].comparisonCohort,summarize(changed).rows[1].comparisonCohort);
+ const sections=values.map((v,i)=>i===3?{...v,sectionId:4}:v);
+ assert.notEqual(summarize(sections).rows[0].comparisonCohort,summarize(sections).rows[1].comparisonCohort);
+ assert.equal(summarize([row(1,80),row(2,90)]).rows[0].comparisonCohort,null);
+});

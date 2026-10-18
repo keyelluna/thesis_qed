@@ -23,7 +23,7 @@ exports.getExaminationAnalytics = async (req, res) => {
       if (value) { conditions.push(`${column} = ?`); params.push(value); }
     }
     const [rows] = await connection.query(`SELECT gs.student_id AS studentId, gi.id AS itemId,
-      ss.id AS subjectSectionId, es.id AS subjectId, es.subject_name AS subject,
+      ss.id AS subjectSectionId, ss.section_id AS sectionId, es.id AS subjectId, es.subject_name AS subject,
       UPPER(gi.exam_type) AS examination, gi.max_items AS hps, gs.score
       FROM grade_items gi JOIN grade_scores gs ON gs.item_id = gi.id
       JOIN \`subject-section\` ss ON ss.id = gi.subject_section_id

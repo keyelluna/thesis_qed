@@ -42,12 +42,23 @@ function summarize(rows) {
     values.push(value); students.add(String(row.studentId));
     distribution[Math.min(9, Math.floor(value / 10))].count++;
     const key = `${row.subjectId}:${row.examination}`;
-    const group = groups.get(key) ?? { subjectId: row.subjectId, subject: row.subject, examination: row.examination, values: [], students: new Set() };
-    group.values.push(value); group.students.add(String(row.studentId)); groups.set(key, group);
+    const group = groups.get(key) ?? { subjectId: row.subjectId, subject: row.subject, examination: row.examination, values: [], students: new Set(), members: [], cohortKnown: true };
+    group.values.push(value); group.students.add(String(row.studentId));
+    group.cohortKnown = group.cohortKnown && row.sectionId != null;
+    group.members.push(JSON.stringify([String(row.studentId), String(row.sectionId)]));
+    groups.set(key, group);
   }
+  // Never return student IDs. Group numbers are scoped to this response only.
+  const cohorts = new Map();
+  const groupCohort = group => {
+    if (!group.cohortKnown) return null;
+    const signature = JSON.stringify([group.examination, group.members.sort()]);
+    if (!cohorts.has(signature)) cohorts.set(signature, cohorts.size + 1);
+    return cohorts.get(signature);
+  };
   return {
     summary: { ...statistics(values), students: students.size, scale: 'Percentage (0–100)' },
-    rows: [...groups.values()].map(({ values, students, ...group }) => ({ ...group, ...statistics(values), students: students.size })),
+    rows: [...groups.values()].map(group => ({ subjectId: group.subjectId, subject: group.subject, examination: group.examination, ...statistics(group.values), students: group.students.size, comparisonCohort: groupCohort(group) })),
     distribution,
   };
 }

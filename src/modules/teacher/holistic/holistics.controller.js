@@ -535,6 +535,7 @@ const getStudentHolisticProfile = async (req, res) => {
       },
       highestRiskLevel: "NONE",
       subjects: [],
+      evaluationHistory: [],
     };
 
     if (subjectSectionIds.length === 0) {
@@ -568,9 +569,10 @@ const getStudentHolisticProfile = async (req, res) => {
     );
 
     const [subjectWeekRows] = await connection.execute(
-      `SELECT subject_section_id, DATE_FORMAT(week_start_date, '%Y-%m-%d') AS week, rating
+      `SELECT subject_section_id, DATE_FORMAT(week_start_date, '%Y-%m-%d') AS week, axis, rating
        FROM holistic_ratings
-       WHERE subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?`,
+       WHERE subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?
+       ORDER BY week_start_date DESC, subject_section_id, axis`,
       [...subjectSectionIds, studentId, termNumber]
     );
     const weekRowsBySubject = new Map();
@@ -630,6 +632,13 @@ const getStudentHolisticProfile = async (req, res) => {
         },
         highestRiskLevel,
         subjects,
+        evaluationHistory: subjectWeekRows.map((rating) => ({
+          date: rating.week,
+          subjectSectionId: String(rating.subject_section_id),
+          subjectName: subjectRows.find((subject) => String(subject.id) === String(rating.subject_section_id))?.subjectName ?? "",
+          domain: rating.axis,
+          score: Number(rating.rating),
+        })),
       },
     });
   } catch (error) {

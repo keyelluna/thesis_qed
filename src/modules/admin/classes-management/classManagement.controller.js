@@ -8,40 +8,18 @@ const DAY_MAP = {
   Fri: "Friday",
 };
 
-async function resolveSectionId(conn, sectionName, gradeLevelId, currentSectionId = null) {
-  const cleaned = sectionName && String(sectionName).trim();
-  if (!cleaned) return null;
-
-  const [existing] = await conn.query(
-    `SELECT id FROM grade_level_sections 
-     WHERE grade_level_id = ? AND LOWER(TRIM(section_name)) = LOWER(?) 
-     LIMIT 1`,
-    [gradeLevelId, cleaned],
-  );
-  if (existing.length > 0) return existing[0].id;
-
-  if (currentSectionId) {
-    await conn.query(
-      `UPDATE grade_level_sections SET section_name = ?, grade_level_id = ? WHERE id = ?`,
-      [cleaned, gradeLevelId, currentSectionId],
-    );
-    return currentSectionId;
-  }
-
-  const [inserted] = await conn.query(
-    `INSERT INTO grade_level_sections (section_name, grade_level_id) VALUES (?, ?)`,
-    [cleaned, gradeLevelId],
-  );
-  return inserted.insertId;
+const { lockActiveYear, fail } = require('../../../services/studentPlacement.service');
+async function resolveSectionId(conn, sectionName, gradeLevelId, schoolYearId) {
+ const cleaned = sectionName && String(sectionName).trim();
+ if (!cleaned) return null;
+ const [rows] = await conn.query('SELECT id, is_active FROM grade_level_sections WHERE grade_level_id = ? AND school_year_id = ? AND LOWER(TRIM(section_name)) = LOWER(?) ORDER BY id FOR UPDATE', [gradeLevelId, schoolYearId, cleaned]);
+ if (rows.length > 1) fail(409, 'Duplicate sections in this grade/year require review.');
+ if (rows.length && !Number(rows[0].is_active)) fail(409, 'This section is inactive. Configure an active section first.');
+ if (rows.length) return rows[0].id;
+ const [inserted] = await conn.query('INSERT INTO grade_level_sections (section_name, grade_level_id, school_year_id) VALUES (?, ?, ?)', [cleaned, gradeLevelId, schoolYearId]);
+ return inserted.insertId;
 }
-
-async function getActiveSchoolYearId(conn) {
-  const [activeSY] = await conn.query(
-    `SELECT id FROM school_year WHERE is_active = 1 LIMIT 1`,
-  );
-  if (activeSY.length === 0) return null;
-  return activeSY[0].id;
-}
+async function getActiveSchoolYearId(conn) { return (await lockActiveYear(conn)).id; }
 
 exports.createClass = async (req, res) => {
   const { gradeLevel, section, room, adviserId, schedule } = req.body;
@@ -61,7 +39,7 @@ exports.createClass = async (req, res) => {
       });
     }
 
-    const sectionId = await resolveSectionId(conn, section, gradeLevel);
+    const sectionId = await resolveSectionId(conn, section, gradeLevel, schoolYearId);
 
     if (sectionId !== null) {
       const [existingClassForSection] = await conn.query(
@@ -187,9 +165,9 @@ exports.createClass = async (req, res) => {
     if (conn) await conn.rollback();
 
     console.error("Database Error:", error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: "Database error occurred while saving.",
+      message: error.statusCode ? error.message : "Database error occurred while saving.",
     });
   } finally {
     if (conn) conn.release();
@@ -206,6 +184,7 @@ exports.updateClass = async (req, res) => {
     conn = await connection.getConnection();
     await conn.beginTransaction();
 
+    const schoolYearId = await getActiveSchoolYearId(conn);
     const [existingRows] = await conn.query(
       `SELECT id, grade_level_id, section_id, room, class_adviser_id, school_year_id FROM classes WHERE id = ? LIMIT 1`,
       [id],
@@ -220,7 +199,6 @@ exports.updateClass = async (req, res) => {
     const currentClass = existingRows[0];
     const currentSectionId = currentClass.section_id;
 
-    const schoolYearId = await getActiveSchoolYearId(conn);
     if (!schoolYearId) {
       await conn.rollback();
       return res.status(400).json({
@@ -236,7 +214,7 @@ exports.updateClass = async (req, res) => {
       });
     }
 
-    const sectionId = await resolveSectionId(conn, section, gradeLevel, currentSectionId);
+    const sectionId = await resolveSectionId(conn, section, gradeLevel, schoolYearId);
 
     if (sectionId !== null) {
       const [sectionTaken] = await conn.query(
@@ -262,6 +240,11 @@ exports.updateClass = async (req, res) => {
           message: "Mayroon nang class na walang section sa grade level na ito.",
         });
       }
+    }
+
+    if (currentSectionId !== null && (Number(gradeLevel) !== Number(currentClass.grade_level_id) || sectionId !== currentSectionId)) {
+      const [members] = await conn.query("SELECT id FROM elem_students WHERE section_id = ? AND current_school_year_id = ? AND is_deleted = 0 AND status <> 'graduated' LIMIT 1", [currentSectionId, schoolYearId]);
+      if (members.length) fail(409, 'This class has students. Keep its grade and section while editing class details.');
     }
 
     if (sectionId !== currentSectionId) {
@@ -459,9 +442,9 @@ exports.updateClass = async (req, res) => {
     if (conn) await conn.rollback();
 
     console.error("Database Error:", error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: "Database error occurred while updating.",
+      message: error.statusCode ? error.message : "Database error occurred while updating.",
     });
   } finally {
     if (conn) conn.release();
@@ -492,7 +475,7 @@ exports.getSectionsByGrade = async (req, res) => {
   }
 
   try {
-    const schoolYearId = await getActiveSchoolYearId(connection);
+    const schoolYearId = (await connection.query("SELECT id FROM school_year WHERE is_active = 1 LIMIT 1"))[0][0]?.id;
     if (!schoolYearId) {
       return res.status(400).json({
         success: false,
@@ -502,14 +485,14 @@ exports.getSectionsByGrade = async (req, res) => {
 
     let query = `
       SELECT id, section_name FROM grade_level_sections
-      WHERE grade_level_id = ?
+      WHERE grade_level_id = ? AND school_year_id = ? AND is_active = 1
         AND id NOT IN (
           SELECT section_id FROM classes
           WHERE section_id IS NOT NULL
             AND school_year_id = ?
             AND status = 'Active'
     `;
-    const params = [gradeLevelId, schoolYearId];
+    const params = [gradeLevelId, schoolYearId, schoolYearId];
 
     if (excludeClassId) {
       query += ` AND id != ?`;
@@ -535,7 +518,7 @@ exports.getTeachers = async (req, res) => {
   const { excludeClassId } = req.query;
 
   try {
-    const schoolYearId = await getActiveSchoolYearId(connection);
+    const schoolYearId = (await connection.query("SELECT id FROM school_year WHERE is_active = 1 LIMIT 1"))[0][0]?.id;
     if (!schoolYearId) {
       return res.status(400).json({
         success: false,
@@ -644,7 +627,8 @@ exports.getClasses = async (req, res) => {
   (
     SELECT COUNT(*) FROM elem_students es
     WHERE es.grade_level_id = c.grade_level_id
-      AND (c.section_id IS NULL OR es.section_id = c.section_id)
+      AND ((c.section_id IS NULL AND es.section_id IS NULL) OR es.section_id = c.section_id)
+      AND es.current_school_year_id = c.school_year_id AND es.status <> 'graduated'
       AND es.is_deleted = 0
   ) AS student_count
 FROM classes c
@@ -729,10 +713,11 @@ exports.deleteClass = async (req, res) => {
     conn = await connection.getConnection();
     await conn.beginTransaction();
 
+    const schoolYearId = await getActiveSchoolYearId(conn);
     // 1. Kunin ang grade_level_id at section_id ng class bago ito tanggalin
     const [classRows] = await conn.query(
-      `SELECT grade_level_id, section_id FROM classes WHERE id = ? LIMIT 1`,
-      [id],
+      `SELECT grade_level_id, section_id FROM classes WHERE id = ? AND school_year_id = ? LIMIT 1`,
+      [id, schoolYearId],
     );
     if (classRows.length === 0) {
       await conn.rollback();
@@ -743,7 +728,6 @@ exports.deleteClass = async (req, res) => {
     }
     const { grade_level_id: gradeLevelId, section_id: sectionId } = classRows[0];
 
-    const schoolYearId = await getActiveSchoolYearId(conn);
 
     if (schoolYearId) {
       if (sectionId !== null) {

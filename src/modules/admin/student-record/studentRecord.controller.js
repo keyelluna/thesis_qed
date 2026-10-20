@@ -1,5 +1,6 @@
 const connection = require("../../../../config/db");
 const { studentReadScope } = require('./studentRecord.authorization');
+const { lockActiveYear, lockTarget, fail, positiveId } = require('../../../services/studentPlacement.service');
 
 // ADD NEW STUDENT
 exports.addNewStudent = async (req, res) => {
@@ -14,14 +15,21 @@ exports.addNewStudent = async (req, res) => {
     section,
   } = req.body;
 
-  const sectionId = section ? section : null;
+  const sectionId = section ? Number(section) : null;
+  let conn;
 
   try {
-    const [activeSY] = await connection.query(
-      `SELECT id FROM school_year WHERE is_active = 1 LIMIT 1`,
-    );
+    if (!positiveId(Number(gradeLevel)) || (sectionId !== null && !positiveId(sectionId))) fail(400, 'Choose a valid grade and section.');
+    conn = await connection.getConnection();
+    await conn.beginTransaction();
+    const year = await lockActiveYear(conn);
+    const [grades] = await conn.query('SELECT id FROM grade_level WHERE id = ?', [Number(gradeLevel)]);
+    if (!grades.length) fail(400, 'Grade level not found.');
+    if (sectionId !== null) await lockTarget(conn, Number(year.id), Number(gradeLevel), sectionId);
+    const activeSY = [year];
 
     if (activeSY.length === 0) {
+      await conn.rollback();
       return res.status(400).json({
         success: false,
         message:
@@ -37,7 +45,7 @@ exports.addNewStudent = async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-    const [result] = await connection.query(studentQuery, [
+    const [result] = await conn.query(studentQuery, [
       studentId,
       lastName,
       firstName,
@@ -50,12 +58,15 @@ exports.addNewStudent = async (req, res) => {
       "active",
     ]);
 
+    await conn.commit();
     res.status(201).json({
       success: true,
       message: "Student record created successfully!",
       data: { id: result.insertId },
     });
   } catch (error) {
+    if (conn) await conn.rollback();
+    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
     console.error("Database Error:", error);
 
     if (error.code === "ER_DUP_ENTRY") {
@@ -83,6 +94,7 @@ exports.addNewStudent = async (req, res) => {
 
     return res.status(500).json({ success: false, message: "Database error." });
   }
+  finally { if (conn) conn.release(); }
 };
 
 exports.updateStudent = async (req, res) => {
@@ -99,15 +111,23 @@ exports.updateStudent = async (req, res) => {
     section,
   } = req.body;
 
-  const sectionId = section ? section : null;
+  const sectionId = section ? Number(section) : null;
+  let conn;
 
   try {
+    if (!positiveId(Number(gradeLevel)) || (sectionId !== null && !positiveId(sectionId))) fail(400, 'Choose a valid grade and section.');
+    conn = await connection.getConnection();
+    await conn.beginTransaction();
+    const year = await lockActiveYear(conn);
+    const [grades] = await conn.query('SELECT id FROM grade_level WHERE id = ?', [Number(gradeLevel)]);
+    if (!grades.length) fail(400, 'Grade level not found.');
+    if (sectionId !== null) await lockTarget(conn, Number(year.id), Number(gradeLevel), sectionId);
     // =========================================================
     // 1. CHECK IF STUDENT IS STILL ACTIVE / CURRENT
     // =========================================================
-    const [studentRows] = await connection.query(
+    const [studentRows] = await conn.query(
       `
-      SELECT s.id
+      SELECT s.id, s.grade_level_id, s.section_id, s.current_school_year_id
       FROM elem_students s
       JOIN school_year sy
         ON sy.id = s.current_school_year_id
@@ -115,16 +135,22 @@ exports.updateStudent = async (req, res) => {
         AND s.is_deleted = 0
         AND s.status <> 'graduated'
         AND sy.is_active = 1
-      LIMIT 1
+      FOR UPDATE
       `,
       [id]
     );
 
     if (studentRows.length === 0) {
+      await conn.rollback();
       return res.status(404).json({
         success: false,
         message: "Active student not found.",
       });
+    }
+
+    const current = studentRows[0], expected = req.body.expectedPlacement;
+    if (!expected || expected.schoolYearId !== Number(current.current_school_year_id) || expected.gradeLevelId !== Number(current.grade_level_id) || expected.sectionId !== current.section_id) {
+      fail(409, 'Student placement changed. Refresh the record before saving.');
     }
 
     // =========================================================
@@ -143,7 +169,7 @@ exports.updateStudent = async (req, res) => {
       AND id != ?
     `;
 
-    const [existing] = await connection.query(checkQuery, [
+    const [existing] = await conn.query(checkQuery, [
       studentId,
       lrn,
       id,
@@ -171,6 +197,7 @@ exports.updateStudent = async (req, res) => {
           "LRN already exists. Please use a unique LRN.";
       }
 
+      await conn.rollback();
       return res.status(409).json({
         success: false,
         message,
@@ -192,11 +219,12 @@ exports.updateStudent = async (req, res) => {
         grade_level_id = ?,
         section_id = ?
       WHERE id = ?
+        AND current_school_year_id = ?
         AND is_deleted = 0
         AND status <> 'graduated'
     `;
 
-    const [result] = await connection.query(studentQuery, [
+    const [result] = await conn.query(studentQuery, [
       studentId,
       lastName,
       firstName,
@@ -206,20 +234,25 @@ exports.updateStudent = async (req, res) => {
       gradeLevel,
       sectionId,
       id,
+      year.id,
     ]);
 
     if (result.affectedRows === 0) {
+      await conn.rollback();
       return res.status(404).json({
         success: false,
         message: "Student not found or cannot be updated.",
       });
     }
 
+    await conn.commit();
     return res.status(200).json({
       success: true,
       message: "Student record updated successfully!",
     });
   } catch (error) {
+    if (conn) await conn.rollback();
+    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
     if (error.code === "ER_DUP_ENTRY") {
       let message = "Duplicate entry found. Please use unique values.";
 
@@ -246,6 +279,7 @@ exports.updateStudent = async (req, res) => {
       message: "Database error occurred.",
     });
   }
+  finally { if (conn) conn.release(); }
 };
 
 // GET STUDENT BY ID (View Student Info)

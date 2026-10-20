@@ -32,7 +32,8 @@ exports.getTeachersDirectory = async (req, res) => {
          gls.section_name,
          c.room
        FROM teacher_table t
-       LEFT JOIN classes c ON c.class_adviser_id = t.id
+       LEFT JOIN classes c ON c.class_adviser_id = t.id AND c.status = 'Active'
+         AND c.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)
        LEFT JOIN grade_level_sections gls ON gls.id = c.section_id
        LEFT JOIN grade_level gl ON gl.id = c.grade_level_id
        WHERE t.is_deleted = 0
@@ -122,11 +123,11 @@ exports.getTeacherProfile = async (req, res) => {
          gls.section_name,
          c.room
        FROM teacher_table t
-       LEFT JOIN classes c ON c.class_adviser_id = t.id
+       LEFT JOIN classes c ON c.class_adviser_id = t.id AND c.status = 'Active'
+         AND c.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)
        LEFT JOIN grade_level_sections gls ON gls.id = c.section_id
        LEFT JOIN grade_level gl ON gl.id = c.grade_level_id
-       WHERE t.id = ? AND t.is_deleted = 0
-         AND (c.id IS NULL OR c.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1))`,
+       WHERE t.id = ? AND t.is_deleted = 0`,
       [id]
     );
 

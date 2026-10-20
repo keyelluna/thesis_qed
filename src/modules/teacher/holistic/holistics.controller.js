@@ -272,7 +272,7 @@ const getHolisticOverview = async (req, res) => {
     const [advisoryClasses] = await connection.execute(
       `SELECT id AS classId, section_id, grade_level_id
        FROM classes
-       WHERE class_adviser_id = ? AND school_year_id = ${ACTIVE_SY_ID}`,
+       WHERE class_adviser_id = ? AND status = 'Active' AND school_year_id = ${ACTIVE_SY_ID}`,
       [teacherId]
     );
 
@@ -495,7 +495,7 @@ const getStudentHolisticProfile = async (req, res) => {
 
     const [advisoryRows] = await connection.execute(
       `SELECT section_id FROM classes
-       WHERE class_adviser_id = ? AND school_year_id = ${ACTIVE_SY_ID}`,
+       WHERE class_adviser_id = ? AND status = 'Active' AND school_year_id = ${ACTIVE_SY_ID}`,
       [teacherId]
     );
     const isAdvisory = advisoryRows.some(

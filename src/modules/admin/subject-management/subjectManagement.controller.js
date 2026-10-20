@@ -375,25 +375,6 @@ exports.updateSubjectSection = async (req, res) => {
       }
     }
 
-    const nextSectionName = sectionName === undefined ? existing.section_name : String(sectionName ?? "").trim();
-    let nextSectionId = existing.section_id;
-    if (gradeChanged || sectionName !== undefined) {
-      nextSectionId = null;
-      if (nextSectionName) {
-        const [sectionRows] = await conn.query(
-          `SELECT id FROM grade_level_sections
-            WHERE section_name = ? AND grade_level_id = ? AND is_active = 1 LIMIT 1`,
-          [nextSectionName, nextGradeLevelId]
-        );
-        if (sectionRows.length === 0) {
-          await conn.rollback();
-          conn.release();
-          return res.status(400).json({ success: false, message: `Section "${nextSectionName}" is not available for the selected grade level.` });
-        }
-        nextSectionId = sectionRows[0].id;
-      }
-    }
-
     let nextSchoolYearId = existing.school_year_id;
     if (schoolYear !== undefined) {
       const [schoolYearRows] = await conn.query(
@@ -408,9 +389,28 @@ exports.updateSubjectSection = async (req, res) => {
       nextSchoolYearId = schoolYearRows[0].id;
     }
 
+    const nextSectionName = sectionName === undefined ? existing.section_name : String(sectionName ?? "").trim();
+    let nextSectionId = existing.section_id;
+    if (gradeChanged || sectionName !== undefined || schoolYear !== undefined) {
+      nextSectionId = null;
+      if (nextSectionName) {
+        const [sectionRows] = await conn.query(
+          `SELECT id FROM grade_level_sections
+            WHERE section_name = ? AND grade_level_id = ? AND school_year_id = ? AND is_active = 1 LIMIT 1`,
+          [nextSectionName, nextGradeLevelId, nextSchoolYearId]
+        );
+        if (sectionRows.length === 0) {
+          await conn.rollback();
+          conn.release();
+          return res.status(400).json({ success: false, message: `Section "${nextSectionName}" is not available for the selected grade level.` });
+        }
+        nextSectionId = sectionRows[0].id;
+      }
+    }
+
     if (gradeChanged) {
       const [assignments] = await conn.query(
-        `SELECT ss.id, gls.section_name
+        `SELECT ss.id, ss.school_year_id, gls.section_name
            FROM \`subject-section\` ss
            LEFT JOIN grade_level_sections gls ON gls.id = ss.section_id
           WHERE ss.subject_id = ? FOR UPDATE`,
@@ -428,8 +428,8 @@ exports.updateSubjectSection = async (req, res) => {
         }
         const [mappedSections] = await conn.query(
           `SELECT id FROM grade_level_sections
-            WHERE section_name = ? AND grade_level_id = ? AND is_active = 1 LIMIT 1`,
-          [assignmentSectionName, nextGradeLevelId]
+            WHERE section_name = ? AND grade_level_id = ? AND school_year_id = ? AND is_active = 1 LIMIT 1`,
+          [assignmentSectionName, nextGradeLevelId, Number(assignment.id) === Number(id) ? nextSchoolYearId : assignment.school_year_id]
         );
         if (mappedSections.length === 0) {
           await conn.rollback();
@@ -583,7 +583,7 @@ exports.assignTeacherToSection = async (req, res) => {
 
   try {
     const [existingRows] = await connection.query(
-      `SELECT id FROM \`subject-section\` WHERE id = ? LIMIT 1`,
+      `SELECT id, school_year_id FROM \`subject-section\` WHERE id = ? AND school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1) LIMIT 1`,
       [id]
     );
     if (existingRows.length === 0) {
@@ -594,8 +594,8 @@ exports.assignTeacherToSection = async (req, res) => {
     }
 
     const [sectionRows] = await connection.query(
-      `SELECT id FROM grade_level_sections WHERE section_name = ? AND grade_level_id = ? AND is_active = 1 LIMIT 1`,
-      [sectionName, gradeLevelId]
+      `SELECT id FROM grade_level_sections WHERE section_name = ? AND grade_level_id = ? AND school_year_id = ? AND is_active = 1 LIMIT 1`,
+      [sectionName, gradeLevelId, existingRows[0].school_year_id]
     );
     if (sectionRows.length === 0) {
       return res.status(404).json({

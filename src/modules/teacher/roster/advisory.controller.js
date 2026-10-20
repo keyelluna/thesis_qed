@@ -23,11 +23,13 @@ const getAdvisoryRoster = async (req, res) => {
     const teacherId = teacherRows[0].id;
 
     const [classRows] = await connection.execute(
-      `SELECT gl.grade_level, gls.section_name, c.section_id
+      `SELECT gl.grade_level, gls.section_name, c.section_id, c.grade_level_id
        FROM classes c
        JOIN grade_level gl ON gl.id = c.grade_level_id
-       JOIN grade_level_sections gls ON gls.id = c.section_id
-       WHERE c.class_adviser_id = ?
+       LEFT JOIN grade_level_sections gls ON gls.id = c.section_id
+       WHERE c.class_adviser_id = ? AND c.status = 'Active'
+       AND c.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)
+       ORDER BY c.id
        LIMIT 1`,
       [teacherId]
     );
@@ -41,14 +43,15 @@ const getAdvisoryRoster = async (req, res) => {
       });
     }
 
-    const { grade_level, section_name, section_id } = classRows[0];
+    const { grade_level, section_name, section_id, grade_level_id } = classRows[0];
 
     const [studentRows] = await connection.execute(
       `SELECT id, student_number, last_name, first_name, middle_name, gender
        FROM elem_students
-       WHERE section_id = ? AND is_deleted = 0
+       WHERE (section_id = ? OR (section_id IS NULL AND ? IS NULL AND grade_level_id = ?)) AND is_deleted = 0
+       AND status <> 'graduated' AND current_school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)
        ORDER BY last_name, first_name`,
-      [section_id]
+      [section_id, section_id, grade_level_id]
     );
 
     return res.status(200).json({

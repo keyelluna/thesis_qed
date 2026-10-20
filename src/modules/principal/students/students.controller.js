@@ -59,7 +59,7 @@ exports.getGradeLevels = async (req, res) => {
        FROM grade_level gl
        JOIN classes c
          ON c.grade_level_id = gl.id
-        AND c.school_year_id = ?
+        AND c.school_year_id = ? AND c.status = 'Active'
        JOIN grade_level_sections gls
          ON gls.id = c.section_id
         AND gls.school_year_id = ?
@@ -203,7 +203,7 @@ exports.getClassList = async (req, res) => {
        JOIN grade_level_sections gls ON gls.id = c.section_id
        LEFT JOIN teacher_table t ON t.id = c.class_adviser_id
        WHERE c.id = ?
-         AND c.school_year_id = ?
+         AND c.school_year_id = ? AND c.status = 'Active'
        LIMIT 1`,
       [classId, schoolYearId]
     );

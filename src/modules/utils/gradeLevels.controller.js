@@ -31,6 +31,8 @@ exports.getSectionByGrade = async (req, res) => {
   INNER JOIN grade_level ON grade_level_sections.grade_level_id = grade_level.id 
   WHERE grade_level.id = ? 
     AND grade_level_sections.is_active = 1
+ AND grade_level_sections.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)
+ AND EXISTS (SELECT 1 FROM classes c WHERE c.section_id = grade_level_sections.id AND c.school_year_id = grade_level_sections.school_year_id AND c.grade_level_id = grade_level_sections.grade_level_id AND c.status = 'Active')
   ORDER BY grade_level_sections.section_name ASC;
 `;
 

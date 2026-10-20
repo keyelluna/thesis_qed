@@ -36,7 +36,8 @@ const getClassSchedule = async (req, res) => {
    FROM elem_students es
    JOIN classes c
      ON (c.section_id = es.section_id
-         OR (c.section_id IS NULL AND c.grade_level_id = es.grade_level_id))
+         OR (c.section_id IS NULL AND es.section_id IS NULL AND c.grade_level_id = es.grade_level_id))
+   AND c.school_year_id = es.current_school_year_id AND c.grade_level_id = es.grade_level_id AND c.status = 'Active'
    JOIN school_year sy
      ON sy.id = c.school_year_id AND sy.is_active = 1
    JOIN class_schedule cs ON cs.class_id = c.id

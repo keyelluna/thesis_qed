@@ -32,7 +32,9 @@ async function getStudentProfile(req, res) {
        FROM elem_students s
        LEFT JOIN grade_level gl ON s.grade_level_id = gl.id
        LEFT JOIN grade_level_sections gls ON s.section_id = gls.id
-       LEFT JOIN classes c ON c.section_id = s.section_id
+       LEFT JOIN classes c ON (c.section_id = s.section_id OR (c.section_id IS NULL AND s.section_id IS NULL))
+ AND c.grade_level_id = s.grade_level_id AND c.school_year_id = s.current_school_year_id
+ AND c.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1) AND c.status = 'Active'
        LEFT JOIN teacher_table t ON c.class_adviser_id = t.id
        LEFT JOIN school_year sy ON sy.is_active = 1
        WHERE s.id = ? AND s.is_deleted = 0 AND ${scope.sql}
@@ -128,7 +130,9 @@ async function updateStudentProfile(req, res) {
        FROM elem_students s
        LEFT JOIN grade_level gl ON s.grade_level_id = gl.id
        LEFT JOIN grade_level_sections gls ON s.section_id = gls.id
-       LEFT JOIN classes c ON c.section_id = s.section_id
+       LEFT JOIN classes c ON (c.section_id = s.section_id OR (c.section_id IS NULL AND s.section_id IS NULL))
+ AND c.grade_level_id = s.grade_level_id AND c.school_year_id = s.current_school_year_id
+ AND c.school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1) AND c.status = 'Active'
        LEFT JOIN teacher_table t ON c.class_adviser_id = t.id
        LEFT JOIN school_year sy ON sy.is_active = 1
        WHERE s.id = ? AND s.is_deleted = 0

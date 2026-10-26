@@ -166,6 +166,9 @@ require("dotenv").config({
 });
 
 const mysql = require("mysql2");
+const { boundPoolAcquisition } = require("../src/operations/databaseReliability");
+const { diagnostic } = require("../src/operations/requestDiagnostics");
+const { databaseTlsOptions, sanitizedDatabaseTlsError } = require("../src/operations/databaseTls");
 
 const POOL_CONNECTION_LIMIT = 2;
 
@@ -187,6 +190,9 @@ function isSelectQuery(firstArg) {
 
 function createPool() {
   const databasePort = Number(process.env.DB_PORT || 3306);
+  let ssl;
+  try { ssl = databaseTlsOptions(process.env); }
+  catch (error) { diagnostic("db_tls_configuration_failed", error); throw error; }
 
   if (
     !Number.isInteger(databasePort) ||
@@ -202,6 +208,7 @@ function createPool() {
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
+    ssl,
 
     timezone: "+08:00",
     dateStrings: true,
@@ -221,35 +228,36 @@ function createPool() {
 
     conn.query("SET time_zone = '+08:00'", (err) => {
       if (err) {
-        console.error("Failed to set MySQL timezone:", err);
+        diagnostic("db_timezone_failed", err);
       }
     });
   });
 
+  const acquire = rawPool.getConnection.bind(rawPool);
+  rawPool.getConnection = callback => acquire((error, connection) => {
+    const safeError = sanitizedDatabaseTlsError(error);
+    if (safeError) diagnostic("db_tls_failed", safeError);
+    callback(safeError || error, connection);
+  });
+  boundPoolAcquisition(rawPool);
   const pool = rawPool.promise();
 
-  // Retry a disconnected SELECT once.
-  const rawQuery = pool.query.bind(pool);
-
-  pool.query = async (...args) => {
-    try {
-      return await rawQuery(...args);
-    } catch (err) {
-      if (
-        !DEAD_CONNECTION_CODES.has(err.code) ||
-        !isSelectQuery(args[0])
-      ) {
-        throw err;
+  // Dashboard reads use execute(); recover disconnected SELECTs on both APIs.
+  // Retry once only, and never replay writes.
+  for (const method of ["query", "execute"]) {
+    const rawMethod = pool[method].bind(pool);
+    pool[method] = async (...args) => {
+      try {
+        return await rawMethod(...args);
+      } catch (err) {
+        if (!DEAD_CONNECTION_CODES.has(err.code) || !isSelectQuery(args[0])) {
+          throw err;
+        }
+        console.warn(`MySQL ${err.code}: retrying SELECT once...`);
+        return rawMethod(...args);
       }
-
-      console.warn(
-        `MySQL ${err.code}: retrying SELECT once...`
-      );
-
-      return rawQuery(...args);
-    }
-  };
-
+    };
+  }
   return pool;
 }
 
@@ -275,7 +283,7 @@ async function closePool(signal) {
 
     console.log("MySQL pool closed.");
   } catch (err) {
-    console.error("Error closing MySQL pool:", err);
+    diagnostic("db_shutdown_failed", err);
   }
 
   delete global.__mysqlPool;

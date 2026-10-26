@@ -82,7 +82,7 @@ for (const endpoint of endpoints) {
       controllerCalls = 0;
       const separator = endpoint.includes('?') ? '&' : '?';
       const response = await request(endpoint + separator + 'role=admin&userId=999', token({ userId: 801, role }));
-      assert.equal(response.status, 403); assert.equal(controllerCalls, 0);
+      assert.equal(response.status, ['teacher', 'parent', 'TEACHER', 'PARENT'].includes(role) ? 403 : 401); assert.equal(controllerCalls, 0);
     });
   }
   for (const role of ['admin', 'principal', 'ADMIN', 'PRINCIPAL']) {
@@ -96,7 +96,7 @@ for (const endpoint of endpoints) {
     test(`${endpoint}: ${kind} token denied before controller`, async () => {
       const credential = kind === 'invalid' ? 'invalid-token' : kind === 'expired' ? token({ userId: 101, role: 'principal' }, { expiresIn: -1 }) : kind === 'recovery' ? token({ userId: 101, role: 'principal', purpose: 'password-reset' }) : token({ userId: {}, role: 'principal' });
       controllerCalls = 0; const response = await request(endpoint, credential);
-      assert.equal(response.status, 403); assert.equal(controllerCalls, 0);
+      assert.equal(response.status, 401); assert.equal(controllerCalls, 0);
     });
   }
 }

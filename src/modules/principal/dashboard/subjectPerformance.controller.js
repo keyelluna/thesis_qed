@@ -1,3 +1,4 @@
+const { subjectGradePublished } = require('../publishedGrades.sql');
 const connection = require("../../../../config/db");
 
 const { getCurrentGradingPeriod } = require("./utils/gradingPeriod");
@@ -31,7 +32,7 @@ exports.getTopSubjectPerGrade = async (req, res) => {
        JOIN elem_students st ON sgc.student_id = st.id
        WHERE sgc.grading_period_id = ?
          AND ss.school_year_id = ?
-         AND sgc.is_complete = 1
+         AND sgc.is_complete = 1 AND ${subjectGradePublished()}
          AND sgc.average IS NOT NULL
          AND st.is_deleted = 0
          AND st.status <> 'graduated'
@@ -56,7 +57,7 @@ exports.getTopSubjectPerGrade = async (req, res) => {
          WHERE gp.school_year_id = ?
            AND gp.term_number = ?
            AND ss.school_year_id = ?
-           AND sgc.is_complete = 1
+           AND sgc.is_complete = 1 AND ${subjectGradePublished()}
            AND sgc.average IS NOT NULL
            AND st.is_deleted = 0
            AND st.status <> 'graduated'
@@ -121,7 +122,7 @@ exports.getSubjectRankingByTerm = async (req, res) => {
       JOIN elem_subjects es ON es.id = ss.subject_id
       JOIN grade_level gl ON gl.id = es.grade_level_id
       JOIN elem_students st ON st.id = sgc.student_id
-      WHERE sgc.is_complete = 1 AND sgc.average IS NOT NULL AND st.is_deleted = 0 AND st.status <> 'graduated'
+      WHERE sgc.is_complete = 1 AND ${subjectGradePublished()} AND sgc.average IS NOT NULL AND st.is_deleted = 0 AND st.status <> 'graduated'
       GROUP BY gp.id, gl.id, gl.grade_level, es.subject_name
       ORDER BY score DESC
     `);

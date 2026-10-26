@@ -79,12 +79,12 @@ for (const path of reads) {
     assert.ok(!calls.some(c => /FROM (?:grade_visibility|grade_items|class_schedule|subject_grade_cache)/i.test(c.sql)));
   });
   for (const kind of ['missing', 'invalid', 'expired']) test(`${kind} denied ${path}`, async () => {
-    assert.equal((await request(path, kind === 'missing' ? undefined : { userId: 801, role: 'PARENT' }, 'GET', kind)).status, kind === 'missing' ? 401 : 403);
+    assert.equal((await request(path, kind === 'missing' ? undefined : { userId: 801, role: 'PARENT' }, 'GET', kind)).status, 401);
     assert.equal(calls.length, 0); assert.equal(writes, 0);
   });
 }
 for (const role of ['PARENT', 'PRINCIPAL', 'TEACHER', 'UNKNOWN', null, [], {}]) test(`non-Admin profile write denied: ${JSON.stringify(role)}`, async () => {
-  assert.equal((await request('/profile/101?role=ADMIN', { userId: 801, role }, 'PUT')).status, 403);
+  assert.equal((await request('/profile/101?role=ADMIN', { userId: 801, role }, 'PUT')).status, ['PARENT','PRINCIPAL','TEACHER'].includes(role) ? 403 : 401);
   assert.equal(calls.length, 0); assert.equal(writes, 0);
 });
 for (const role of ['PARENT', 'parent']) {
@@ -99,10 +99,10 @@ test('Admin profile write retained', async () => {
 for (const [mount,,path,method] of parentRoutes) {
   for (const role of ['ADMIN','PRINCIPAL','TEACHER','UNKNOWN',null,[],{}]) test(`${JSON.stringify(role)} denied Parent boundary ${method} ${mount}${path} before SQL`,async()=>{
     const result=await request(mount+path+(path.includes('?')?'&':'?')+'role=PARENT&userId=801&parentId=51',{userId:801,role},method);
-    assert.equal(result.status,403);assert.equal(calls.length,0);assert.equal(writes,0);
+    assert.equal(result.status,['ADMIN','PRINCIPAL','TEACHER'].includes(role)?403:401);assert.equal(calls.length,0);assert.equal(writes,0);
   });
   for (const kind of ['missing','invalid','expired']) test(`${kind} denied Parent boundary ${method} ${mount}${path} before SQL`,async()=>{
-    assert.equal((await request(mount+path,kind==='missing'?undefined:{userId:801,role:'PARENT'},method,kind)).status,kind==='missing'?401:403);
+    assert.equal((await request(mount+path,kind==='missing'?undefined:{userId:801,role:'PARENT'},method,kind)).status,401);
     assert.equal(calls.length,0);assert.equal(writes,0);
   });
 }

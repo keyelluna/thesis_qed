@@ -1,9 +1,10 @@
+const quizContent = require('./interventionQuizContent.service');
 const connection = require("../../../../../config/db");
 const groqService = require("../../../shared/ai/groq.service");
 const { verifyParentAccess } = require("./petstate.controller");
 
 const VALID_DIFFICULTIES = ["Easy", "Medium", "Hard"];
-const QUESTIONS_PER_LEVEL = 10;
+const QUESTIONS_PER_LEVEL = quizContent.QUESTION_COUNT;
 
 
 const HUNGER_SEGMENTS = 5;
@@ -14,8 +15,8 @@ function nextDifficulty(current) {
 }
 
 
-async function resolveArchiveStatus(studentId, topicId) {
-  const [masteryRows] = await connection.query(
+async function resolveArchiveStatus(studentId, topicId, db = connection) {
+  const [masteryRows] = await db.query(
     `SELECT mastered_at FROM pet_topic_mastery WHERE student_id = ? AND topic_id = ?`,
     [studentId, topicId]
   );
@@ -23,7 +24,7 @@ async function resolveArchiveStatus(studentId, topicId) {
 
   const masteredAt = masteryRows[0].mastered_at;
 
-  const [[latest]] = await connection.query(
+  const [[latest]] = await db.query(
     `SELECT (gs.score / gi.max_items * 100) AS pct, lt.developing_threshold_percent AS threshold
      FROM grade_items gi
      INNER JOIN grade_scores gs ON gs.item_id = gi.id AND gs.student_id = ?
@@ -38,15 +39,15 @@ async function resolveArchiveStatus(studentId, topicId) {
   if (!needsReflag) return true; 
 
   // Re-flag: wipe this topic's progress so the student redoes it from scratch.
-  await connection.query(
+  await db.query(
     `DELETE FROM pet_level_progress WHERE student_id = ? AND topic_id = ?`,
     [studentId, topicId]
   );
-  await connection.query(
+  await db.query(
     `DELETE FROM pet_bonus_progress WHERE student_id = ? AND topic_id = ?`,
     [studentId, topicId]
   );
-  await connection.query(
+  await db.query(
     `DELETE FROM pet_topic_mastery WHERE student_id = ? AND topic_id = ?`,
     [studentId, topicId]
   );
@@ -103,8 +104,8 @@ async function getStudentGradeLevel(studentId) {
 // (HUNGER_SEGMENTS must equal 3 levels + 2 bonus games.)
 const BONUS_GAMES = ["match", "memory"];
 
-async function getBonusProgress(studentId, topicId) {
-  const [rows] = await connection.query(
+async function getBonusProgress(studentId, topicId, db = connection) {
+  const [rows] = await db.query(
     `SELECT game FROM pet_bonus_progress WHERE student_id = ? AND topic_id = ?`,
     [studentId, topicId]
   );
@@ -112,14 +113,14 @@ async function getBonusProgress(studentId, topicId) {
   return { match: done.has("match"), memory: done.has("memory") };
 }
 
-async function getHungerFilled(studentId, topicId) {
-  const [[{ completedCount }]] = await connection.query(
+async function getHungerFilled(studentId, topicId, db = connection) {
+  const [[{ completedCount }]] = await db.query(
     `SELECT COUNT(*) AS completedCount
      FROM pet_level_progress
      WHERE student_id = ? AND topic_id = ? AND status = 'completed'`,
     [studentId, topicId]
   );
-  const bonus = await getBonusProgress(studentId, topicId);
+  const bonus = await getBonusProgress(studentId, topicId, db);
   const bonusCount = Number(bonus.match) + Number(bonus.memory);
 
   return Math.min(HUNGER_SEGMENTS, Number(completedCount) + bonusCount);
@@ -229,71 +230,13 @@ exports.getQuiz = async (req, res) => {
 
     const gradeLevel = await getStudentGradeLevel(studentId);
 
-    // `<=>` is MySQL's NULL-safe equals, so students with no known grade keep
-    // sharing the old non-grade-specific sets instead of matching everything.
-    const [existingSets] = await connection.query(
-      `SELECT id, title FROM ai_practice_sets
-       WHERE topic_id = ? AND difficulty = ? AND grade_level <=> ?
-       ORDER BY generated_at DESC LIMIT 1`,
-      [topicId, difficulty, gradeLevel]
-    );
-
-    let practiceSetId, title;
-
-    if (existingSets.length > 0) {
-      practiceSetId = existingSets[0].id;
-      title = existingSets[0].title;
-    } else {
-      const [topicRows] = await connection.query(
-        `SELECT lt.topic_name, es.subject_name
-         FROM learning_topics lt
-         INNER JOIN \`subject-section\` ss ON lt.subject_section_id = ss.id
-         INNER JOIN elem_subjects es ON ss.subject_id = es.id
-         WHERE lt.id = ?`,
-        [topicId]
-      );
-      if (topicRows.length === 0) return res.status(404).json({ message: "Topic not found." });
-
-      const { topic_name: topicName, subject_name: subjectName } = topicRows[0];
-      const objectives = [
-        `Understand and correctly apply concepts related to ${topicName}${gradeLevel ? ` at the ${gradeLevel} level` : ""}`,
-      ];
-      const questions = await groqService.generateQuiz(
-        topicName,
-        subjectName,
-        objectives,
-        difficulty,
-        gradeLevel
-      );
-
-      const [setResult] = await connection.query(
-        `INSERT INTO ai_practice_sets (topic_id, title, difficulty, grade_level, model_used) VALUES (?, ?, ?, ?, ?)`,
-        [topicId, topicName, difficulty, gradeLevel, "groq"]
-      );
-      practiceSetId = setResult.insertId;
-      title = topicName;
-
-      for (let i = 0; i < questions.length; i++) {
-        const q = questions[i];
-        await connection.query(
-          `INSERT INTO ai_practice_questions
-             (practice_set_id, question_text, choice_a, choice_b, choice_c, choice_d, correct_answer, explanation, order_index)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [practiceSetId, q.questionText, q.choiceA, q.choiceB, q.choiceC, q.choiceD, q.correctAnswer, q.explanation, i]
-        );
-      }
-    }
-
-    const [questionRows] = await connection.query(
-      `SELECT id, question_text, choice_a, choice_b, choice_c, choice_d, order_index
-       FROM ai_practice_questions WHERE practice_set_id = ? ORDER BY order_index ASC`,
-      [practiceSetId]
-    );
-
-    return res.status(200).json({ practiceSetId, title, difficulty, gradeLevel, questions: questionRows });
+    const quiz = await quizContent.loadQuiz(topicId, gradeLevel, difficulty);
+    // Answers/explanations are server-only until each question is graded.
+    const questions = quiz.questions.map(({id,question_text,choice_a,choice_b,choice_c,choice_d,order_index}) => ({id,question_text,choice_a,choice_b,choice_c,choice_d,order_index}));
+    return res.status(200).json({ practiceSetId:quiz.practiceSetId, title:quiz.title, difficulty, gradeLevel, questions });
   } catch (error) {
     console.error("Error fetching quiz:", error);
-    return res.status(500).json({ message: "Failed to fetch quiz." });
+    return res.status(error.httpStatus || 500).json({ message: error.httpStatus ? error.message : 'Failed to fetch quiz.', ...(error.code ? {code:error.code} : {}), ...(error.code === 'QUIZ_OUTCOME_UNCERTAIN' ? {outcome:'uncertain'} : {}) });
   }
 };
 
@@ -322,6 +265,9 @@ exports.gradeSingleAnswer = async (req, res) => {
       return res.status(410).json(ARCHIVED_RESPONSE);
     }
 
+    await quizContent.requireQuiz(practiceSetId, topicId, await getStudentGradeLevel(studentId));
+    if (!['A','B','C','D'].includes(selected)) return res.status(400).json({message:'Invalid answer selection.'});
+
     const [rows] = await connection.query(
       `SELECT correct_answer, explanation FROM ai_practice_questions WHERE id = ? AND practice_set_id = ?`,
       [questionId, practiceSetId]
@@ -346,7 +292,7 @@ exports.gradeSingleAnswer = async (req, res) => {
     return res.status(200).json({ isCorrect, correctAnswer, explanation });
   } catch (error) {
     console.error("Error grading single answer:", error);
-    return res.status(500).json({ message: "Failed to grade answer." });
+    return res.status(error.httpStatus || 500).json({ message: error.httpStatus ? error.message : 'Failed to grade answer.' });
   }
 };
 
@@ -387,10 +333,15 @@ exports.submitQuiz = async (req, res) => {
       return res.status(410).json(ARCHIVED_RESPONSE);
     }
 
-    const [questionRows] = await connection.query(
-      `SELECT id, correct_answer, explanation FROM ai_practice_questions WHERE practice_set_id = ?`,
-      [practiceSetId]
-    );
+    const questionRows = await quizContent.requireQuiz(practiceSetId, topicId, await getStudentGradeLevel(studentId), difficulty);
+    if (mode !== 'remedial') {
+      const ids = new Set(questionRows.map(q => String(q.id))), seen = new Set();
+      for (const answer of answers) {
+        const id = String(answer?.questionId);
+        if (!answer || !ids.has(id) || seen.has(id) || !['A','B','C','D'].includes(answer.selected)) return res.status(400).json({message:'Answers must reference distinct questions in this quiz with valid choices.'});
+        seen.add(id);
+      }
+    }
     const totalQuestions = questionRows.length;
 
     // ---------------- Practice (remedial) round ----------------
@@ -481,7 +432,7 @@ exports.submitQuiz = async (req, res) => {
     });
   } catch (error) {
     console.error("Error submitting quiz:", error);
-    return res.status(500).json({ message: "Failed to submit quiz." });
+    return res.status(error.httpStatus || 500).json({ message: error.httpStatus ? error.message : 'Failed to submit quiz.' });
   }
 };
 
@@ -502,90 +453,87 @@ exports.submitQuiz = async (req, res) => {
 // Idempotent: if the topic is already archived, this returns success
 // without sending duplicate notifications (double-click, retry, etc.).
 //
-// NOTE: mastery is currently permanent and not scoped to a grading period —
-// pet_topic_mastery has no grading_period_id, so once mastered, a topic
-// stays excluded from getLowGradeTopicsForStudent even if new low grades
-// come in during a later term. If topics should be re-flaggable next term,
-// this needs a period-aware column/check added to both this insert and the
-// lowGradeTopics NOT EXISTS clause.
+// Mastery is the existing per-student/topic record. The existing low-grade
+// reflag policy is retained by resolveArchiveStatus; no new period/history
+// model is introduced here. Mastery and in-app notifications commit together.
 // -----------------------------------------------------------------------
 exports.markTopicMastered = async (req, res) => {
   const { studentId, topicId } = req.params;
   const parentUserId = req.user?.userId;
-
   if (!parentUserId) return res.status(401).json({ message: "Unauthorized." });
-
+  let db, active = false, commitAttempted = false, discard = false;
+  let status = 200, body;
   try {
     const access = await verifyParentAccess(parentUserId, studentId);
     if (!access.ok) return res.status(access.status).json({ message: access.message });
-
-    // Already archived: succeed quietly (double-click, retry).
-    if (await resolveArchiveStatus(studentId, topicId)) {
-      return res.status(200).json({ success: true, alreadyArchived: true });
+    db = await connection.getConnection();
+    try { await db.beginTransaction(); active = true; } catch (error) { discard = true; throw error; }
+    // Serialize completions, including initially absent mastery rows. Use the
+    // same topic lock order as F13; AI generation never holds this lock.
+    const [topics] = await db.query('SELECT id FROM learning_topics WHERE id = ? FOR UPDATE', [topicId]);
+    const [students] = await db.query('SELECT id FROM elem_students WHERE id = ? FOR UPDATE', [studentId]);
+    if (!topics.length || !students.length) throw Object.assign(new Error('Student or topic not found.'), { httpStatus: 404 });
+    const tables = ['learning_topics','elem_students','parent_table','parent_student','pet_level_progress','pet_bonus_progress','pet_topic_mastery','notifications'];
+    const [engines] = await db.query(`SELECT TABLE_NAME AS tableName, ENGINE AS engine FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (${tables.map(() => '?').join(',')})`, tables);
+    if (tables.some(name => !engines.some(r => r.tableName === name && r.engine?.toUpperCase() === 'INNODB'))) throw new Error('Intervention completion requires existing InnoDB tables.');
+    // Revalidate current ownership on this connection before any write.
+    const [owners] = await db.query(`SELECT pt.id FROM parent_table pt JOIN parent_student ps ON ps.parent_id = pt.id
+      WHERE pt.user_id = ? AND pt.is_deleted = 0 AND ps.student_id = ? FOR UPDATE`, [parentUserId,studentId]);
+    if (!owners.length) throw Object.assign(new Error("You don't have access to this student's records."), { httpStatus: 403 });
+    const [levels] = await db.query('SELECT difficulty, status FROM pet_level_progress WHERE student_id = ? AND topic_id = ? FOR UPDATE', [studentId,topicId]);
+    const [bonuses] = await db.query('SELECT game FROM pet_bonus_progress WHERE student_id = ? AND topic_id = ? FOR UPDATE', [studentId,topicId]);
+    if (await resolveArchiveStatus(studentId, topicId, db)) {
+      // Historical records lack a topic/event key in notifications. Never
+      // fabricate a legacy notification here: separate reviewed repair only.
+      body = { success: true, alreadyArchived: true };
+    } else if ((await getHungerFilled(studentId, topicId, db)) < HUNGER_SEGMENTS ||
+      VALID_DIFFICULTIES.some(d => !levels.some(r => r.difficulty === d && r.status === 'completed')) ||
+      BONUS_GAMES.some(game => !bonuses.some(r => r.game === game))) {
+      status = 409;
+      body = { message: 'Finish Easy, Medium, Hard, Matching and Memory before ending the intervention.', code: 'STEPS_INCOMPLETE' };
+      // An existing low-grade reflag may have cleared progress. Commit that
+      // existing policy atomically, while rejecting completion as before.
+    } else {
+      const [insert] = await db.query('INSERT IGNORE INTO pet_topic_mastery (student_id, topic_id) VALUES (?, ?)', [studentId,topicId]);
+      body = { success: true, ...(insert.affectedRows === 0 ? { alreadyArchived: true } : {}) };
+      if (insert.affectedRows !== 0) {
+        const [[student]] = await db.query('SELECT first_name FROM elem_students WHERE id = ?', [studentId]);
+        const [[topic]] = await db.query('SELECT topic_name FROM learning_topics WHERE id = ?', [topicId]);
+        const [parents] = await db.query(`SELECT pt.user_id FROM parent_student ps
+          INNER JOIN parent_table pt ON pt.id = ps.parent_id WHERE ps.student_id = ? AND pt.is_deleted = 0 FOR UPDATE`, [studentId]);
+        for (const userId of new Set(parents.map(p => p.user_id).filter(Boolean))) {
+          // This final in-app notification row is durable delivery, not a
+          // post-commit side effect or a promise of socket/email delivery.
+          await db.query(`INSERT INTO notifications (user_id, student_id, title, message, type)
+            VALUES (?, ?, ?, ?, 'success')`, [userId,studentId,'Intervention Completed',`${student?.first_name ?? 'Your child'} has completed the ${topic?.topic_name ?? 'this topic'} intervention! Great job!`]);
+        }
+      }
     }
-
-    // The intervention can only be ended once ALL 5 steps are finished:
-    // Easy, Medium, Hard, Matching and Memory (meter is full).
-    if ((await getHungerFilled(studentId, topicId)) < HUNGER_SEGMENTS) {
-      return res.status(409).json({
-        message: "Finish Easy, Medium, Hard, Matching and Memory before ending the intervention.",
-        code: "STEPS_INCOMPLETE",
-      });
-    }
-
-    // 1. Archive. INSERT IGNORE + affectedRows makes this race-safe: only the
-    //    request that actually creates the row goes on to send notifications.
-    //    (Requires a unique key on pet_topic_mastery(student_id, topic_id),
-    //    which your previous ON DUPLICATE KEY clause already implied.)
-    const [insertResult] = await connection.query(
-      `INSERT IGNORE INTO pet_topic_mastery (student_id, topic_id) VALUES (?, ?)`,
-      [studentId, topicId]
-    );
-
-    if (insertResult.affectedRows === 0) {
-      return res.status(200).json({ success: true, alreadyArchived: true });
-    }
-
-    // 2. Notify every parent linked to this student.
-    const [[student]] = await connection.query(
-      `SELECT first_name FROM elem_students WHERE id = ?`,
-      [studentId]
-    );
-    const [[topic]] = await connection.query(
-      `SELECT topic_name FROM learning_topics WHERE id = ?`,
-      [topicId]
-    );
-    const [parents] = await connection.query(
-      `SELECT pt.user_id
-       FROM parent_student ps
-       INNER JOIN parent_table pt ON pt.id = ps.parent_id
-       WHERE ps.student_id = ?`,
-      [studentId]
-    );
-
-    const studentName = student?.first_name ?? "Your child";
-    const topicName = topic?.topic_name ?? "this topic";
-
-    for (const { user_id } of parents) {
-      if (!user_id) continue;
-      await connection.query(
-        `INSERT INTO notifications (user_id, student_id, title, message, type)
-         VALUES (?, ?, ?, ?, 'success')`,
-        [
-          user_id,
-          studentId,
-          "Intervention Completed",
-          `${studentName} has completed the ${topicName} intervention! Great job!`,
-        ]
-      );
-    }
-
-    return res.status(200).json({ success: true });
+    commitAttempted = true;
+    await db.commit(); active = false;
   } catch (error) {
-    console.error("Error marking topic mastered:", error);
-    return res.status(500).json({ message: "Failed to mark topic mastered." });
+    if (error.fatal) discard = true;
+    if (commitAttempted) {
+      discard = true; status = 503;
+      body = { message: 'Intervention completion could not be confirmed. Reload its current state before trying again.', code: 'INTERVENTION_OUTCOME_UNCERTAIN', outcome: 'uncertain' };
+    } else {
+      if (active) { try { await db.rollback(); } catch (rollbackError) { discard = true; console.error('Intervention rollback failed:', {code:rollbackError?.code ?? 'UNKNOWN'}); } }
+      status = error.httpStatus || 500;
+      body = { message: error.httpStatus ? error.message : 'Failed to mark topic mastered.' };
+      console.error('Error marking topic mastered:', {code:error.code ?? 'UNKNOWN'});
+    }
+  } finally {
+    if (db) {
+      try { if (discard) db.destroy(); else db.release(); }
+      catch (error) {
+        console.error('Intervention cleanup failed:', {code:error?.code ?? 'UNKNOWN'});
+        if (!discard) { try { db.destroy(); } catch (destroyError) { console.error('Intervention destruction failed:', {code:destroyError?.code ?? 'UNKNOWN'}); } }
+      }
+    }
   }
+  return res.status(status).json(body);
 };
+
 
 // -----------------------------------------------------------------------
 // GET /bonus/:studentId/:topicId
@@ -595,56 +543,10 @@ exports.markTopicMastered = async (req, res) => {
 // Generated once per topic + grade with Groq (quiz keys), then cached in
 // ai_bonus_games. Refuses (410) once the intervention is archived.
 // -----------------------------------------------------------------------
-const MEMORY_PAIR_COUNT = 4;
-
-// Requests for the same topic + grade that arrive while one is already
-// generating wait for it, instead of each calling Groq.
-const generatingBonus = new Map();
-
-function parseStoredPairs(raw) {
-  const value = typeof raw === "string" ? JSON.parse(raw) : raw;
-  return Array.isArray(value) ? value : [];
-}
+const MEMORY_PAIR_COUNT = quizContent.MEMORY_COUNT;
 
 async function getOrCreateBonusPairs(topicId, gradeLevel) {
-  const [existing] = await connection.query(
-    `SELECT pairs FROM ai_bonus_games
-     WHERE topic_id = ? AND grade_level <=> ?
-     ORDER BY generated_at DESC LIMIT 1`,
-    [topicId, gradeLevel]
-  );
-  if (existing.length > 0) return parseStoredPairs(existing[0].pairs);
-
-  const key = `${topicId}:${gradeLevel ?? ""}`;
-  if (generatingBonus.has(key)) return generatingBonus.get(key);
-
-  const work = (async () => {
-    const [topicRows] = await connection.query(
-      `SELECT lt.topic_name, es.subject_name
-       FROM learning_topics lt
-       INNER JOIN \`subject-section\` ss ON lt.subject_section_id = ss.id
-       INNER JOIN elem_subjects es ON ss.subject_id = es.id
-       WHERE lt.id = ?`,
-      [topicId]
-    );
-    if (topicRows.length === 0) {
-      const err = new Error("Topic not found.");
-      err.status = 404;
-      throw err;
-    }
-
-    const { topic_name: topicName, subject_name: subjectName } = topicRows[0];
-    const pairs = await groqService.generateMatchPairs(topicName, subjectName, gradeLevel);
-
-    await connection.query(
-      `INSERT INTO ai_bonus_games (topic_id, grade_level, pairs, model_used) VALUES (?, ?, ?, ?)`,
-      [topicId, gradeLevel, JSON.stringify(pairs), "groq"]
-    );
-    return pairs;
-  })().finally(() => generatingBonus.delete(key));
-
-  generatingBonus.set(key, work);
-  return work;
+  return quizContent.loadBonus(topicId, gradeLevel);
 }
 
 exports.getBonusGames = async (req, res) => {
@@ -671,7 +573,7 @@ exports.getBonusGames = async (req, res) => {
         .map((p, i) => ({ id: i + 1, a: p.left, b: p.right })),
     });
   } catch (error) {
-    if (error.status === 404) return res.status(404).json({ message: error.message });
+    if (error.httpStatus) return res.status(error.httpStatus).json({message:error.message, ...(error.code ? {code:error.code} : {}), ...(error.code === 'QUIZ_OUTCOME_UNCERTAIN' ? {outcome:'uncertain'} : {})});
     console.error("Error fetching bonus games:", error);
     return res.status(500).json({ message: "Failed to fetch bonus games." });
   }
@@ -695,6 +597,8 @@ exports.completeBonusGame = async (req, res) => {
     if (await resolveArchiveStatus(studentId, topicId)) {
       return res.status(410).json(ARCHIVED_RESPONSE);
     }
+
+    if (!(await quizContent.findBonus(topicId, await getStudentGradeLevel(studentId)))) return res.status(409).json({message:'This bonus activity is incomplete or unavailable. Reload it before completing it.'});
 
     await connection.query(
       `INSERT IGNORE INTO pet_bonus_progress (student_id, topic_id, game) VALUES (?, ?, ?)`,

@@ -78,7 +78,7 @@ for (const operation of operations) {
   for (const role of ["TEACHER", "PARENT", "UNKNOWN", undefined]) {
     test(`${name}: signed ${role ?? "missing-role"} identity is forbidden before database access`, async () => {
       const result = await request(operation, token(role));
-      assert.equal(result.status, 403);
+      assert.equal(result.status, ["TEACHER", "PARENT"].includes(role) ? 403 : 401);
       assert.deepEqual(result.body, ["TEACHER", "PARENT"].includes(role)
         ? { success: false, message: "Calendar management requires Admin or Principal access." }
         : { message: "Invalid or expired token." });
@@ -92,8 +92,8 @@ for (const operation of operations) {
         : invalid === "wrong-signature" ? token("ADMIN", {}, randomBytes(32).toString("hex"))
         : jwt.sign({ userId: 123, role: "ADMIN" }, "", { algorithm: "none" });
       const result = await request(operation, value);
-      // Preserve the existing shared middleware's invalid/expired-token contract.
-      assert.equal(result.status, 403);
+      // Rejected credentials use 401; genuine role denials above remain 403.
+      assert.equal(result.status, 401);
       assert.deepEqual(result.body, { message: "Invalid or expired token." });
       assert.equal(calls.length, 0);
     });

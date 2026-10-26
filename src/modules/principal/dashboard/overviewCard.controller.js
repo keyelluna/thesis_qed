@@ -1,3 +1,4 @@
+const { advisoryGradePublished } = require('../publishedGrades.sql');
 const connection = require("../../../../config/db");
 
 const { getCurrentGradingPeriod } = require("./utils/gradingPeriod");
@@ -225,7 +226,7 @@ exports.getSchoolWideAcademicPerformance = async (req, res) => {
        FROM elem_students st
        LEFT JOIN advisory_overall_grades aog
               ON aog.student_id = st.id
-             AND aog.grading_period_id = ?
+             AND aog.grading_period_id = ? AND ${advisoryGradePublished()}
        WHERE st.is_deleted = 0
          AND st.status <> 'graduated'
          AND st.current_school_year_id = ?
@@ -301,7 +302,7 @@ exports.getOverviewSummary = async (req, res) => {
         WHERE aar.grading_period_id = ? AND st.is_deleted = 0 AND st.status <> 'graduated'`, [term?.id ?? null]),
       connection.query(`SELECT ROUND(AVG(aog.overall_average), 2) AS academicPerf
         FROM elem_students st LEFT JOIN advisory_overall_grades aog
-          ON aog.student_id = st.id AND aog.grading_period_id = ?
+          ON aog.student_id = st.id AND aog.grading_period_id = ? AND ${advisoryGradePublished()}
         WHERE st.is_deleted = 0 AND st.status <> 'graduated' AND st.current_school_year_id = ?`,
         [term?.id ?? null, term?.school_year_id ?? null]),
     ]);

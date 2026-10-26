@@ -1,3 +1,4 @@
+const { runGradeSubmission } = require('../../shared/grades/gradeSubmissionTransaction.service');
 const { studentBelongsToSubject } = require('./subjectStudent.authorization');
 const { requireTeacherStudentIdentity } = require('../../admin/student-record/studentRecord.authorization');
 const connection = require("../../../../config/db");
@@ -8,7 +9,6 @@ const {
 const {
   notifyMissedActivity, notifyMissingForItem, notifyLowGradeScore, notifySubjectGradeSubmission
 } = require("../../notification/notification.service");
-const { recordSubjectGradeSubmission } = require("../../shared/grades/gradeSubmissionHistory.service");
 const { resolveGradeTemplateForPeriod } = require("../../shared/grades/gradeTemplateResolution.service");
 const { normalizeExaminations } = require("../../shared/grades/gradeTemplateConfig.service");
 
@@ -417,44 +417,88 @@ const updateItem = async (req, res) => {
 };
 
 const deleteItem = async (req, res) => {
+  let db;
+  let inTransaction = false;
+  let commitAttempted = false;
+  let discard = false;
+  let status = 200;
+  let body = { success: true };
   try {
     const { id: subjectSectionId } = req.subjectSection;
     const { itemId } = req.params;
-
-    const [itemRows] = await connection.execute(
+    db = await connection.getConnection();
+    try {
+      await db.beginTransaction();
+      inTransaction = true;
+    } catch (error) {
+      discard = true; // START TRANSACTION acknowledgement may also be lost.
+      throw error;
+    }
+    // Serialize deletions for this subject before taking any consistent-read
+    // snapshot, so two different item deletions cannot rebuild from stale peers.
+    const [subjects] = await db.execute('SELECT id FROM `subject-section` WHERE id = ? FOR UPDATE', [subjectSectionId]);
+    if (!subjects.length) {
+      const error = new Error('Item not found.'); error.statusCode = 404; throw error;
+    }
+    // Fail closed on nontransactional/missing tables; never rely on FK cascades.
+    const tables = ['subject-section', 'grade_scores', 'grade_items', 'subject_grade_cache', 'advisory_overall_grades'];
+    const [engines] = await db.execute(
+      `SELECT TABLE_NAME AS tableName, ENGINE AS engine FROM information_schema.TABLES
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (?, ?, ?, ?, ?)`, tables,
+    );
+    if (tables.some(name => !engines.some(row => row.tableName === name && row.engine?.toUpperCase() === 'INNODB'))) {
+      throw new Error('Assessment deletion requires InnoDB grading tables.');
+    }
+    const [itemRows] = await db.execute(
       `SELECT grading_period_id AS gradingPeriodId
-       FROM grade_items WHERE id = ? AND subject_section_id = ?`,
+       FROM grade_items WHERE id = ? AND subject_section_id = ? FOR UPDATE`,
       [itemId, subjectSectionId],
     );
-
-    await connection.execute(`DELETE FROM grade_scores WHERE item_id = ?`, [
+    if (!itemRows.length) {
+      const error = new Error('Item not found.'); error.statusCode = 404; throw error;
+    }
+    await db.execute(`DELETE FROM grade_scores WHERE item_id = ?`, [
       itemId,
     ]);
-    const [result] = await connection.execute(
+    const [result] = await db.execute(
       `DELETE FROM grade_items WHERE id = ? AND subject_section_id = ?`,
       [itemId, subjectSectionId],
     );
-
     if (result.affectedRows === 0) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Item not found." });
+      const error = new Error('Item not found.'); error.statusCode = 404; throw error;
     }
-
-    if (itemRows.length) {
-      await recalcAllStudentsForSubject(
-        subjectSectionId,
-        itemRows[0].gradingPeriodId,
-      );
-    }
-
-    return res.status(200).json({ success: true });
+    await recalcAllStudentsForSubject(subjectSectionId, itemRows[0].gradingPeriodId, db);
+    commitAttempted = true;
+    await db.commit();
+    inTransaction = false;
   } catch (error) {
     console.error("Error deleting grade item:", error);
-    return res
-      .status(500)
-      .json({ success: false, message: "Internal server error." });
+    if (commitAttempted) {
+      // A rejected COMMIT acknowledgement cannot establish whether it committed.
+      // Discard the socket; do not replay or claim a rollback proved failure.
+      discard = true;
+      status = 503;
+      body = { success: false, outcome: 'uncertain', message: 'Assessment deletion could not be confirmed. Refresh this class before trying again.' };
+    } else {
+      if (inTransaction) {
+        try { await db.rollback(); }
+        catch (rollbackError) { discard = true; console.error('Assessment deletion rollback failed:', rollbackError); }
+      }
+      status = error.statusCode === 404 ? 404 : 500;
+      body = { success: false, message: status === 404 ? 'Item not found.' : 'Internal server error.' };
+    }
+  } finally {
+    if (db) {
+      try { if (discard) db.destroy(); else db.release(); }
+      catch (cleanupError) {
+        console.error('Assessment deletion connection cleanup failed:', cleanupError);
+        if (!discard) { try { db.destroy(); } catch (destroyError) { console.error('Assessment deletion connection destruction failed:', destroyError); } }
+      }
+    }
   }
+  // Response delivery is outside the transaction error path: a lost response
+  // after a successful commit must never trigger rollback or another deletion.
+  return res.status(status).json(body);
 };
 
 const getScores = async (req, res) => {
@@ -486,66 +530,85 @@ const getScores = async (req, res) => {
 };
 
 const upsertScore = async (req, res) => {
+  let db, inTransaction = false, commitAttempted = false, discard = false;
+  let status = 200, body = { success: true }, notification;
   try {
     const { id: subjectSectionId } = req.subjectSection;
     const { studentId, itemId } = req.body;
-    const value = req.body.value === undefined || req.body.value === "" ? null : req.body.value;
+    const normalize = raw => raw === undefined || raw === null || raw === '' ? null
+      : typeof raw === 'number' || (typeof raw === 'string' && raw.trim() !== '') ? Number(raw) : NaN;
+    const value = normalize(req.body.value);
+    const conditional = Object.hasOwn(req.body, 'expectedValue');
+    const expected = normalize(req.body.expectedValue);
+    const reject = (code, message, outcome) => { const error = new Error(message); error.statusCode = code; error.outcome = outcome; throw error; };
+    if (!studentId || !itemId) reject(400, 'studentId and itemId are required.');
+    if ((value !== null && (!Number.isFinite(value) || value < 0)) || (conditional && expected !== null && (!Number.isFinite(expected) || expected < 0))) reject(400, 'Score must be a finite, non-negative number or blank.');
 
-    if (!studentId || !itemId) {
-      return res.status(400).json({ success: false, message: "studentId and itemId are required." });
-    }
-
-    const [itemCheck] = await connection.execute(
-      `SELECT id FROM grade_items WHERE id = ? AND subject_section_id = ?`,
-      [itemId, subjectSectionId]
-    );
-    if (itemCheck.length === 0) {
-      return res.status(403).json({ success: false, message: "This item does not belong to your class." });
-    }
-
-    if (!(await studentBelongsToSubject(studentId,req.subjectSection))) {
-      return res.status(403).json({success:false,message:"This student is not enrolled in your class."});
-    }
-
-    await connection.execute(
+    db = await connection.getConnection();
+    try { await db.beginTransaction(); inTransaction = true; }
+    catch (error) { discard = true; throw error; }
+    // Match deletion's lock order. Lock the student before snapshot reads so
+    // score edits in different subjects also serialize advisory recalculation.
+    const [subjects] = await db.execute('SELECT id FROM `subject-section` WHERE id = ? FOR UPDATE', [subjectSectionId]);
+    if (!subjects.length) reject(403, 'This item does not belong to your class.');
+    const [students] = await db.execute('SELECT id FROM elem_students WHERE id = ? FOR UPDATE', [studentId]);
+    const [items] = await db.execute(`SELECT id, grading_period_id AS gradingPeriodId, topic_id AS topicId, max_items AS maxItems
+      FROM grade_items WHERE id = ? AND subject_section_id = ? FOR UPDATE`, [itemId, subjectSectionId]);
+    if (!items.length) reject(403, 'This item does not belong to your class.');
+    if (!students.length || !(await studentBelongsToSubject(studentId, req.subjectSection, db))) reject(403, 'This student is not enrolled in your class.');
+    const tables = ['subject-section', 'elem_students', 'grade_items', 'grade_scores', 'subject_grade_cache', 'advisory_overall_grades'];
+    const [engines] = await db.execute(`SELECT TABLE_NAME AS tableName, ENGINE AS engine FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (?, ?, ?, ?, ?, ?)`, tables);
+    if (tables.some(name => !engines.some(row => row.tableName === name && row.engine?.toUpperCase() === 'INNODB'))) throw new Error('Score saving requires InnoDB grading tables.');
+    const [indexes] = await db.execute(`SELECT INDEX_NAME AS indexName, COLUMN_NAME AS columnName FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'grade_scores' AND NON_UNIQUE = 0 ORDER BY INDEX_NAME, SEQ_IN_INDEX`);
+    const keys = new Map();
+    for (const row of indexes) { if (!keys.has(row.indexName)) keys.set(row.indexName, []); keys.get(row.indexName).push(String(row.columnName).toLowerCase()); }
+    if (![...keys.values()].some(columns => columns.length === 2 && columns.includes('item_id') && columns.includes('student_id'))) throw new Error('Score saving requires a unique assessment/student key.');
+    const item = items[0];
+    if (!item.gradingPeriodId) reject(400, 'This assessment has no grading period.');
+    if (!Number.isFinite(Number(item.maxItems)) || Number(item.maxItems) <= 0 || (value !== null && value > Number(item.maxItems))) reject(400, 'Score must not exceed the assessment highest possible score.');
+    const [scores] = await db.execute('SELECT score FROM grade_scores WHERE item_id = ? AND student_id = ? FOR UPDATE', [itemId, studentId]);
+    const previous = scores.length && scores[0].score !== null ? Number(scores[0].score) : null;
+    if (conditional && previous !== expected) reject(409, 'This score changed since it was loaded. Reload this class before saving again.', 'conflict');
+    await db.execute(
       `INSERT INTO grade_scores (item_id, student_id, score)
        VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE score = VALUES(score)`,
       [itemId, studentId, value]
     );
 
-    const [itemRows] = await connection.execute(
-      `SELECT subject_section_id AS subjectSectionId, grading_period_id AS gradingPeriodId, topic_id AS topicId
-       FROM grade_items WHERE id = ?`,
-      [itemId]
-    );
-    if (itemRows.length && itemRows[0].gradingPeriodId) {
-      await recalcStudentSubject(studentId, itemRows[0].subjectSectionId, itemRows[0].gradingPeriodId);
-    }
-
-     try {
-      if (value !== null) {
-        await connection.execute(
-          `DELETE FROM notifications
-           WHERE student_id = ? AND grade_item_id = ? AND title = 'Missed Activity'`,
-          [studentId, itemId]
-        );
-
-        if (itemRows.length && itemRows[0].topicId) {
-          await notifyLowGradeScore({ studentId, itemId });
-        }
-      }
-
-      await notifyMissingForItem(itemId);
-    } catch (notifErr) {
-      console.error("Notification error:", notifErr);
-    }
-
-    return res.status(200).json({ success: true });
+    await recalcStudentSubject(studentId, subjectSectionId, item.gradingPeriodId, db);
+    commitAttempted = true;
+    await db.commit(); inTransaction = false;
+    if (!scores.length || previous !== value) notification = { studentId, itemId, value, topicId: item.topicId };
   } catch (error) {
     console.error("Error saving score:", error);
-    return res.status(500).json({ success: false, message: "Internal server error." });
+    if (commitAttempted) {
+      discard = true; status = 503;
+      body = { success: false, outcome: 'uncertain', message: 'Score saving could not be confirmed. Reload this class to check the stored score before saving again.' };
+    } else {
+      if (inTransaction) { try { await db.rollback(); } catch (rollbackError) { discard = true; console.error('Score rollback failed:', rollbackError); } }
+      status = [400, 403, 409].includes(error.statusCode) ? error.statusCode : 500;
+      body = { success: false, message: status === 500 ? 'Internal server error.' : error.message, outcome: error.outcome || 'not_saved' };
+    }
+  } finally {
+    if (db) { try { if (discard) db.destroy(); else db.release(); } catch (cleanupError) { console.error('Score connection cleanup failed:', cleanupError); if (!discard) { try { db.destroy(); } catch (destroyError) { console.error('Score connection destruction failed:', destroyError); } } } }
   }
+  // Notifications are secondary and use only committed, current score state.
+  // No delivery runs for rollback/unknown commit; durable delivery is separate.
+  if (notification) {
+    const { studentId, itemId, value, topicId } = notification;
+    try {
+      if (value !== null) {
+        await connection.execute(`DELETE FROM notifications WHERE student_id = ? AND grade_item_id = ? AND title = 'Missed Activity'
+          AND EXISTS (SELECT 1 FROM grade_scores WHERE item_id = ? AND student_id = ? AND score IS NOT NULL)`, [studentId, itemId, itemId, studentId]);
+        if (topicId) await notifyLowGradeScore({ studentId, itemId });
+      }
+      await notifyMissingForItem(itemId);
+    } catch (error) { console.error('Post-commit score notification failed:', error); body.notificationDelivery = 'failed'; }
+  }
+  return res.status(status).json(body);
 };
 
 const notifyMissing = async (req, res) => {
@@ -706,7 +769,8 @@ const getGradeSubmissionStatus = async (req, res) => {
     }
 
     const [rows] = await connection.execute(
-      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt
+      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt,
+              (SELECT CAST(MAX(h.id) AS CHAR) FROM grade_submission_history h WHERE h.submission_type = 'subject' AND h.subject_section_id = subject_grade_submissions.subject_section_id AND h.grading_period_id = subject_grade_submissions.grading_period_id) AS submissionVersion
        FROM subject_grade_submissions
        WHERE subject_section_id = ? AND grading_period_id = ?`,
       [subjectSectionId, gradingPeriodId],
@@ -717,6 +781,7 @@ const getGradeSubmissionStatus = async (req, res) => {
       data: {
         submitted: rows.length > 0,
         submittedAt: rows[0]?.submittedAt ?? null,
+        submissionVersion: rows[0]?.submissionVersion ?? null,
       },
     });
   } catch (error) {
@@ -728,36 +793,25 @@ const getGradeSubmissionStatus = async (req, res) => {
 };
 
 const submitSubjectGrades = async (req, res) => {
-  try {
-    const { id: subjectSectionId } = req.subjectSection;
-    const teacherId = req.teacherId;
-    const { gradingPeriodId } = req.body;
-
-    if (!gradingPeriodId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "gradingPeriodId is required." });
-    }
-
+  const { id: subjectSectionId } = req.subjectSection;
+  const { gradingPeriodId } = req.body;
+  const result = await runGradeSubmission(req, 'subject', async db => {
     // Submission publishes the Term Grades produced by the template version
     // pinned to this period. Never reinterpret an unpinned historical period
     // using whatever version happens to be active now.
-    const resolved = await resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, { pinIfEmpty: false });
+    const resolved = await resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, { pinIfEmpty: false, db });
     const baseStructure = resolved.template?.structure;
     const structure = baseStructure?.termConfigurations?.[String(resolved.termNumber)]
       ? { ...baseStructure, ...baseStructure.termConfigurations[String(resolved.termNumber)] }
       : baseStructure;
     const transmutationTable = structure?.transmutationTable || [];
     if (!transmutationTable.length) {
-      return res.status(400).json({
-        success: false,
-        message: "The template assigned to this grading period must include transmutation rules before Term Grades can be submitted.",
-      });
+      const error = new Error("The template assigned to this grading period must include transmutation rules before Term Grades can be submitted."); error.statusCode = 400; throw error;
     }
 
     // Graduated / hindi-current-school-year na estudyante ay hindi kasama sa
     // pagbibilang, para hindi nila ma-block ang submission.
-    const [incompleteRows] = await connection.execute(
+    const [incompleteRows] = await db.execute(
       `SELECT COUNT(*) AS incompleteCount
        FROM elem_students s
        INNER JOIN \`subject-section\` ss ON ss.id = ?
@@ -771,34 +825,16 @@ const submitSubjectGrades = async (req, res) => {
       [subjectSectionId, gradingPeriodId],
     );
     if (Number(incompleteRows[0]?.incompleteCount || 0) > 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Every enrolled student must have complete scores and an official Term Grade before submission.",
-      });
+      const error = new Error("Every enrolled student must have complete scores and an official Term Grade before submission."); error.statusCode = 400; throw error;
     }
 
-    await connection.execute(
-      `INSERT INTO subject_grade_submissions (subject_section_id, grading_period_id, submitted_by)
-       VALUES (?, ?, ?)
-       ON DUPLICATE KEY UPDATE submitted_by = VALUES(submitted_by), submitted_at = CURRENT_TIMESTAMP`,
-      [subjectSectionId, gradingPeriodId, teacherId],
-    );
 
-    await recordSubjectGradeSubmission({ subjectSectionId, gradingPeriodId, teacherId });
-
-    await notifySubjectGradeSubmission({
-      subjectSectionId,
-      gradingPeriodId,
-      submittedBy: teacherId,
-    });
-
-    return res.status(200).json({ success: true });
-  } catch (error) {
-    console.error("Error submitting subject grades:", error);
-    return res
-      .status(error.statusCode || 500)
-      .json({ success: false, message: error.statusCode ? error.message : "Internal server error." });
+  });
+  if (result.notification) {
+    try { await notifySubjectGradeSubmission({ subjectSectionId, gradingPeriodId, submittedBy: req.teacherId }); }
+    catch (error) { console.error('Post-commit subject submission notification failed:', error); result.body.notificationDelivery = 'failed'; }
   }
+  return res.status(result.status).json(result.body);
 };
 
 module.exports = {

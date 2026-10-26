@@ -1,3 +1,4 @@
+const { subjectGradePublished } = require('../publishedGrades.sql');
 // reports.controller.js
 const connection = require("../../../../config/db");
 
@@ -52,7 +53,7 @@ async function getSubjectGradeAverages(gradingPeriodId, schoolYearId) {
      JOIN elem_students st ON st.id = sgc.student_id
      WHERE sgc.grading_period_id = ?
        AND ss.school_year_id = ?
-       AND sgc.is_complete = 1
+       AND sgc.is_complete = 1 AND ${subjectGradePublished()}
        AND sgc.average IS NOT NULL
        AND st.is_deleted = 0
        AND st.status <> 'graduated'

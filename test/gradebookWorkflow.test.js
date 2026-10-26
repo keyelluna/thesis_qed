@@ -16,6 +16,7 @@ function load(relative, db, overrides = {}) {
     if (id.endsWith('config/db')) return db;
     if (Object.hasOwn(overrides, id)) return overrides[id];
     if (id.includes('notification.service')) return new Proxy({}, { get: () => noop });
+    if (id.includes('gradeSubmissionTransaction.service')) return load('shared/grades/gradeSubmissionTransaction.service.js', db, overrides);
     if (id.includes('gradeSubmissionHistory.service')) return { recordAdvisoryGradeSubmission: noop, recordSubjectGradeSubmission: noop, getAdvisorySubmissionHistory: async () => [] };
     if (id.includes('subjectStudent.authorization')) return load('teacher/gradebook/subjectStudent.authorization.js', db);
     if (id.includes('gradeCache.service')) return {};
@@ -32,8 +33,19 @@ function response() {
 }
 function database(handler) {
   const calls = [];
-  const execute = async (sql, params = []) => { calls.push({ sql, params }); return [await handler(sql.replace(/\s+/g, ' ').trim(), params)]; };
-  return { execute, query: execute, calls };
+  const execute = async (sql, params = []) => {
+    calls.push({ sql, params });
+    const q=sql.replace(/\s+/g, ' ').trim();
+    if(q.includes('information_schema.TABLES'))return [params.map(tableName=>({tableName,engine:'InnoDB'}))];
+    if(q.includes('information_schema.STATISTICS'))return [[{indexName:'subject',columnName:'subject_section_id'},{indexName:'subject',columnName:'grading_period_id'},{indexName:'section',columnName:'section_id'},{indexName:'section',columnName:'grading_period_id'}]];
+    if(q.startsWith('SELECT ss.id, ss.section_id AS sectionId')&&q.endsWith('FOR UPDATE'))return [[{id:301,sectionId:101,gradeLevelId:1,schoolYearId:1}]];
+    if(q.startsWith('SELECT c.id, c.section_id AS sectionId')&&q.endsWith('FOR UPDATE'))return [[{id:params[0],sectionId:102,gradeLevelId:1,schoolYearId:1}]];
+    if(q.startsWith('SELECT id FROM school_year WHERE is_active')&&q.endsWith('FOR UPDATE'))return [[{id:1}]];
+    if(q.startsWith('SELECT id FROM grading_periods WHERE id'))return [[{id:params[0]}]];
+    if(q.endsWith('FOR UPDATE')||q.startsWith('SELECT id FROM grade_submission_history'))return [[]];
+    return [await handler(q, params)];
+  };
+  return { execute, query: execute, calls, getConnection:async()=>({execute,beginTransaction:async()=>{},commit:async()=>{},rollback:async()=>{},release(){},destroy(){}}) };
 }
 const classes = [
   { classId: 11, section_id: 101, gradeLevelId: 1, sectionName: 'A', gradeLevel: 'Grade 1' },

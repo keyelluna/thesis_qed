@@ -10,13 +10,16 @@ const {DatabaseSync}=require('node:sqlite');
 let db,mutations=0;const calls=[];
 async function execute(sql,params=[]){
  calls.push({sql,params});
+ if(sql.includes('information_schema.TABLES'))return [params.map(tableName=>({tableName,engine:'InnoDB'}))];
+ if(sql.includes('information_schema.STATISTICS'))return [[{indexName:'score_pair',columnName:'student_id'},{indexName:'score_pair',columnName:'item_id'}]];
+ sql=sql.replace(/\s+FOR UPDATE\s*$/i,'');
  if(/^\s*SELECT/i.test(sql))return [db.prepare(sql).all(...params)];
  sql=sql.replace(/ON DUPLICATE KEY UPDATE score = VALUES\(score\)/,'ON CONFLICT(item_id,student_id) DO UPDATE SET score=excluded.score')
   .replace(/ON DUPLICATE KEY UPDATE rating = VALUES\(rating\)/,'ON CONFLICT(subject_section_id,student_id,week_start_date,term_number,axis) DO UPDATE SET rating=excluded.rating');
  const result=db.prepare(sql).run(...params);mutations+=Number(result.changes);return [{affectedRows:Number(result.changes),insertId:Number(result.lastInsertRowid)}];
 }
 for(const [path,exports] of [
- ['../config/db',{execute,query:execute}],
+ ['../config/db',{execute,query:execute,async getConnection(){return {execute,query:execute,beginTransaction:async()=>db.exec('BEGIN'),commit:async()=>db.exec('COMMIT'),rollback:async()=>db.exec('ROLLBACK'),release(){},destroy(){if(db.isTransaction)db.exec('ROLLBACK');}};}}],
  ['../src/modules/notification/notification.service',new Proxy({},{get:()=>async()=>{}})],
  ['../src/modules/shared/grades/gradeCache.service',{recalcStudentSubject:async()=>{},recalcAllStudentsForSubject:async()=>{}}],
 ]){const id=require.resolve(path);require.cache[id]={id,filename:id,loaded:true,exports};}
@@ -35,7 +38,7 @@ test.beforeEach(()=>{
  CREATE TABLE [subject-section](id INTEGER,teacher_id INTEGER,subject_id INTEGER,section_id INTEGER,school_year_id INTEGER);INSERT INTO [subject-section] VALUES(61,41,21,11,7),(62,41,23,NULL,7),(63,42,21,12,7);
  CREATE TABLE elem_students(id INTEGER,grade_level_id INTEGER,section_id INTEGER,is_deleted INTEGER,status TEXT,current_school_year_id INTEGER);
  INSERT INTO elem_students VALUES(101,1,11,0,'active',7),(102,1,12,0,'active',7),(103,3,NULL,0,'active',7),(104,3,13,0,'active',7),(105,2,NULL,0,'active',7),(106,1,11,0,'active',6),(107,1,11,0,'graduated',7),(108,1,11,1,'active',7);
- CREATE TABLE grade_items(id INTEGER,subject_section_id INTEGER,grading_period_id INTEGER,topic_id INTEGER);INSERT INTO grade_items VALUES(91,61,NULL,NULL),(92,62,NULL,NULL);
+ CREATE TABLE grade_items(id INTEGER,subject_section_id INTEGER,grading_period_id INTEGER,topic_id INTEGER,max_items REAL);INSERT INTO grade_items VALUES(91,61,1,NULL,20),(92,62,1,NULL,20);
  CREATE TABLE grade_scores(item_id INTEGER,student_id INTEGER,score REAL,UNIQUE(item_id,student_id));
  CREATE TABLE holistic_ratings(subject_section_id INTEGER,student_id INTEGER,week_start_date TEXT,term_number INTEGER,axis TEXT,rating REAL,UNIQUE(subject_section_id,student_id,week_start_date,term_number,axis));
  CREATE TABLE learning_topics(id INTEGER,subject_section_id INTEGER);INSERT INTO learning_topics VALUES(81,61),(82,62);
@@ -55,15 +58,15 @@ for(const endpoint of endpoints){
   const res=await request(endpoint,student,section);assert.equal(res.status,allowed?(endpoint==='intervention'?201:200):403);assert.equal(mutations,allowed?1:0);
  });
  for(const role of ['ADMIN','PRINCIPAL','PARENT','UNKNOWN',null,{},['TEACHER']])test(`${endpoint}: role ${JSON.stringify(role)} cannot masquerade as Teacher`,async()=>{
-  const res=await request(endpoint,101,61,{userId:701,role});assert.equal(res.status,403);assert.equal(mutations,0);assert.equal(calls.length,0);
+  const res=await request(endpoint,101,61,{userId:701,role});assert.equal(res.status,['ADMIN','PRINCIPAL','PARENT'].includes(role)?403:401);assert.equal(mutations,0);assert.equal(calls.length,0);
  });
  test(`${endpoint}: other Teacher cannot write owned class`,async()=>{const res=await request(endpoint,101,61,{userId:702,role:'TEACHER'});assert.equal(res.status,403);assert.equal(mutations,0);});
  test(`${endpoint}: unauthenticated denied`,async()=>{const res=await request(endpoint,101,61,null);assert.equal(res.status,401);assert.equal(mutations,0);assert.equal(calls.length,0);});
 }
 
 for(const endpoint of endpoints)for(const [kind,claims,expected,queries] of [
- ['reset-purpose',{userId:701,role:'TEACHER',purpose:'password_reset'},403,0],
- ['missing-role',{userId:701},403,0],
+ ['reset-purpose',{userId:701,role:'TEACHER',purpose:'password_reset'},401,0],
+ ['missing-role',{userId:701},401,0],
  ['profile-ID-confusion',{userId:41,role:'TEACHER'},404,1],
  ['deleted-profile',{userId:703,role:'TEACHER'},404,1],
 ])test(`${endpoint}: ${kind} cannot reach a write`,async()=>{const res=await request(endpoint,101,61,claims);assert.equal(res.status,expected);assert.equal(mutations,0);assert.equal(calls.length,queries);});

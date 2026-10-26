@@ -10,6 +10,8 @@ const calls=[];let writes=0;
 async function query(sql,params){
  calls.push({sql,params});
  if(/^\s*(INSERT|UPDATE|DELETE)/i.test(sql)){writes++;return [{insertId:21,affectedRows:1}];}
+ if(/FROM school_year WHERE is_active/.test(sql))return [[{id:7,school_year:'Synthetic'}]];
+ if(/SELECT id FROM grade_level WHERE id/.test(sql))return [[{id:1}]];
  if(/SELECT id FROM school_year/.test(sql))return [[{id:7}]];
  if(/FROM assessment_type WHERE id/.test(sql))return [[{id:21,assessmentName:'Synthetic assessment'}]];
  if(/FROM grade_level_sections WHERE id/.test(sql))return [[{id:21,grade_level_id:1,section_name:'Synthetic section'}]];
@@ -54,11 +56,11 @@ function token(role,extra={}){return jwt.sign({userId:701,...(role===undefined?{
 async function request(method,path,body,auth){const response=await fetch(base+path,{method,headers:{'Content-Type':'application/json',...(auth?{Cookie:`token=${auth}`}:{})},...(body?{body:JSON.stringify(body)}:{})});return {status:response.status,body:await response.json()};}
 for(const [method,path,body]of operations){
  for(const role of ['PRINCIPAL','TEACHER','PARENT','UNKNOWN',undefined,null,[],{},123,' ADMIN '])test(`${method} ${path}: ${JSON.stringify(role)} cannot enter controller/SQL`,async()=>{
-  const result=await request(method,path,body,token(role));assert.equal(result.status,403);assert.equal(entries,0);assert.equal(calls.length,0);assert.equal(writes,0);
+  const result=await request(method,path,body,token(role));assert.equal(result.status,['PRINCIPAL','TEACHER','PARENT'].includes(role)?403:401);assert.equal(entries,0);assert.equal(calls.length,0);assert.equal(writes,0);
  });
  for(const kind of ['missing','invalid','expired','reset-purpose'])test(`${method} ${path}: ${kind} cannot enter controller/SQL`,async()=>{
   const auth=kind==='missing'?undefined:kind==='invalid'?'invalid-test-jwt':kind==='expired'?jwt.sign({userId:701,role:'ADMIN'},secret,{expiresIn:-1}):token('ADMIN',{purpose:'password_reset'});
-  const result=await request(method,path,body,auth);assert.equal(result.status,kind==='missing'?401:403);assert.equal(entries,0);assert.equal(calls.length,0);assert.equal(writes,0);
+  const result=await request(method,path,body,auth);assert.equal(result.status,401);assert.equal(entries,0);assert.equal(calls.length,0);assert.equal(writes,0);
  });
  test(`${method} ${path}: authenticated role cannot be spoofed`,async()=>{const result=await request(method,path+'?role=ADMIN',{...body,role:'ADMIN',user:{role:'ADMIN'}},token('TEACHER'));assert.equal(result.status,403);assert.equal(entries,0);assert.equal(calls.length,0);assert.equal(writes,0);});
 }

@@ -34,10 +34,10 @@ for(const [role,userId,allowed]of [
  if(result.status===200){assert.equal(result.body.id,String(id));assert.equal(result.body.studentId,'S'+id);}else assert.equal(result.body.personalInformation,undefined);
 });
 for(const role of ['PARENT','PRINCIPAL','TEACHER','UNKNOWN',null,[],{}])test(`executed SQL write guard ${JSON.stringify(role)} has zero SQL/mutations`,async()=>{
- assert.equal((await request(101,{userId:801,role},'PUT')).status,403);assert.equal(calls.length,0);assert.equal(writes,0);assert.equal(db.prepare('SELECT date_of_birth FROM elem_students WHERE id=101').get().date_of_birth,'2018-01-01');
+ assert.equal((await request(101,{userId:801,role},'PUT')).status,['PARENT','PRINCIPAL','TEACHER'].includes(role)?403:401);assert.equal(calls.length,0);assert.equal(writes,0);assert.equal(db.prepare('SELECT date_of_birth FROM elem_students WHERE id=101').get().date_of_birth,'2018-01-01');
 });
 test('Admin update changes only the requested profile and returns unchanged response contract',async()=>{
  const result=await request(101,{userId:901,role:'ADMIN'},'PUT');assert.equal(result.status,200);assert.equal(writes,1);assert.equal(result.body.personalInformation.dateOfBirth,'2019-01-01');assert.equal(db.prepare('SELECT date_of_birth FROM elem_students WHERE id=102').get().date_of_birth,'2018-01-01');
 });
-for(const kind of ['missing','invalid','expired'])test(`executed SQL ${kind} authentication is denied before SQL`,async()=>{assert.equal((await request(101,kind==='missing'?undefined:{userId:801,role:'PARENT'},'GET',kind)).status,kind==='missing'?401:403);assert.equal(calls.length,0);});
+for(const kind of ['missing','invalid','expired'])test(`executed SQL ${kind} authentication is denied before SQL`,async()=>{assert.equal((await request(101,kind==='missing'?undefined:{userId:801,role:'PARENT'},'GET',kind)).status,401);assert.equal(calls.length,0);});
 test('unlinking a child removes profile permission immediately',async()=>{db.exec('DELETE FROM parent_student WHERE parent_id=51 AND student_id=101');assert.equal((await request(101,{userId:801,role:'PARENT'})).status,404);assert.equal(writes,0);});

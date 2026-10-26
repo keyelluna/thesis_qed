@@ -26,8 +26,8 @@ function assertTemplateIntegrity(template, subjectId) {
   return { ...template, structure, exportMap };
 }
 
-async function readScope(subjectSectionId, gradingPeriodId) {
-  const [rows] = await connection.execute(
+async function readScope(subjectSectionId, gradingPeriodId, db) {
+  const [rows] = await db.execute(
     `SELECT ss.subject_id AS subjectId, ss.school_year_id AS schoolYearId,
             gp.term_number AS termNumber
        FROM \`subject-section\` ss
@@ -39,8 +39,8 @@ async function readScope(subjectSectionId, gradingPeriodId) {
   return rows[0];
 }
 
-async function readPinned(subjectSectionId, gradingPeriodId) {
-  const [rows] = await connection.execute(
+async function readPinned(subjectSectionId, gradingPeriodId, db) {
+  const [rows] = await db.execute(
     `SELECT t.id AS templateId, t.subject_id AS subjectId, t.file_name AS fileName, t.file_path AS filePath, t.storage_key AS storageKey,
             t.checksum_sha256 AS checksum, t.structure_json AS structureJson,
             t.export_map_json AS exportMapJson
@@ -62,12 +62,16 @@ async function resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, 
   pinIfEmpty = true,
   assignmentSource = "first_assessment",
   requireWorkbook = false,
+  db = connection,
 } = {}) {
-  const scope = await readScope(subjectSectionId, gradingPeriodId);
-  let pinned = await readPinned(subjectSectionId, gradingPeriodId);
+  // Existing transactions may resolve templates read-only, never acquire a
+  // second connection or implicitly start/commit a nested pinning transaction.
+  if (db !== connection && pinIfEmpty) throw new Error('Transactional template resolution requires pinIfEmpty:false.');
+  const scope = await readScope(subjectSectionId, gradingPeriodId, db);
+  let pinned = await readPinned(subjectSectionId, gradingPeriodId, db);
 
   if (!pinned) {
-    const [activeRows] = await connection.execute(
+    const [activeRows] = await db.execute(
       `SELECT id AS templateId, subject_id AS subjectId, file_name AS fileName, file_path AS filePath, storage_key AS storageKey,
               checksum_sha256 AS checksum, structure_json AS structureJson,
               export_map_json AS exportMapJson
@@ -75,7 +79,7 @@ async function resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, 
       [scope.subjectId],
     );
     if (!activeRows.length) return { ...scope, template: null };
-    const [existingItems] = await connection.execute(
+    const [existingItems] = await db.execute(
       `SELECT id FROM grade_items WHERE subject_section_id = ? AND grading_period_id = ? LIMIT 1`,
       [subjectSectionId, gradingPeriodId],
     );
@@ -117,7 +121,7 @@ async function resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, 
     } finally {
       conn.release();
     }
-    pinned = await readPinned(subjectSectionId, gradingPeriodId);
+    pinned = await readPinned(subjectSectionId, gradingPeriodId, db);
   }
 
   if (!pinned?.templateId) { const error = new Error("The grading period has a template assignment whose template version no longer exists."); error.statusCode = 409; throw error; }

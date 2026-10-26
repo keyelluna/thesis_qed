@@ -39,7 +39,7 @@ for (const claims of invalid) test(`malformed session denied before Admin handle
   if (r.accepted) requireAdmin(r.req, r.res, () => { reached = true; });
   assert.equal(reached, false);
   assert.equal(r.accepted, false);
-  assert.equal(r.res.code, 403);
+  assert.equal(r.res.code, 401);
   assert.deepEqual(r.res.body, { message: 'Invalid or expired token.' });
 });
 for (const options of [{}, { noTimestamp: true, expiresIn: '1h' }, { expiresIn: -1 }, { expiresIn: '1h', algorithm: 'HS384' }, { expiresIn: '1h', algorithm: 'HS512' }]) {

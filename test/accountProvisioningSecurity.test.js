@@ -7,7 +7,7 @@ const bcrypt = require('bcrypt');
 const { randomBytes } = require('node:crypto');
 process.env.JWT_SECRET = randomBytes(32).toString('hex');
 const tables = ['admin_table','principal_table','teacher_table','parent_table'];
-let state, operations, mail, fail, schemaReady, emailResult, locks, activeTransactions;
+let state, operations, mail, fail, schemaReady, roleColumnReady, emailResult, locks, activeTransactions;
 function empty(){return {auth:[],profiles:Object.fromEntries(tables.map(t=>[t,[]]))};}
 function inject(file,exports){const id=require.resolve(file);require.cache[id]={id,filename:id,loaded:true,exports};}
 function makeConnection(){
@@ -24,7 +24,7 @@ function makeConnection(){
    if(sql.includes('RELEASE_LOCK')){if(locked){locks--;locked=false;}return [[{released:1}]];}
    if(sql.includes('information_schema.TABLES'))return [schemaReady?['qed_authentication',...tables].map(TABLE_NAME=>({TABLE_NAME,ENGINE:'InnoDB'})):[]];
    if(sql.includes('information_schema.COLUMNS') && !args.length)return [[{COLUMN_NAME:'gender'},{COLUMN_NAME:'avatar_key'}]];
-   if(sql.includes('information_schema.COLUMNS'))return [args.flatMap(TABLE_NAME=>['id','user_id','user_name','password','role','must_change_password','first_name','last_name','middle_name','email_address','contact_number','status','gender','avatar_key'].map(COLUMN_NAME=>({TABLE_NAME,COLUMN_NAME})))];
+   if(sql.includes('information_schema.COLUMNS'))return [args.flatMap(TABLE_NAME=>['id','user_id','user_name','password','role','must_change_password','first_name','last_name','middle_name','email_address','contact_number','status','gender','avatar_key'].map(COLUMN_NAME=>({TABLE_NAME,COLUMN_NAME}))).filter(row=>roleColumnReady || row.TABLE_NAME!=='teacher_table' || row.COLUMN_NAME!=='role')];
    if(sql.startsWith('INSERT INTO qed_authentication')){if(fail==='auth')throw Error('fixture');const id=current().auth.length+100;current().auth.push({id,user_name:args[0],password:args[1],role:args[2],must_change_password:1});return [{insertId:id}];}
    if(sql.startsWith('SELECT id FROM qed_authentication'))return [current().auth.filter(row=>row.user_name===args[0])];
    if(sql.startsWith('SELECT * FROM qed_authentication'))return [state.auth.filter(row=>row.user_name===args[0])];
@@ -37,7 +37,7 @@ function makeConnection(){
    if(table && sql.startsWith('SELECT *') && sql.includes('WHERE id = ?'))return [current().profiles[table].filter(row=>String(row.id)===String(args[0]))];
    if(table && sql.startsWith('SELECT *'))return [current().profiles[table].filter(row=>!row.is_deleted)];
    if(table && sql.startsWith('SELECT COUNT'))return [[{total:current().profiles[table].filter(row=>!row.is_deleted).length}]];
-   if(table && sql.startsWith('INSERT INTO')){if(fail==='profile')throw Error('fixture');if(fail==='duplicate'){const e=Error('fixture');e.code='ER_DUP_ENTRY';throw e;}const id=current().profiles[table].length+10;current().profiles[table].push({id,user_id:args[0],last_name:args[1],first_name:args[2],middle_name:args[3],email_address:args[4],contact_number:args[5],status:args[6],gender:args[7],is_deleted:0});return [{insertId:id}];}
+   if(table && sql.startsWith('INSERT INTO')){if(fail==='profile')throw Error('fixture');if(fail==='duplicate'){const e=Error('fixture');e.code='ER_DUP_ENTRY';throw e;}const columns=sql.match(/\(([^)]+)\)/)[1].split(',').map(c=>c.trim());const values=Object.fromEntries(columns.map((c,i)=>[c,args[i]]));if(table==='teacher_table' && values.role==null){const e=Error('Required Teacher role omitted');e.code='ER_NO_DEFAULT_FOR_FIELD';throw e;}const id=current().profiles[table].length+10;current().profiles[table].push({id,...values,is_deleted:0});return [{insertId:id}];}
    if(table && sql.includes('email_address = ?'))return [current().profiles[table].filter(row=>row.email_address===args[0])];
    if(table && sql.includes("status = 'Active'"))return [current().profiles[table].filter(row=>row.status==='Active')];
    if(table && sql.includes('WHERE user_id = ?'))return [state.profiles[table].filter(row=>row.user_id===args[0]).map(row=>({...row,name:row.first_name+' '+row.last_name}))];
@@ -57,7 +57,7 @@ const teacherRouter=require('../src/modules/teacher/dashboard/teacherDashboard.r
 let server,base;
 test.before(async()=>{const app=express();app.use(cookieParser());app.use(express.json());app.use('/api/auth',authRouter);app.use('/api/user',userRouter);app.use('/api/analytics',analyticsRouter);app.use('/api/teacher-dashboard',teacherRouter);server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));base=`http://127.0.0.1:${server.address().port}`;});
 test.after(async()=>{await new Promise(r=>server.close(r));});
-test.beforeEach(()=>{state=empty();operations=[];mail=[];fail=null;schemaReady=true;emailResult={sent:true};locks=0;activeTransactions=0;});
+test.beforeEach(()=>{state=empty();operations=[];mail=[];fail=null;schemaReady=true;roleColumnReady=true;emailResult={sent:true};locks=0;activeTransactions=0;});
 const payload=(role='TEACHER')=>({role,firstName:'Fixture',lastName:'Only',middleName:'',email:'fixture@example.invalid',contactNumber:'00000000000',gender:'Male',status:'Active'});
 async function request(url,method='POST',body=payload(),role='ADMIN'){
  const token=role===undefined?undefined:jwt.sign({userId:1,role},process.env.JWT_SECRET,{expiresIn:'5m'});
@@ -67,7 +67,7 @@ async function request(url,method='POST',body=payload(),role='ADMIN'){
 const routes=[['/api/auth/register','POST'],['/api/user/addUser','POST'],['/api/user/editUser/10','PUT'],['/api/user/deleteUser/10','PATCH'],['/api/user/getUser/teacher/10','GET'],['/api/user/totalUser','GET'],['/api/user/teacherCount','GET'],['/api/user/parentCount','GET'],['/api/user/usersList','GET']];
 for(const [url,method] of routes){
  test(`${method} ${url}: unauthenticated denied before DB`,async()=>{const r=await fetch(base+url,{method,headers:{'Content-Type':'application/json'},...(method==='GET'?{}:{body:JSON.stringify(payload('ADMIN'))})});assert.equal(r.status,401);assert.equal(operations.length,0);});
- for(const role of ['TEACHER','PRINCIPAL','PARENT','OWNER',null,{},['ADMIN'],' ADMIN '])test(`${method} ${url}: role ${JSON.stringify(role)} denied before DB`,async()=>{const r=await request(url,method,payload('ADMIN'),role);assert.equal(r.status,403);assert.equal(operations.length,0);assert.equal(mail.length,0);});
+ for(const role of ['TEACHER','PRINCIPAL','PARENT','OWNER',null,{},['ADMIN'],' ADMIN '])test(`${method} ${url}: role ${JSON.stringify(role)} denied before DB`,async()=>{const r=await request(url,method,payload('ADMIN'),role);assert.equal(r.status,['TEACHER','PRINCIPAL','PARENT'].includes(role)?403:401);assert.equal(operations.length,0);assert.equal(mail.length,0);});
 }
 for(const endpoint of ['/api/auth/register','/api/user/addUser'])for(const role of ['ADMIN','TEACHER','PRINCIPAL','PARENT'])test(`${endpoint}: atomic authorized ${role} provisioning`,async()=>{
  const r=await request(endpoint,'POST',payload(role));assert.equal(r.status,201);assert.equal(r.body.success,true);assert.equal(r.body.credentialDelivery,'accepted');assert.equal(state.auth.length,1);assert.equal(state.auth[0].role,role);assert.equal(state.auth[0].must_change_password,1);assert.equal(state.profiles[role.toLowerCase()+'_table'].length,1);assert.equal(r.body.data.userId,state.auth[0].id);assert.equal(mail.length,1);assert.equal(mail[0].to,payload().email);assert(await bcrypt.compare(mail[0].password,state.auth[0].password));assert(!JSON.stringify(r.body).includes(mail[0].password));assert(!JSON.stringify(r.body).includes(state.auth[0].password));assert(!Object.hasOwn(r.body,'token'));assert.equal(r.cookie,null);assert.equal(operations.filter(o=>o==='begin').length,1);assert.equal(operations.filter(o=>o==='commit').length,1);assert.equal(activeTransactions,0);
@@ -92,13 +92,13 @@ test('provisioned Teacher identity reaches its actual dashboard reader and is de
 
 for(const endpoint of ['/api/auth/register','/api/user/addUser'])for(const kind of ['invalid','expired','unsigned'])test(endpoint+': '+kind+' JWT denied before DB',async()=>{
  const token=kind==='invalid'?'invalid':kind==='unsigned'?jwt.sign({role:'ADMIN'},'',{algorithm:'none'}):jwt.sign({role:'ADMIN'},process.env.JWT_SECRET,{expiresIn:-1});
- const r=await fetch(base+endpoint,{method:'POST',headers:{'Content-Type':'application/json',Cookie:'token='+token},body:JSON.stringify(payload())});assert.equal(r.status,403);assert.equal(operations.length,0);
+ const r=await fetch(base+endpoint,{method:'POST',headers:{'Content-Type':'application/json',Cookie:'token='+token},body:JSON.stringify(payload())});assert.equal(r.status,401);assert.equal(operations.length,0);
 });
 test('registration rejects incomplete old split contract before any writes',async()=>{const r=await request('/api/auth/register','POST',{userName:'legacy',password:'legacy',role:'ADMIN'});assert.equal(r.status,400);assert.equal(operations.length,0);});
 test('Principal active conflict preserves existing Principal',async()=>{await request('/api/user/addUser','POST',payload('PRINCIPAL'));const before=structuredClone(state);const r=await request('/api/user/addUser','POST',{...payload('PRINCIPAL'),firstName:'Second',email:'second@example.invalid'});assert.equal(r.status,409);assert.deepEqual(state,before);});
 
 for(const url of ['/api/user/usersList','/api/user/getUser/teacher/10','/api/user/totalUser','/api/user/teacherCount','/api/user/parentCount'])test('authorized Admin GET contract '+url,async()=>{await request('/api/user/addUser');const r=await request(url,'GET');assert.equal(r.status,200);if(url.endsWith('usersList')){assert.equal(r.body.data.length,1);assert.equal(r.body.data[0].role,'TEACHER');}else if(url.includes('getUser')){assert.equal(r.body.success,true);assert.equal(r.body.data.role,'TEACHER');}else if(url.endsWith('totalUser'))assert.deepEqual(r.body,{success:true,totalUsers:1,totalTeachers:1,totalParents:0});});
-for(const [url,method]of routes)test(method+' '+url+': missing signed role denied before DB',async()=>{const token=jwt.sign({userId:1},process.env.JWT_SECRET);const r=await fetch(base+url,{method,headers:{'Content-Type':'application/json',Cookie:'token='+token},...(method==='GET'?{}:{body:JSON.stringify(payload('ADMIN'))})});assert.equal(r.status,403);assert.equal(operations.length,0);});
+for(const [url,method]of routes)test(method+' '+url+': missing signed role denied before DB',async()=>{const token=jwt.sign({userId:1},process.env.JWT_SECRET);const r=await fetch(base+url,{method,headers:{'Content-Type':'application/json',Cookie:'token='+token},...(method==='GET'?{}:{body:JSON.stringify(payload('ADMIN'))})});assert.equal(r.status,401);assert.equal(operations.length,0);});
 for(const role of ['teacher','AdMiN'])test('canonical role normalization '+role,async()=>{const r=await request('/api/user/addUser','POST',payload(role));assert.equal(r.status,201);assert.equal(state.auth[0].role,role.toUpperCase());});
 
 test('client-supplied unrelated ID is rejected without deleting or changing existing records',async()=>{state.auth.push({id:123456,user_name:'protected-existing',role:'ADMIN'});const before=structuredClone(state);const r=await request('/api/user/addUser','POST',{...payload(),userId:123456});assert.equal(r.status,400);assert.deepEqual(state,before);assert.equal(operations.length,0);});
@@ -109,3 +109,8 @@ for(const condition of ['unknown','wrong-password','inactive','deleted'])test('e
 
 test('authorized Admin editing/status change preserves auth identity and profile contract',async()=>{await request('/api/user/addUser');const originalAuth=structuredClone(state.auth);const r=await request('/api/user/editUser/10','PUT',{...payload(),userId:999,status:'Inactive',firstName:'Updated'});assert.equal(r.status,200);assert.equal(r.body.success,true);assert.deepEqual(state.auth,originalAuth);assert.equal(state.profiles.teacher_table[0].first_name,'Updated');assert.equal(state.profiles.teacher_table[0].status,'Inactive');assert.equal(state.profiles.teacher_table[0].user_id,100);});
 test('authorized Admin deletion uses the existing server-linked authentication ID',async()=>{await request('/api/user/addUser');state.auth.push({id:999,user_name:'unrelated',role:'ADMIN'});const r=await request('/api/user/deleteUser/10','PATCH',{role:'TEACHER',userId:999});assert.equal(r.status,200);assert.equal(state.profiles.teacher_table[0].is_deleted,1);assert.equal(state.auth.find(row=>row.id===100).is_deleted,1);assert(!state.auth.find(row=>row.id===999).is_deleted);});
+
+for(const endpoint of ['/api/auth/register','/api/user/addUser']){
+ test(endpoint+': required Teacher profile role is canonical and independent of client designations',async()=>{const r=await request(endpoint,'POST',{...payload('teacher'),teacherRole:'ADMIN',profileRole:'ADMIN'});assert.equal(r.status,201);assert.equal(state.profiles.teacher_table[0].role,'TEACHER');assert.equal(state.auth[0].role,'TEACHER');});
+ test(endpoint+': missing required Teacher role column fails before transaction or writes',async()=>{roleColumnReady=false;const r=await request(endpoint);assert.equal(r.status,503);assert.deepEqual(state,empty());assert(!operations.some(o=>/INSERT|ALTER|DELETE|UPDATE/.test(o)||o==='begin'));assert.equal(mail.length,0);assert.equal(locks,0);});
+}

@@ -43,8 +43,8 @@ function categoryTotals(items, studentId, scoresByItemId) {
 
 // ---- Core recalculation ----
 
-async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId) {
-  const [ssRows] = await connection.execute(
+async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId, db = connection) {
+  const [ssRows] = await db.execute(
     `SELECT es.id AS subjectId, es.subject_name AS subjectName, gl.grade_level AS gradeLevel
      FROM \`subject-section\` ss
      INNER JOIN elem_subjects es ON ss.subject_id = es.id
@@ -52,16 +52,20 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
      WHERE ss.id = ?`,
     [subjectSectionId]
   );
-  if (ssRows.length === 0) return;
+  if (ssRows.length === 0) {
+    if (db !== connection) throw new Error('Cannot recalculate deletion: subject grading context is missing.');
+    return;
+  }
   const { subjectId } = ssRows[0];
-  const [periodRows] = await connection.execute(
+  const [periodRows] = await db.execute(
     `SELECT term_number AS termNumber FROM grading_periods WHERE id = ? LIMIT 1`,
     [gradingPeriodId],
   );
+  if (!periodRows.length && db !== connection) throw new Error('Cannot recalculate deletion: grading period is missing.');
   const termNumber = Number(periodRows[0]?.termNumber || 1);
   let template = null;
   try {
-    const resolved = await resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, { pinIfEmpty: false });
+    const resolved = await resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, { pinIfEmpty: false, db });
     if (resolved.template) {
       template = {
         ww: Number(resolved.template.structure.ww?.weightPercent),
@@ -71,8 +75,11 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
       };
     }
   } catch (error) {
+    // An atomic deletion must abort if required template resolution fails;
+    // the legacy nontransactional callers retain their fail-closed cache path.
+    if (db !== connection) throw error;
     console.error("Grade cache skipped because the period's pinned template could not be resolved:", error.message);
-    await connection.execute(
+    await db.execute(
       `INSERT INTO subject_grade_cache (student_id, subject_section_id, grading_period_id, average, is_complete)
        VALUES (?, ?, ?, NULL, 0)
        ON DUPLICATE KEY UPDATE average = NULL, is_complete = 0`,
@@ -92,7 +99,7 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
     }
     : null;
   if (!weights) {
-    const [manualRows] = await connection.execute(
+    const [manualRows] = await db.execute(
       `SELECT at.assessment_name AS assessmentName, swd.weight_percent AS weight
          FROM subject_weight_distribution swd
          JOIN assessment_type at ON at.id = swd.assessment_type_id
@@ -109,7 +116,7 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
     }
   }
 
-  const [items] = await connection.execute(
+  const [items] = await db.execute(
     `SELECT id, tab, max_items AS maxItems, exam_type AS examType, template_domain_id AS templateDomainId
      FROM grade_items
      WHERE subject_section_id = ? AND grading_period_id = ?`,
@@ -117,7 +124,7 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
   );
 
   if (items.length === 0) {
-    await connection.execute(
+    await db.execute(
       `INSERT INTO subject_grade_cache (student_id, subject_section_id, grading_period_id, average, is_complete)
        VALUES (?, ?, ?, NULL, 0)
        ON DUPLICATE KEY UPDATE average = NULL, is_complete = 0`,
@@ -127,7 +134,7 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
   }
 
   if (!weights) {
-    await connection.execute(
+    await db.execute(
       `INSERT INTO subject_grade_cache (student_id, subject_section_id, grading_period_id, average, is_complete)
        VALUES (?, ?, ?, NULL, 0)
        ON DUPLICATE KEY UPDATE average = NULL, is_complete = 0`,
@@ -138,7 +145,7 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
 
   const itemIds = items.map((i) => i.id);
   const placeholders = itemIds.map(() => "?").join(",");
-  const [scoreRows] = await connection.execute(
+  const [scoreRows] = await db.execute(
     `SELECT item_id AS itemId, score FROM grade_scores
      WHERE student_id = ? AND item_id IN (${placeholders})`,
     [studentId, ...itemIds]
@@ -211,7 +218,7 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
   const average = officialGrade.termGrade;
   const isComplete = officialGrade.isComplete;
 
-  await connection.execute(
+  await db.execute(
     `INSERT INTO subject_grade_cache (student_id, subject_section_id, grading_period_id, average, is_complete)
      VALUES (?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE average = VALUES(average), is_complete = VALUES(is_complete)`,
@@ -228,8 +235,8 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
 // NOTE: this no longer returns scopeColumn/scopeValue. advisory_overall_grades
 // has both `section_id` and `grade_level_id` columns (each nullable), so we
 // always pass both explicitly instead of building the column list dynamically.
-async function getStudentAdvisoryContext(studentId) {
-  const [studentRows] = await connection.execute(
+async function getStudentAdvisoryContext(studentId, db = connection) {
+  const [studentRows] = await db.execute(
     `SELECT section_id AS sectionId, grade_level_id AS gradeLevelId
      FROM elem_students WHERE id = ? AND ${CURRENT_ROSTER}`,
     [studentId]
@@ -237,7 +244,7 @@ async function getStudentAdvisoryContext(studentId) {
   if (studentRows.length === 0) return null;
   const { sectionId, gradeLevelId } = studentRows[0];
 
-  const [classRows] = await connection.execute(
+  const [classRows] = await db.execute(
     sectionId
       ? `SELECT class_adviser_id AS adviserTeacherId FROM classes WHERE section_id = ? AND school_year_id = ${ACTIVE_SCHOOL_YEAR} AND status = 'Active'`
       : `SELECT class_adviser_id AS adviserTeacherId FROM classes WHERE section_id IS NULL AND grade_level_id = ? AND school_year_id = ${ACTIVE_SCHOOL_YEAR} AND status = 'Active'`,
@@ -255,10 +262,10 @@ async function getStudentAdvisoryContext(studentId) {
 // Same subject-section resolution logic as getAdvisoryGradebook: for a
 // real section this includes both section-specific and grade-level-wide
 // subject-sections; for a section-less class it's grade-level-wide only.
-async function getActiveSubjectSectionsForScope(context) {
+async function getActiveSubjectSectionsForScope(context, db = connection) {
   const { sectionId, gradeLevelId } = context;
   const [rows] = sectionId
-    ? await connection.execute(
+    ? await db.execute(
         `SELECT ss.id, ss.teacher_id AS teacherId
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON ss.subject_id = es.id
@@ -270,7 +277,7 @@ async function getActiveSubjectSectionsForScope(context) {
            )`,
         [sectionId, gradeLevelId]
       )
-    : await connection.execute(
+    : await db.execute(
         `SELECT ss.id, ss.teacher_id AS teacherId
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON ss.subject_id = es.id
@@ -281,17 +288,17 @@ async function getActiveSubjectSectionsForScope(context) {
   return rows;
 }
 
-async function recalcOverallAverage(studentId, gradingPeriodId) {
-  const context = await getStudentAdvisoryContext(studentId);
+async function recalcOverallAverage(studentId, gradingPeriodId, db = connection) {
+  const context = await getStudentAdvisoryContext(studentId, db);
   if (!context) return;
 
-  const subjectSections = await getActiveSubjectSectionsForScope(context);
+  const subjectSections = await getActiveSubjectSectionsForScope(context, db);
   if (subjectSections.length === 0) return;
 
   const ssIds = subjectSections.map((s) => s.id);
   const placeholders = ssIds.map(() => "?").join(",");
 
-  const [cacheRows] = await connection.execute(
+  const [cacheRows] = await db.execute(
     `SELECT subject_section_id AS subjectSectionId, average, is_complete AS isComplete
      FROM subject_grade_cache
      WHERE student_id = ? AND grading_period_id = ? AND subject_section_id IN (${placeholders})`,
@@ -299,7 +306,7 @@ async function recalcOverallAverage(studentId, gradingPeriodId) {
   );
   const cacheBySs = new Map(cacheRows.map((r) => [r.subjectSectionId, r]));
 
-  const [submissionRows] = await connection.execute(
+  const [submissionRows] = await db.execute(
     `SELECT subject_section_id AS subjectSectionId
      FROM subject_grade_submissions
      WHERE subject_section_id IN (${placeholders}) AND grading_period_id = ?`,
@@ -326,7 +333,7 @@ async function recalcOverallAverage(studentId, gradingPeriodId) {
   // grade_level_id explicitly — whichever doesn't apply is passed as null.
   // This removes the "Unknown column 'grade_level_id'" failure that was
   // silently killing this insert for every sectionless (grade 3-6) student.
-  await connection.execute(
+  await db.execute(
     `INSERT INTO advisory_overall_grades
        (student_id, section_id, grade_level_id, grading_period_id, overall_average)
      VALUES (?, ?, ?, ?, ?)
@@ -344,37 +351,40 @@ async function recalcOverallAverage(studentId, gradingPeriodId) {
   );
 }
 
-async function recalcStudentSubject(studentId, subjectSectionId, gradingPeriodId) {
-  await recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId);
-  await recalcOverallAverage(studentId, gradingPeriodId);
+async function recalcStudentSubject(studentId, subjectSectionId, gradingPeriodId, db = connection) {
+  await recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId, db);
+  await recalcOverallAverage(studentId, gradingPeriodId, db);
 }
 
 // Recalculates every enrolled student for one subject-section, whether
 // that subject-section belongs to a real section or is grade-level-wide.
-async function recalcAllStudentsForSubject(subjectSectionId, gradingPeriodId) {
-  const [ssRows] = await connection.execute(
+async function recalcAllStudentsForSubject(subjectSectionId, gradingPeriodId, db = connection) {
+  const [ssRows] = await db.execute(
     `SELECT ss.section_id AS sectionId, es.grade_level_id AS gradeLevelId
      FROM \`subject-section\` ss
      INNER JOIN elem_subjects es ON ss.subject_id = es.id
      WHERE ss.id = ?`,
     [subjectSectionId]
   );
-  if (ssRows.length === 0) return;
+  if (ssRows.length === 0) {
+    if (db !== connection) throw new Error('Cannot recalculate deletion: subject grading context is missing.');
+    return;
+  }
   const { sectionId, gradeLevelId } = ssRows[0];
 
   const [students] = sectionId
-    ? await connection.execute(
+    ? await db.execute(
         `SELECT id FROM elem_students WHERE section_id = ? AND ${CURRENT_ROSTER}`,
         [sectionId]
       )
-    : await connection.execute(
+    : await db.execute(
         `SELECT id FROM elem_students WHERE grade_level_id = ? AND section_id IS NULL AND ${CURRENT_ROSTER}`,
         [gradeLevelId]
       );
 
   for (const s of students) {
-    await recalcSubjectAverage(s.id, subjectSectionId, gradingPeriodId);
-    await recalcOverallAverage(s.id, gradingPeriodId);
+    await recalcSubjectAverage(s.id, subjectSectionId, gradingPeriodId, db);
+    await recalcOverallAverage(s.id, gradingPeriodId, db);
   }
 }
 

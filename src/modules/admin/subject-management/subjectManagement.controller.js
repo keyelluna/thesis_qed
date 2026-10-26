@@ -154,10 +154,13 @@ exports.addSubject = async (req, res) => {
     }
   }
 
-  const conn = await connection.getConnection();
-
+  let conn, inTransaction = false, commitAttempted = false, discard = false;
+  let responseStatus, responseBody;
+  const reject = (status, body) => { const error = new Error(body.message); error.statusCode = status; error.responseBody = body; throw error; };
   try {
-    await conn.beginTransaction();
+    conn = await connection.getConnection();
+    try { await conn.beginTransaction(); inTransaction = true; }
+    catch (error) { discard = true; throw error; }
 
     // Guard: baka meron nang ganitong subject sa parehong grade level
     const [existing] = await conn.query(
@@ -165,9 +168,7 @@ exports.addSubject = async (req, res) => {
       [subjectName, gradeLevelId]
     );
     if (existing.length > 0) {
-      await conn.rollback();
-      conn.release();
-      return res.status(409).json({
+      reject(409, {
         success: false,
         message: `"${subjectName}" already exists for this grade level.`,
       });
@@ -197,11 +198,8 @@ exports.addSubject = async (req, res) => {
         [values]
       );
     }
-
-    await conn.commit();
-    conn.release();
-
-    return res.status(201).json({
+    responseStatus = 201;
+    responseBody = {
       success: true,
       message: "Subject added successfully.",
       data: {
@@ -213,35 +211,46 @@ exports.addSubject = async (req, res) => {
         weight_distribution: weightDistribution ?? null,
         status: "Active",
       },
-    });
+    };
+    commitAttempted = true;
+    await conn.commit();
+    inTransaction = false;
   } catch (error) {
-    await conn.rollback();
-    conn.release();
-    console.error("Database Error:", error);
-
-    // Foreign key violation — invalid assessment_type_id
-    if (error.code === "ER_NO_REFERENCED_ROW_2") {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Invalid assessment_type_id in weightDistribution. Make sure it exists in the assessment_type table.",
-      });
+    if (error.fatal || ['PROTOCOL_CONNECTION_LOST', 'ECONNRESET', 'EPIPE'].includes(error.code)) discard = true;
+    if (!error.responseBody) console.error("Database Error:", error);
+    if (commitAttempted) {
+      // COMMIT may have succeeded even when its acknowledgement was lost.
+      discard = true;
+      responseStatus = 503;
+      responseBody = { success: false, outcome: 'uncertain', message: 'Subject creation could not be confirmed. Reload subjects to check stored state before trying again.' };
+    } else if (error.responseBody) {
+      responseStatus = error.statusCode;
+      responseBody = error.responseBody;
+    } else if (error.code === "ER_NO_REFERENCED_ROW_2") {
+      responseStatus = 400;
+      responseBody = { success: false, message: "Invalid assessment_type_id in weightDistribution. Make sure it exists in the assessment_type table." };
+    } else if (error.code === "ER_DUP_ENTRY") {
+      responseStatus = 400;
+      responseBody = { success: false, message: "Duplicate assessment type detected in weight distribution." };
+    } else {
+      responseStatus = 500;
+      responseBody = { success: false, message: "Database error occurred." };
     }
-
-    // Duplicate entry sa DB level (safety net kung meron kang UNIQUE KEY
-    // (subject_id, assessment_type_id) sa subject_weight_distribution table)
-    if (error.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({
-        success: false,
-        message: "Duplicate assessment type detected in weight distribution.",
-      });
+  } finally {
+    if (conn) {
+      if (inTransaction && !commitAttempted) {
+        try { await conn.rollback(); }
+        catch (error) { discard = true; console.error('Subject transaction rollback failed:', { code: error?.code ?? 'UNKNOWN' }); }
+      }
+      try { if (discard) conn.destroy(); else conn.release(); }
+      catch (error) {
+        console.error('Subject transaction cleanup failed:', { code: error?.code ?? 'UNKNOWN' });
+        if (!discard) { try { conn.destroy(); } catch (destroyError) { console.error('Subject connection destruction failed:', { code: destroyError?.code ?? 'UNKNOWN' }); } }
+      }
     }
-
-    return res.status(500).json({
-      success: false,
-      message: "Database error occurred.",
-    });
   }
+  // Response delivery cannot roll back or replay an already committed write.
+  return res.status(responseStatus).json(responseBody);
 };
 
 
@@ -333,10 +342,13 @@ exports.updateSubjectSection = async (req, res) => {
     }
   }
 
-  const conn = await connection.getConnection();
-
+  let conn, inTransaction = false, commitAttempted = false, discard = false;
+  let responseStatus, responseBody;
+  const reject = (status, body) => { const error = new Error(body.message); error.statusCode = status; error.responseBody = body; throw error; };
   try {
-    await conn.beginTransaction();
+    conn = await connection.getConnection();
+    try { await conn.beginTransaction(); inTransaction = true; }
+    catch (error) { discard = true; throw error; }
 
     const [existingRows] = await conn.query(
       `SELECT ss.subject_id, ss.section_id, ss.teacher_id, ss.school_year_id,
@@ -348,9 +360,7 @@ exports.updateSubjectSection = async (req, res) => {
       [id]
     );
     if (existingRows.length === 0) {
-      await conn.rollback();
-      conn.release();
-      return res.status(404).json({
+      reject(404, {
         success: false,
         message: "Subject assignment not found.",
       });
@@ -369,9 +379,8 @@ exports.updateSubjectSection = async (req, res) => {
         [nextName, nextGradeLevelId, subjectId]
       );
       if (duplicateSubjects.length > 0) {
-        await conn.rollback();
-        conn.release();
-        return res.status(409).json({ success: false, message: `A subject named "${nextName}" already exists for this grade level.` });
+
+        reject(409, { success: false, message: `A subject named "${nextName}" already exists for this grade level.` });
       }
     }
 
@@ -382,9 +391,8 @@ exports.updateSubjectSection = async (req, res) => {
         [String(schoolYear).trim()]
       );
       if (schoolYearRows.length === 0) {
-        await conn.rollback();
-        conn.release();
-        return res.status(400).json({ success: false, message: "The selected school year does not exist." });
+
+        reject(400, { success: false, message: "The selected school year does not exist." });
       }
       nextSchoolYearId = schoolYearRows[0].id;
     }
@@ -400,9 +408,8 @@ exports.updateSubjectSection = async (req, res) => {
           [nextSectionName, nextGradeLevelId, nextSchoolYearId]
         );
         if (sectionRows.length === 0) {
-          await conn.rollback();
-          conn.release();
-          return res.status(400).json({ success: false, message: `Section "${nextSectionName}" is not available for the selected grade level.` });
+
+          reject(400, { success: false, message: `Section "${nextSectionName}" is not available for the selected grade level.` });
         }
         nextSectionId = sectionRows[0].id;
       }
@@ -432,9 +439,8 @@ exports.updateSubjectSection = async (req, res) => {
           [assignmentSectionName, nextGradeLevelId, Number(assignment.id) === Number(id) ? nextSchoolYearId : assignment.school_year_id]
         );
         if (mappedSections.length === 0) {
-          await conn.rollback();
-          conn.release();
-          return res.status(400).json({
+
+          reject(400, {
             success: false,
             message: `Cannot move this subject to ${nextGradeLevelId}: create section "${assignmentSectionName}" for that grade first.`,
           });
@@ -463,9 +469,8 @@ exports.updateSubjectSection = async (req, res) => {
       [subjectId, nextSectionId, nextSchoolYearId, id]
     );
     if (duplicateAssignments.length > 0) {
-      await conn.rollback();
-      conn.release();
-      return res.status(409).json({ success: false, message: "This subject is already assigned to that section and school year." });
+
+      reject(409, { success: false, message: "This subject is already assigned to that section and school year." });
     }
 
     if (isGraded && !hasWeights) {
@@ -480,9 +485,7 @@ exports.updateSubjectSection = async (req, res) => {
       );
 
       if (currentWeights.length === 0 || currentTotal !== 100) {
-        await conn.rollback();
-        conn.release();
-        return res.status(400).json({
+        reject(400, {
           success: false,
           message:
             "Graded subject requires a weight distribution totaling 100%. Please provide weightDistribution.",
@@ -529,11 +532,8 @@ exports.updateSubjectSection = async (req, res) => {
         ORDER BY swd.order_index ASC`,
       [subjectId]
     );
-
-    await conn.commit();
-    conn.release();
-
-    return res.status(200).json({
+    responseStatus = 200;
+    responseBody = {
       success: true,
       message: "Subject updated successfully.",
       data: {
@@ -542,32 +542,46 @@ exports.updateSubjectSection = async (req, res) => {
         is_graded: isGraded,
         weight_distribution: finalWeights,
       },
-    });
+    };
+    commitAttempted = true;
+    await conn.commit();
+    inTransaction = false;
   } catch (error) {
-    await conn.rollback();
-    conn.release();
-    console.error("Database Error:", error);
-
-    if (error.code === "ER_NO_REFERENCED_ROW_2") {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Invalid assessment_type_id in weightDistribution. Make sure it exists in the assessment_type table.",
-      });
+    if (error.fatal || ['PROTOCOL_CONNECTION_LOST', 'ECONNRESET', 'EPIPE'].includes(error.code)) discard = true;
+    if (!error.responseBody) console.error("Database Error:", error);
+    if (commitAttempted) {
+      // COMMIT may have succeeded even when its acknowledgement was lost.
+      discard = true;
+      responseStatus = 503;
+      responseBody = { success: false, outcome: 'uncertain', message: 'Subject update could not be confirmed. Reload subjects to check stored state before trying again.' };
+    } else if (error.responseBody) {
+      responseStatus = error.statusCode;
+      responseBody = error.responseBody;
+    } else if (error.code === "ER_NO_REFERENCED_ROW_2") {
+      responseStatus = 400;
+      responseBody = { success: false, message: "Invalid assessment_type_id in weightDistribution. Make sure it exists in the assessment_type table." };
+    } else if (error.code === "ER_DUP_ENTRY") {
+      responseStatus = 400;
+      responseBody = { success: false, message: "Duplicate assessment type detected in weight distribution." };
+    } else {
+      responseStatus = 500;
+      responseBody = { success: false, message: "Database error occurred." };
     }
-
-    if (error.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({
-        success: false,
-        message: "Duplicate assessment type detected in weight distribution.",
-      });
+  } finally {
+    if (conn) {
+      if (inTransaction && !commitAttempted) {
+        try { await conn.rollback(); }
+        catch (error) { discard = true; console.error('Subject transaction rollback failed:', { code: error?.code ?? 'UNKNOWN' }); }
+      }
+      try { if (discard) conn.destroy(); else conn.release(); }
+      catch (error) {
+        console.error('Subject transaction cleanup failed:', { code: error?.code ?? 'UNKNOWN' });
+        if (!discard) { try { conn.destroy(); } catch (destroyError) { console.error('Subject connection destruction failed:', { code: destroyError?.code ?? 'UNKNOWN' }); } }
+      }
     }
-
-    return res.status(500).json({
-      success: false,
-      message: "Database error occurred.",
-    });
   }
+  // Response delivery cannot roll back or replay an already committed write.
+  return res.status(responseStatus).json(responseBody);
 };
 
 exports.assignTeacherToSection = async (req, res) => {

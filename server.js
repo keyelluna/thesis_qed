@@ -9,7 +9,8 @@ const express = require('express');
 const { createServer } = require('http');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
-const moment = require('moment');
+const { requestDiagnostics, operationalError, notFound } = require('./src/operations/requestDiagnostics');
+const { databaseHealth } = require('./src/operations/databaseReliability');
 
 const apiRoutes = require('./src/routes/index.js');
 const { initSocket } = require('./socket.js');
@@ -18,11 +19,7 @@ const { approvedOrigins, requireMutationOrigin } = require('./src/security/origi
 
 const app = express();
 
-const logger = (req, res, next) => {
-  console.log(`${req.protocol}://${req.get('host')} ${req.originalUrl} - ${moment().format()}`);
-  next();
-};
-app.use(logger);
+app.use(requestDiagnostics());
 
 app.use(cookieParser());
 
@@ -32,6 +29,7 @@ const corsOptions = {
   origin: allowedOrigins,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], 
   allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['X-Request-ID'],
   credentials: true,
 };
 app.use(cors(corsOptions));
@@ -50,38 +48,10 @@ app.get("/health", (req, res) => {
   });
 });
 
-app.get("/health/database", async (req, res) => {
-  try {
-    await connection.query("SELECT 1");
+app.get("/health/database", databaseHealth(connection));
 
-    return res.status(200).json({
-      status: "healthy",
-      database: "connected",
-    });
-  } catch (error) {
-    console.error("Database health check failed:", error.code);
-
-    return res.status(503).json({
-      status: "unhealthy",
-      database: "unavailable",
-    });
-  }
-});
-
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: `No matching route: ${req.method} ${req.originalUrl}`,
-  });
-});
-
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(err.status || 500).json({
-    success: false,
-    message: err.message || 'Internal server error.',
-  });
-});
+app.use(notFound);
+app.use(operationalError);
 
 //===== SOCKET.IO SETUP =====
 const httpServer = createServer(app);

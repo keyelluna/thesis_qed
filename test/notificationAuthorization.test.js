@@ -45,9 +45,9 @@ for(const role of ['ADMIN','PRINCIPAL','TEACHER','PARENT','principal']) {
 }
 for(const [path,method] of [['/101','GET'],['/user/101/read-all','PATCH'],['/501/read','PATCH']]) {
  test('missing authentication '+path,async()=>{assert.equal((await request(path,method)).status,401);assert.equal(calls.length,0);});
- test('expired JWT '+path,async()=>{assert.equal((await request(path,method,{userId:101,role:'PRINCIPAL'},{expiresIn:-1})).status,403);assert.equal(calls.length,0);});
+ test('expired JWT '+path,async()=>{assert.equal((await request(path,method,{userId:101,role:'PRINCIPAL'},{expiresIn:-1})).status,401);assert.equal(calls.length,0);});
  for(const claims of [{userId:101}, {userId:101,role:['ADMIN']},{userId:101,role:'UNKNOWN'},{userId:0,role:'ADMIN'},{userId:{id:101},role:'ADMIN'},{userId:101,role:'ADMIN',purpose:'password_reset'}])
- test('malformed identity '+JSON.stringify(claims)+' '+path,async()=>{assert.equal((await request(path,method,claims)).status,403);assert.equal(calls.length,0);});
+ test('malformed identity '+JSON.stringify(claims)+' '+path,async()=>{assert.equal((await request(path,method,claims)).status,401);assert.equal(calls.length,0);});
 }
 test('socket identity excludes reset-purpose and role-profile fallbacks',()=>{
  assert.equal(notificationOwner({userId:101,role:'PRINCIPAL'}),'101');

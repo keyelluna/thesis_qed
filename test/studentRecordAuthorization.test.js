@@ -15,13 +15,14 @@ const dbId = require.resolve('../config/db');
 const previousDb = require.cache[dbId];
 async function query(sql, params = []) {
   calls.push({ sql, params });
+  sql = sql.replace(/\s+FOR UPDATE/g, '');
   const statement = database.prepare(sql);
   if (/^\s*SELECT/i.test(sql)) return [statement.all(...params)];
   const result = statement.run(...params);
   mutations += Number(result.changes);
   return [{ affectedRows: Number(result.changes), insertId: Number(result.lastInsertRowid) }];
 }
-require.cache[dbId] = { id: dbId, filename: dbId, loaded: true, exports: { query, execute: query } };
+require.cache[dbId] = { id: dbId, filename: dbId, loaded: true, exports: { query, execute: query, async getConnection(){ return {query, beginTransaction:async()=>database.exec('BEGIN'),commit:async()=>database.exec('COMMIT'),rollback:async()=>database.exec('ROLLBACK'),release(){}}; } } };
 const router = require('../src/modules/admin/student-record/studentRecord.router');
 // These dependencies serve other endpoints, never the tested profile reader.
 for (const [path, exports] of [
@@ -47,8 +48,8 @@ test.beforeEach(() => {
   database.function('CONCAT', {varargs:true}, (...values) => values.join(''));
   database.function('DATE_FORMAT', (value, format) => { assert.equal(format,'%Y-%m-%d');return String(value).slice(0,10); });
   database.exec(`
-    CREATE TABLE school_year(id INTEGER PRIMARY KEY, is_active INTEGER);
-    INSERT INTO school_year VALUES(6,0),(7,1),(8,0);
+    CREATE TABLE school_year(id INTEGER PRIMARY KEY, is_active INTEGER, school_year TEXT);
+    INSERT INTO school_year VALUES(6,0,'Old'),(7,1,'Current'),(8,0,'Future');
     CREATE TABLE grade_level(id INTEGER PRIMARY KEY, grade_level TEXT);
     INSERT INTO grade_level VALUES(1,'Grade 1'),(2,'Grade 2'),(3,'Grade 3'),(4,'Grade 4'),(5,'Grade 5'),(6,'Grade 6');
     CREATE TABLE grade_level_sections(id INTEGER PRIMARY KEY, section_name TEXT);
@@ -86,6 +87,7 @@ test.beforeEach(() => {
   database.exec(`ALTER TABLE elem_subjects ADD COLUMN subject_name TEXT DEFAULT 'Synthetic Subject';
     ALTER TABLE [subject-section] ADD COLUMN status TEXT DEFAULT 'Active';
     CREATE TABLE holistic_ratings(subject_section_id INTEGER,student_id INTEGER,week_start_date TEXT,term_number INTEGER,axis TEXT,rating REAL);`);
+  database.exec("ALTER TABLE grade_level_sections ADD grade_level_id INTEGER DEFAULT 1; ALTER TABLE grade_level_sections ADD school_year_id INTEGER DEFAULT 7; ALTER TABLE grade_level_sections ADD is_active INTEGER DEFAULT 1; INSERT INTO classes VALUES(99,41,11,1,7,'Active');");
   calls.length = 0; mutations = 0;
 });
 test.afterEach(() => database.close());
@@ -128,11 +130,11 @@ for (const [role,userId,ids] of accounts) {
   });
 }
 const writes = [['POST','/addNewStudent'],['PUT','/updateStudent/101'],['PUT','/deleteStudent/101']];
-const payload = {studentId:'S900',lrn:'L900',firstName:'Synthetic',lastName:'New',middleName:'',gender:'Male',gradeLevel:1,section:11};
+const payload = {studentId:'S900',lrn:'L900',firstName:'Synthetic',lastName:'New',middleName:'',gender:'Male',gradeLevel:1,section:11,expectedPlacement:{schoolYearId:7,gradeLevelId:1,sectionId:11}};
 for (const [method,path] of writes) {
   for (const role of ['PRINCIPAL','TEACHER','PARENT','UNKNOWN',null,[],{},' ADMIN ']) test(`${role} cannot ${method} ${path} or spoof Admin`, async()=>{
     const result=await request(path+'?role=ADMIN&userId=901',{userId:701,role},method,{...payload,role:'ADMIN',userId:901});
-    assert.equal(result.status,403);assert.equal(calls.length,0);assert.equal(mutations,0);
+    assert.equal(result.status,['PRINCIPAL','TEACHER','PARENT'].includes(role)?403:401);assert.equal(calls.length,0);assert.equal(mutations,0);
     assert.equal(database.prepare('SELECT is_deleted FROM elem_students WHERE id=101').get().is_deleted,0);
     assert.equal(database.prepare('SELECT COUNT(*) AS n FROM elem_students').get().n,13);
   });
@@ -147,7 +149,7 @@ for (const [method,path] of [...writes,['GET','/allStudents'],['GET','/allGrade'
   for(const kind of ['missing','invalid','expired','malformedRole','missingRole','malformedId','missingId','resetPurpose'])test(`${kind} denied ${method} ${path} before SQL`,async()=>{
     const claims=kind==='missing'?undefined:{userId:kind==='malformedId'?{}:kind==='missingId'?undefined:901,role:kind==='malformedRole'?[]:kind==='missingRole'?undefined:'ADMIN',...(kind==='resetPurpose'?{purpose:'password_reset'}:{})};
     const result=await request(path,claims,method,method==='GET'?undefined:payload,{invalid:kind==='invalid',expired:kind==='expired'});
-    assert.equal(result.status,kind==='missing'?401:403);assert.equal(calls.length,0);assert.equal(mutations,0);
+    assert.equal(result.status,401);assert.equal(calls.length,0);assert.equal(mutations,0);
   });
 }
 test('Teacher school-year rollover removes old assignments without broadening access',async()=>{

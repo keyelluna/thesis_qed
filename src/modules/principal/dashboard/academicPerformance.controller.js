@@ -1,3 +1,4 @@
+const { advisoryGradePublished } = require('../publishedGrades.sql');
 const connection = require("../../../../config/db");
 const { getCurrentGradingPeriod } = require("./utils/gradingPeriod");
 
@@ -25,7 +26,7 @@ exports.getPerformanceByGrade = async (req, res) => {
       JOIN school_year sy 
         ON sy.id = gp.school_year_id 
         AND sy.is_active = 1
-      WHERE aog.overall_average IS NOT NULL
+      WHERE aog.overall_average IS NOT NULL AND ${advisoryGradePublished("es")}
       GROUP BY gl.id
     `);
 
@@ -47,7 +48,7 @@ exports.getPerformanceByGrade = async (req, res) => {
       JOIN school_year sy 
         ON sy.id = gp.school_year_id 
         AND sy.is_active = 1
-      WHERE aog.overall_average IS NOT NULL
+      WHERE aog.overall_average IS NOT NULL AND ${advisoryGradePublished("es")}
       GROUP BY es.grade_level_id, gls.id, gls.section_name
       ORDER BY gls.id ASC
     `);
@@ -114,7 +115,7 @@ exports.getPerformanceTrend = async (req, res) => {
          AND es.is_deleted = 0
          AND es.status <> 'graduated'
        WHERE aog.grading_period_id IN (${gpPlaceholders})
-         AND aog.overall_average IS NOT NULL
+         AND aog.overall_average IS NOT NULL AND ${advisoryGradePublished("es")}
        GROUP BY aog.grading_period_id`,
       gradingPeriodIds,
     );

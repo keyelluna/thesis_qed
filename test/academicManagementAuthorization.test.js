@@ -82,7 +82,7 @@ for (const [method, path, body, status, mutations] of operations) {
       // Valid non-Admin sessions reach role authorization; malformed roles now
       // fail earlier at the common session boundary. Both must prevent all SQL.
       const validRole = ['PRINCIPAL', 'TEACHER', 'PARENT'].includes(role);
-      assert.deepEqual(result, { status: 403, body: validRole
+      assert.deepEqual(result, { status: validRole ? 403 : 401, body: validRole
         ? { success: false, message: 'Administrator access is required.' }
         : { message: 'Invalid or expired token.' } });
       assert.equal(calls.length, 0); assert.equal(writes, 0);
@@ -92,7 +92,7 @@ for (const [method, path, body, status, mutations] of operations) {
     test(`${method} ${path}: ${kind} authentication cannot write`, async () => {
       const auth = kind === 'missing' ? undefined : kind === 'invalid' ? 'invalid-test-jwt' : token('ADMIN', { expiresIn: -1 });
       const result = await request(method, path, body, auth);
-      assert.equal(result.status, kind === 'missing' ? 401 : 403);
+      assert.equal(result.status, 401);
       assert.equal(calls.length, 0); assert.equal(writes, 0);
     });
   }

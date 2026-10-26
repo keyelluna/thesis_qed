@@ -45,7 +45,7 @@ async function verifySchema(conn, table, role) {
   );
   const required = {
     qed_authentication: ["id", "user_name", "password", "role", "must_change_password"],
-    [table]: ["id", "user_id", "first_name", "last_name", "middle_name", "email_address", "contact_number", "status", ...(role === "ADMIN" ? [] : ["gender"])],
+    [table]: ["id", "user_id", "first_name", "last_name", "middle_name", "email_address", "contact_number", "status", ...(role === "ADMIN" ? [] : ["gender"]), ...(role === "TEACHER" ? ["role"] : [])],
   };
   if (Object.entries(required).some(([name, fields]) => fields.some(field => !columns.some(row => row.TABLE_NAME === name && row.COLUMN_NAME === field)))) {
     throw failure(503, "Account provisioning schema is not ready. Contact the administrator.");
@@ -84,6 +84,8 @@ exports.provisionAccount = async (req, res) => {
     const fields = ["user_id", "last_name", "first_name", "middle_name", "email_address", "contact_number", "status"];
     const values = [auth.insertId, account.lastName, account.firstName, account.middleName, account.email, account.contactNumber, account.status];
     if (account.role !== "ADMIN") { fields.push("gender"); values.push(account.gender); }
+    // Profile classification mirrors the canonical role; authentication controls authorization.
+    if (account.role === "TEACHER") { fields.push("role"); values.push(account.role); }
     const [result] = await conn.execute(`INSERT INTO ${tables[account.role]} (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`, values);
     profile = { id: result.insertId, userId: auth.insertId, lastName: account.lastName, firstName: account.firstName, middleName: account.middleName, email: account.email, contactNumber: account.contactNumber, status: account.status, gender: account.role === "ADMIN" ? null : account.gender };
     await conn.commit(); committed = true; transaction = false;

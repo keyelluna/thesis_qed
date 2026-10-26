@@ -354,10 +354,12 @@ const notifySubjectGradeSubmission = async ({ subjectSectionId, gradingPeriodId,
      FROM \`subject-section\` ss
      JOIN elem_subjects sub ON sub.id = ss.subject_id
      JOIN teacher_table tt ON tt.id = ss.teacher_id
-     JOIN classes c ON c.section_id = ss.section_id
+     JOIN classes c ON ((ss.section_id IS NOT NULL AND c.section_id = ss.section_id)
+       OR (ss.section_id IS NULL AND c.section_id IS NULL AND c.grade_level_id = sub.grade_level_id))
+       AND c.school_year_id = ss.school_year_id AND c.status = 'Active'
      JOIN teacher_table adviser ON adviser.id = c.class_adviser_id
-     WHERE ss.id = ?`,
-    [subjectSectionId]
+     WHERE ss.id = ? AND ss.teacher_id = ?`,
+    [subjectSectionId, submittedBy]
   );
 
   if (rows.length === 0) return 0;

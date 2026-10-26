@@ -26,9 +26,10 @@ async function ensureGradeSubmissionHistoryTable() {
   return tableReady;
 }
 
-async function recordSubjectGradeSubmission({ subjectSectionId, gradingPeriodId, teacherId }) {
-  await ensureGradeSubmissionHistoryTable();
-  await connection.execute(
+async function recordSubjectGradeSubmission({ subjectSectionId, gradingPeriodId, teacherId }, db = connection) {
+  // MySQL DDL implicitly commits: transactional callers require the existing table.
+  if (db === connection) await ensureGradeSubmissionHistoryTable();
+  await db.execute(
     `INSERT INTO grade_submission_history
       (submission_type, subject_section_id, grading_period_id, submitted_by)
      VALUES ('subject', ?, ?, ?)`,
@@ -36,9 +37,9 @@ async function recordSubjectGradeSubmission({ subjectSectionId, gradingPeriodId,
   );
 }
 
-async function recordAdvisoryGradeSubmission({ sectionId, gradeLevelId, gradingPeriodId, teacherId }) {
-  await ensureGradeSubmissionHistoryTable();
-  await connection.execute(
+async function recordAdvisoryGradeSubmission({ sectionId, gradeLevelId, gradingPeriodId, teacherId }, db = connection) {
+  if (db === connection) await ensureGradeSubmissionHistoryTable();
+  await db.execute(
     `INSERT INTO grade_submission_history
       (submission_type, section_id, grade_level_id, grading_period_id, submitted_by)
      VALUES ('advisory', ?, ?, ?, ?)`,

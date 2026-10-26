@@ -1,7 +1,8 @@
+const { runGradeSubmission } = require('../../shared/grades/gradeSubmissionTransaction.service');
 const connection = require("../../../../config/db");
 const { getSingleTermVisibility } = require('../../parents/Student-Record/ProgressReport/progressVisibility.controller');
 const { notifyGradeVisibility, notifyAdvisoryGradesSubmitted } = require('../../notification/notification.service')
-const { recordAdvisoryGradeSubmission, getAdvisorySubmissionHistory } = require('../../shared/grades/gradeSubmissionHistory.service');
+const { getAdvisorySubmissionHistory } = require('../../shared/grades/gradeSubmissionHistory.service');
 const ACTIVE_SCHOOL_YEAR = '(SELECT id FROM school_year WHERE is_active = 1 ORDER BY id DESC LIMIT 1)';
 const currentRoster = (alias = '') => {
   const prefix = alias ? `${alias}.` : '';
@@ -343,7 +344,8 @@ const getSubmissionStatus = async (req, res) => {
     const scope = advisoryScope(req.advisorySection);
 
     const [rows] = await connection.execute(
-      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt
+      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt,
+              (SELECT CAST(MAX(h.id) AS CHAR) FROM grade_submission_history h WHERE h.submission_type = 'advisory' AND h.${scope.column} = grade_submissions.${scope.column} ${scope.column === 'grade_level_id' ? 'AND h.section_id IS NULL' : ''} AND h.grading_period_id = grade_submissions.grading_period_id) AS submissionVersion
        FROM grade_submissions
        WHERE ${scope.column} = ? AND grading_period_id = ?`,
       [scope.value, gradingPeriodId],
@@ -354,6 +356,7 @@ const getSubmissionStatus = async (req, res) => {
       data: {
         submitted: rows.length > 0,
         submittedAt: rows[0]?.submittedAt ?? null,
+        submissionVersion: rows[0]?.submissionVersion ?? null,
       },
     });
   } catch (error) {
@@ -381,49 +384,12 @@ const getSubmissionHistory = async (req, res) => {
 };
 
 const submitAdvisoryGrades = async (req, res) => {
-  try {
-    const { gradingPeriodId } = req.body;
-    const teacherId = req.teacherId;
-
-    if (!gradingPeriodId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "gradingPeriodId is required." });
-    }
-
-    const scope = advisoryScope(req.advisorySection);
-
-    await connection.execute(
-      `INSERT INTO grade_submissions (${scope.column}, grading_period_id, submitted_by)
-       VALUES (?, ?, ?)
-       ON DUPLICATE KEY UPDATE submitted_by = VALUES(submitted_by), submitted_at = CURRENT_TIMESTAMP`,
-      [scope.value, gradingPeriodId, teacherId],
-    );
-
-    await recordAdvisoryGradeSubmission({
-      sectionId: req.advisorySection.section_id,
-      gradeLevelId: req.advisorySection.gradeLevelId,
-      gradingPeriodId,
-      teacherId,
-    });
-
-    try {
-      await notifyAdvisoryGradesSubmitted({
-        classId: req.advisorySection.classId,
-        teacherId,
-        gradingPeriodId,
-      });
-    } catch (notifErr) {
-      console.error("Advisory grade submission notification error:", notifErr);
-    }
-
-    return res.status(200).json({ success: true });
-  } catch (error) {
-    console.error("Error submitting advisory grades:", error);
-    return res
-      .status(500)
-      .json({ success: false, message: "Internal server error." });
+  const result = await runGradeSubmission(req, 'advisory');
+  if (result.notification) {
+    try { await notifyAdvisoryGradesSubmitted({ classId: req.advisorySection.classId, teacherId: req.teacherId, gradingPeriodId: req.body.gradingPeriodId }); }
+    catch (error) { console.error('Post-commit advisory submission notification failed:', error); result.body.notificationDelivery = 'failed'; }
   }
+  return res.status(result.status).json(result.body);
 };
 
 

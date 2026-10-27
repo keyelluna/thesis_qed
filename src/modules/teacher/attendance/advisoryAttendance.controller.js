@@ -50,8 +50,9 @@ async function loadAdvisoryClasses(req, res, next) {
 
     const [classRows] = await connection.execute(
       `SELECT c.id AS classId, c.section_id, gls.section_name AS sectionName,
-              gl.grade_level AS gradeLevel
+              gl.grade_level AS gradeLevel, c.school_year_id AS schoolYearId, sy.school_year AS schoolYearLabel
        FROM classes c
+       INNER JOIN school_year sy ON sy.id = c.school_year_id
        LEFT JOIN grade_level_sections gls ON c.section_id = gls.id
        INNER JOIN grade_level gl ON c.grade_level_id = gl.id
        WHERE c.class_adviser_id = ? AND c.school_year_id = ? AND c.status = 'Active'`,
@@ -119,7 +120,7 @@ const getAdvisorySectionsList = async (req, res) => {
     }));
 
     const sections = await Promise.all(
-      classes.map(async ({ classId, section_id: sectionId, sectionName, gradeLevel }) => {
+      classes.map(async ({ classId, section_id: sectionId, sectionName, gradeLevel, schoolYearId, schoolYearLabel }) => {
         const [roster] = sectionId
           ? await connection.execute(
               `SELECT s.id,
@@ -149,6 +150,8 @@ const getAdvisorySectionsList = async (req, res) => {
 
         return {
           classId: String(classId),
+          schoolYearId: String(schoolYearId),
+          schoolYearLabel,
           sectionId: sectionId ? String(sectionId) : null,
           sectionName: sectionName?.trim() || gradeLevel,
           gradeLevel,

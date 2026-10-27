@@ -28,4 +28,7 @@ router.post(
   controller.upsertAdvisoryAttendance,
 );
 
+const monthlyReport = require('./monthlyAttendanceReport.controller');
+router.get('/:classId/monthly-report', verifyToken, monthlyReport.requireTeacher, monthlyReport.getMonthlyReport);
+
 module.exports = router;

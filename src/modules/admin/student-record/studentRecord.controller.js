@@ -336,8 +336,18 @@ exports.getAllStudents = async (req, res) => {
             SELECT 
                 s.*,
                 gl.grade_level AS grade_level_name,
-                sec.section_name
+                sec.section_name,
+                guardian.first_name AS guardian_first_name,
+                guardian.middle_name AS guardian_middle_name,
+                guardian.last_name AS guardian_last_name,
+                guardian.contact_number AS guardian_contact_number
             FROM elem_students s
+            LEFT JOIN parent_table guardian ON guardian.id = (
+              SELECT link.parent_id FROM parent_student link
+              INNER JOIN parent_table linked_parent ON linked_parent.id = link.parent_id AND linked_parent.is_deleted = 0
+              WHERE link.student_id = s.id
+              ORDER BY link.parent_id ASC LIMIT 1
+            )
             LEFT JOIN grade_level gl ON s.grade_level_id = gl.id
             LEFT JOIN grade_level_sections sec ON s.section_id = sec.id
             JOIN school_year sy ON sy.id = s.current_school_year_id

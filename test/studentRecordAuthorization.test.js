@@ -56,8 +56,8 @@ test.beforeEach(() => {
     INSERT INTO grade_level_sections VALUES(11,'A'),(12,'B'),(13,'C'),(15,'E'),(16,'F'),(17,'Other');
     CREATE TABLE teacher_table(id INTEGER PRIMARY KEY, user_id INTEGER, is_deleted INTEGER);
     INSERT INTO teacher_table VALUES(41,701,0),(42,702,0),(43,703,1);
-    CREATE TABLE parent_table(id INTEGER PRIMARY KEY, user_id INTEGER, is_deleted INTEGER);
-    INSERT INTO parent_table VALUES(51,801,0),(52,802,0),(53,803,1);
+    CREATE TABLE parent_table(id INTEGER PRIMARY KEY, user_id INTEGER, is_deleted INTEGER, first_name TEXT, middle_name TEXT, last_name TEXT, contact_number TEXT);
+    INSERT INTO parent_table(id,user_id,is_deleted) VALUES(51,801,0),(52,802,0),(53,803,1);
     CREATE TABLE parent_student(parent_id INTEGER, student_id INTEGER);
     INSERT INTO parent_student VALUES(51,103),(52,105),(53,101);
     CREATE TABLE elem_subjects(id INTEGER PRIMARY KEY, grade_level_id INTEGER);
@@ -180,4 +180,18 @@ test('Authorized holistic profile golden averages/trends/risk/nulls remain ident
   assert.deepEqual(profile.overall,{domainAverages:{cognitive:4.5,emotional:3,social:null,behavioral:null},evaluationCount:3,lastEvaluation:'2090-09-09'});
   assert.equal(profile.highestRiskLevel,'NONE');assert.equal(profile.subjects.length,1);
   assert.deepEqual(profile.subjects[0],{subjectSectionId:'61',subjectName:'Synthetic Subject',domainAverages:{cognitive:4.5,emotional:3,social:null,behavioral:null},evaluationCount:3,lastEvaluation:'2090-09-09',riskLevel:'NONE',risks:[],recommendations:[],weeksCount:2,weeklyScores:[{week:'2090-09-02',score:3.5},{week:'2090-09-09',score:5}],pastAverage:3.5,recentAverage:5,currentWeekAverage:5,trend:'Improving'});
+});
+
+
+test('Student directory returns guardian identity and phone from the same non-deleted linked parent without duplicate students',async()=>{
+ database.exec(`UPDATE parent_table SET first_name='Mara',middle_name='D.',last_name='Cruz',contact_number='09123456789' WHERE id=51;
+ INSERT INTO parent_student VALUES(51,102),(52,102),(53,102);
+ UPDATE elem_students SET parent_guardian_name='Legacy guardian' WHERE id=101;`);
+ const result=await request('/allStudents',{userId:701,role:'TEACHER'});
+ assert.equal(result.status,200);
+ const student=result.body.data.find(row=>row.id===102);
+ assert.equal(result.body.data.filter(row=>row.id===102).length,1);
+ assert.equal(student.guardian_first_name,'Mara');assert.equal(student.guardian_last_name,'Cruz');assert.equal(student.guardian_contact_number,'09123456789');
+ const legacy=result.body.data.find(row=>row.id===101);assert.equal(legacy.parent_guardian_name,'Legacy guardian');assert.equal(legacy.guardian_first_name,null);assert.equal(legacy.guardian_contact_number,null);
+ assert.equal(result.body.data.some(row=>row.id===105),false);assert.equal(mutations,0);
 });

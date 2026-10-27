@@ -402,8 +402,10 @@ const sendAttendanceComplete = async ({ classId, date }) => {
   const [[{ total }]] = await db.query(
     `SELECT COUNT(*) AS total FROM elem_students s
      WHERE ${rosterWhere} AND s.is_deleted = 0
-       AND s.status <> 'graduated' AND s.current_school_year_id = ?`,
-    [cls.sectionId ?? cls.gradeLevelId, sy.id]
+       AND s.status <> 'graduated' AND s.current_school_year_id = ?
+       AND NOT EXISTS (SELECT 1 FROM student_dropout_events d WHERE d.student_id=s.id AND d.school_year_id=s.current_school_year_id AND d.reversed_at IS NULL AND d.effective_date<=?)
+       AND NOT EXISTS (SELECT 1 FROM student_transfer_ins ti WHERE ti.student_id=s.id AND ti.school_year_id=s.current_school_year_id AND ti.joined_date>?)`,
+    [cls.sectionId ?? cls.gradeLevelId, sy.id, date, date]
   );
 
 
@@ -414,7 +416,9 @@ const sendAttendanceComplete = async ({ classId, date }) => {
      WHERE a.class_id = ? AND a.attendance_date = ?
        AND s.is_deleted = 0 AND s.status <> 'graduated'
        AND s.current_school_year_id = ?
-       AND ${rosterWhere} AND a.status IN ('P', 'A', 'L', 'E')`,
+       AND ${rosterWhere} AND a.status IN ('P', 'A', 'L', 'E')
+       AND NOT EXISTS (SELECT 1 FROM student_dropout_events d WHERE d.student_id=s.id AND d.school_year_id=s.current_school_year_id AND d.reversed_at IS NULL AND d.effective_date<=a.attendance_date)
+       AND NOT EXISTS (SELECT 1 FROM student_transfer_ins ti WHERE ti.student_id=s.id AND ti.school_year_id=s.current_school_year_id AND ti.joined_date>a.attendance_date)`,
     [classId, date, sy.id, cls.sectionId ?? cls.gradeLevelId]
   );
   if (Number(total) === 0 || Number(marked) < Number(total)) return 0;

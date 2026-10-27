@@ -37,10 +37,12 @@ const JWT_EXPIRES_IN = "1h";
 
 exports.login = async (req, res) => {
   try {
-    const { userName, password } = req.body || {};
+    const { userName, password, rememberMe = false } = req.body || {};
     if (typeof userName !== 'string' || !userName || typeof password !== 'string' || !password) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
+
+    if (typeof rememberMe !== 'boolean') return res.status(400).json({message:'Remember me must be true or false.'});
 
     const [rows] = await connection.execute(
       "SELECT * FROM qed_authentication WHERE user_name = ? LIMIT 1",
@@ -111,7 +113,7 @@ exports.login = async (req, res) => {
     const token = jwt.sign(
       { userId: user.id, userName: user.user_name, role: user.role },
       JWT_SECRET,
-      { algorithm: 'HS256', expiresIn: JWT_EXPIRES_IN },
+      { algorithm: 'HS256', expiresIn: rememberMe ? '7d' : JWT_EXPIRES_IN },
     );
 
     return res
@@ -119,7 +121,7 @@ exports.login = async (req, res) => {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
         sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-        maxAge: 60 * 60 * 1000,
+        ...(rememberMe ? { maxAge: 7 * 24 * 60 * 60 * 1000 } : {}),
       })
       .status(200)
       .json({

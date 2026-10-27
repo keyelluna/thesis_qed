@@ -32,3 +32,9 @@ const monthlyReport = require('./monthlyAttendanceReport.controller');
 router.get('/:classId/monthly-report', verifyToken, monthlyReport.requireTeacher, monthlyReport.getMonthlyReport);
 
 module.exports = router;
+const dropout = require('./dropout.controller');
+router.get('/:classId/dropouts', verifyToken, monthlyReport.requireTeacher, dropout.getState);
+router.post('/:classId/students/:studentId/dropout', verifyToken, monthlyReport.requireTeacher, dropout.declare);
+router.post('/:classId/students/:studentId/dropout/reverse', verifyToken, monthlyReport.requireTeacher, dropout.reverse);
+
+router.post('/:classId/mark-present', verifyToken, monthlyReport.requireTeacher, require('./bulkAttendance.controller').markPresent);

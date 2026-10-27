@@ -57,8 +57,8 @@ app.use(operationalError);
 const httpServer = createServer(app);
 initSocket(httpServer, allowedOrigins);
 
-auditLog.ensureAuditLogTable()
-  .catch((error) => console.error('Audit log table could not be initialized:', error.message))
+Promise.all([auditLog.ensureAuditLogTable(), require("./src/modules/teacher/attendance/transferIn.service").ensureTransferInTable(), require("./src/modules/teacher/attendance/dropout.service").ensureDropoutTable()])
+  .catch((error) => console.error('Application record tables could not be initialized:', error.message))
   .finally(() => {
     httpServer.listen(process.env.PORT, () => {
       console.log(`Server is running on port ${process.env.PORT}`);

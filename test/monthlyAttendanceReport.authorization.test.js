@@ -17,7 +17,9 @@ test.after(()=>{server.close();db.close();});
 test.beforeEach(()=>{
  db?.close();db=new DatabaseSync(':memory:');queries=[];
  db.function('DATE_FORMAT',(date,format)=>date);db.function('CONCAT_WS',{varargs:true},(sep,...parts)=>parts.filter(v=>v!==null).join(sep));
- db.exec(`CREATE TABLE school_year(id INTEGER,school_year TEXT,is_active INTEGER);INSERT INTO school_year VALUES(1,'2026-2027',1),(2,'2025-2026',0);
+ db.exec(`CREATE TABLE student_transfer_ins(student_id INTEGER,school_year_id INTEGER,joined_date TEXT,recorded_by INTEGER,created_at TEXT,PRIMARY KEY(student_id,school_year_id));
+ CREATE TABLE student_dropout_events(id INTEGER,student_id INTEGER,class_id INTEGER,school_year_id INTEGER,last_attended TEXT,effective_date TEXT,reason TEXT,remarks TEXT,reversed_at TEXT,declared_at TEXT,declared_by INTEGER);
+ CREATE TABLE school_year(id INTEGER,school_year TEXT,is_active INTEGER);INSERT INTO school_year VALUES(1,'2026-2027',1),(2,'2025-2026',0);
  CREATE TABLE teacher_table(id INTEGER,user_id INTEGER,first_name TEXT,middle_name TEXT,last_name TEXT,is_deleted INTEGER,status TEXT);INSERT INTO teacher_table VALUES(1,10,'Teacher','','One',0,'active'),(2,20,'Other','','Teacher',0,'active');
  CREATE TABLE grade_level(id INTEGER,grade_level TEXT);INSERT INTO grade_level VALUES(1,'Grade 1');
  CREATE TABLE grade_level_sections(id INTEGER,section_name TEXT);INSERT INTO grade_level_sections VALUES(1,'Maroon'),(2,'White');
@@ -42,4 +44,18 @@ test('authentication, teacher role and adviser ownership are required; historica
 test('invalid/outside-year months are rejected; no records returns blank ADA; ambiguous principal requires manual input',async()=>{
  assert.equal((await get('/1/monthly-report?schoolYearId=1&month=2026-13')).status,400);assert.equal((await get('/1/monthly-report?schoolYearId=1&month=2027-01')).status,400);
  db.exec("INSERT INTO principal_table VALUES(2,'Other','','Principal','Principal','active',0)");const response=await get('/1/monthly-report?schoolYearId=1&month=2026-12');const {data}=await response.json();assert.equal(data.ada,null);assert.equal(data.numberOfDays,0);assert.equal(data.principalSource,'manual');assert.equal(data.principalName,'');
+});
+
+
+test('monthly report lists dropout names and effective dates, keeps earlier marks and excludes later attendance',async()=>{
+ db.exec("INSERT INTO student_dropout_events(id,student_id,class_id,school_year_id,last_attended,effective_date,reason,remarks,reversed_at) VALUES(11,1,1,1,'2026-10-01','2026-10-10','Prolonged absence','Contacted guardian',NULL)");
+ const response=await get();assert.equal(response.status,200);const {data}=await response.json();
+ assert.equal(data.dropouts.length,1);assert.equal(data.dropouts[0].name,'Male One');assert.equal(data.dropouts[0].effectiveDate,'2026-10-10');
+ assert.equal(data.days.find(day=>day.date==='2026-10-01').malePresent,1);const later=data.days.find(day=>day.date==='2026-10-20');assert.equal(later.malePresent,0);assert.equal(later.unmarked,0);assert.equal(later.enrollment.total,1);
+ assert.equal(db.prepare("SELECT COUNT(*) n FROM advisory_attendance_records WHERE student_id=1 AND attendance_date='2026-10-20'").get().n,1);
+});
+
+test('monthly report includes only owned incoming students in their joining month',async()=>{
+ db.exec("INSERT INTO student_transfer_ins VALUES(1,1,'2026-10-15',99,NULL),(4,1,'2026-10-15',99,NULL)");
+ const response=await fetch(base+'/1/monthly-report?schoolYearId=1&month=2026-10',{headers:{cookie:token()}});const result=await response.json();assert.equal(response.status,200);assert.equal(result.data.transferIns.length,1);assert.equal(result.data.transferIns[0].joinedDate,'2026-10-15');assert.equal(result.data.transferIns[0].studentId,'1');assert.equal(result.data.days[0].malePresent,0);
 });

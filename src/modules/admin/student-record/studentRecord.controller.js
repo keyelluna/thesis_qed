@@ -38,6 +38,13 @@ exports.addNewStudent = async (req, res) => {
     }
 
     const currentSchoolYearId = activeSY[0].id;
+    const { isTransferee = false, joinedDate } = req.body;
+    if (typeof isTransferee !== 'boolean') fail(400, 'Choose a valid transferee status.');
+    if (isTransferee) {
+      if (!require('../../teacher/attendance/dropout.service').isoDate(joinedDate)) fail(400, 'Date joined this school is required.');
+      const [[bounds]] = await conn.query("SELECT DATE_FORMAT(MIN(start_date),'%Y-%m-%d') AS startDate, DATE_FORMAT(MAX(end_date),'%Y-%m-%d') AS endDate, DATE_FORMAT(CURDATE(),'%Y-%m-%d') AS today FROM grading_periods WHERE school_year_id=?", [currentSchoolYearId]);
+      if (!bounds?.startDate || !bounds?.endDate || joinedDate < bounds.startDate || joinedDate > bounds.endDate || joinedDate > bounds.today) fail(400, 'Joining date must be within the active school year and cannot be in the future.');
+    }
 
     const studentQuery = `
         INSERT INTO elem_students
@@ -58,6 +65,7 @@ exports.addNewStudent = async (req, res) => {
       "active",
     ]);
 
+    if (isTransferee) await conn.query('INSERT INTO student_transfer_ins (student_id,school_year_id,joined_date,recorded_by) VALUES (?,?,?,?)', [result.insertId,currentSchoolYearId,joinedDate,req.user.userId]);
     await conn.commit();
     res.status(201).json({
       success: true,
@@ -335,13 +343,18 @@ exports.getAllStudents = async (req, res) => {
     const query = `
             SELECT 
                 s.*,
+                DATE_FORMAT(ti.joined_date,'%Y-%m-%d') AS joined_date,
                 gl.grade_level AS grade_level_name,
                 sec.section_name,
+                CASE WHEN dropout.id IS NULL THEN s.status ELSE 'dropped' END AS enrollment_status,
+                DATE_FORMAT(dropout.effective_date,'%Y-%m-%d') AS dropout_effective_date,
                 guardian.first_name AS guardian_first_name,
                 guardian.middle_name AS guardian_middle_name,
                 guardian.last_name AS guardian_last_name,
                 guardian.contact_number AS guardian_contact_number
             FROM elem_students s
+            LEFT JOIN student_transfer_ins ti ON ti.student_id=s.id AND ti.school_year_id=s.current_school_year_id
+            LEFT JOIN student_dropout_events dropout ON dropout.student_id=s.id AND dropout.school_year_id=s.current_school_year_id AND dropout.reversed_at IS NULL
             LEFT JOIN parent_table guardian ON guardian.id = (
               SELECT link.parent_id FROM parent_student link
               INNER JOIN parent_table linked_parent ON linked_parent.id = link.parent_id AND linked_parent.is_deleted = 0

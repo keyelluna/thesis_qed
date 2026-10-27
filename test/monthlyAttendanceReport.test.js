@@ -11,7 +11,7 @@ test('P/L are present, A/E absent; duplicate students and marks count once; miss
   ],'2026-10');
   assert.deepEqual(result.enrollment,{male:1,female:1,total:2});
   assert.deepEqual(result.days.map(d=>d.date),['2026-10-01','2026-10-02','2026-10-20']);
-  assert.deepEqual(result.days[0],{date:'2026-10-01',malePresent:1,femalePresent:0,maleAbsent:0,femaleAbsent:1,unmarked:0});
+  assert.deepEqual(result.days[0],{date:'2026-10-01',malePresent:1,femalePresent:0,maleAbsent:0,femaleAbsent:1,unmarked:0,enrollment:{male:1,female:1,total:2}});
   assert.equal(result.days[1].maleAbsent,1);assert.equal(result.days[1].unmarked,1);assert.equal(result.days[1].femaleAbsent,0);
   assert.equal(result.numberOfDays,3);assert.deepEqual(result.sums,{male:1,female:1});
 });
@@ -29,4 +29,18 @@ test('half rounds upward, zero days leaves ADA blank, unknown gender never becom
 test('month options span grading periods and year boundaries; conflicting duplicate marks fail',()=>{
   assert.deepEqual(reportingMonths([{startDate:'2026-12-15',endDate:'2027-01-10'},{startDate:'2027-01-11',endDate:'2027-02-15'}]),['2026-12','2027-01','2027-02']);
   assert.throws(()=>aggregateReport(roster,[{studentId:1,date:'2026-10-01',status:'P'},{studentId:1,date:'2026-10-01',status:'A'}],'2026-10'),/Conflicting/);
+});
+
+
+test('dropouts stop attendance and daily enrollment on effective date without creating unmarked absences',()=>{
+ const records=[{studentId:1,date:'2026-10-01',status:'P'},{studentId:1,date:'2026-10-02',status:'A'},{studentId:2,date:'2026-10-02',status:'P'}];
+ const result=aggregateReport(roster,records,'2026-10',[{studentId:'1',effectiveDate:'2026-10-02'}]);
+ assert.equal(result.days[0].malePresent,1);assert.equal(result.days[1].maleAbsent,0);assert.equal(result.days[1].unmarked,0);assert.equal(result.days[1].enrollment.total,1);assert.equal(result.enrollment.total,2);assert.equal(result.annualEnrollment.total,2);
+});
+
+test('incoming transferees enter daily enrollment on joining date without prejoin absences or unknown marks',()=>{
+ const students=[...roster,{id:3,name:'October entrant',gender:'Male',joinedDate:'2026-10-15'},{id:4,name:'November entrant',gender:'Female',joinedDate:'2026-11-02'}];
+ const records=[{studentId:1,date:'2026-10-01',status:'P'},{studentId:2,date:'2026-10-01',status:'P'},{studentId:3,date:'2026-10-01',status:'A'},...students.map(s=>({studentId:s.id,date:'2026-10-15',status:'P'}))];
+ const result=aggregateReport(students,records,'2026-10');assert.equal(result.enrollment.total,3);assert.equal(result.annualEnrollment.total,3);assert.equal(result.days[0].enrollment.total,2);assert.equal(result.days[0].unmarked,0);assert.equal(result.days[0].maleAbsent,0);assert.equal(result.days[1].enrollment.total,3);assert.equal(result.days[1].femalePresent,1);
+ assert.equal(aggregateReport(students,[],'2026-09').enrollment.total,2);
 });

@@ -125,8 +125,8 @@ const getAdvisorySectionsList = async (req, res) => {
           ? await connection.execute(
               `SELECT s.id,
                       CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
-                      s.gender AS gender
-               FROM elem_students s
+                      s.gender AS gender, DATE_FORMAT(ti.joined_date, '%Y-%m-%d') AS joinedDate
+               FROM elem_students s LEFT JOIN student_transfer_ins ti ON ti.student_id=s.id AND ti.school_year_id=s.current_school_year_id
                WHERE s.section_id = ?
                  AND s.is_deleted = 0
                  AND s.status <> 'graduated'
@@ -137,8 +137,8 @@ const getAdvisorySectionsList = async (req, res) => {
           : await connection.execute(
               `SELECT s.id,
                       CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
-                      s.gender AS gender
-               FROM elem_students s
+                      s.gender AS gender, DATE_FORMAT(ti.joined_date, '%Y-%m-%d') AS joinedDate
+               FROM elem_students s LEFT JOIN student_transfer_ins ti ON ti.student_id=s.id AND ti.school_year_id=s.current_school_year_id
                WHERE s.grade_level_id = (SELECT grade_level_id FROM classes WHERE id = ?)
                  AND s.section_id IS NULL
                  AND s.is_deleted = 0
@@ -155,7 +155,7 @@ const getAdvisorySectionsList = async (req, res) => {
           sectionId: sectionId ? String(sectionId) : null,
           sectionName: sectionName?.trim() || gradeLevel,
           gradeLevel,
-          roster: roster.map((r) => ({ id: String(r.id), name: r.name, gender: r.gender })),
+          roster: roster.map((r) => ({ id: String(r.id), name: r.name, gender: r.gender, joinedDate: r.joinedDate })),
           terms: formattedTerms,
         };
       }),
@@ -185,6 +185,8 @@ const getAdvisoryAttendance = async (req, res) => {
       WHERE a.class_id = ?
         AND s.status <> 'graduated'
         AND s.current_school_year_id = ?
+        AND NOT EXISTS (SELECT 1 FROM student_transfer_ins ti WHERE ti.student_id=a.student_id AND ti.school_year_id=s.current_school_year_id AND a.attendance_date<ti.joined_date)
+        AND NOT EXISTS (SELECT 1 FROM student_dropout_events d WHERE d.student_id=a.student_id AND d.school_year_id=s.current_school_year_id AND d.reversed_at IS NULL AND a.attendance_date>=d.effective_date)
     `;
     const params = [classId, activeSchoolYearId];
 
@@ -221,7 +223,10 @@ const getAdvisoryAttendance = async (req, res) => {
 };
 
 const upsertAdvisoryAttendance = async (req, res) => {
+  let conn, committed = false;
   try {
+    conn = await connection.getConnection();
+    await conn.beginTransaction();
     const { classId, section_id: sectionId } = req.advisorySection;
     const { teacherId } = req;
     const { studentId, date, term } = req.body;
@@ -250,7 +255,15 @@ const upsertAdvisoryAttendance = async (req, res) => {
       return res.status(400).json({ success: false, message: "No active school year is available." });
     }
 
-    const [[todayRow]] = await connection.query(
+    const [lockedStudents] = await conn.execute(`SELECT s.id FROM elem_students s JOIN classes c ON c.id=? AND c.grade_level_id=s.grade_level_id AND c.school_year_id=s.current_school_year_id
+      WHERE s.id=? AND s.current_school_year_id=? AND s.is_deleted=0 AND s.status<>'graduated'
+      AND (s.section_id=c.section_id OR (s.section_id IS NULL AND c.section_id IS NULL)) FOR UPDATE`, [classId,studentId,activeSchoolYearId]);
+    if (!lockedStudents.length) return res.status(404).json({message:'Student is not in this advisory class.'});
+    await require('./dropout.service').assertAttendanceAllowed(conn,studentId,activeSchoolYearId,date);
+    const [[transfer]] = await conn.execute("SELECT DATE_FORMAT(joined_date,'%Y-%m-%d') AS joinedDate FROM student_transfer_ins WHERE student_id=? AND school_year_id=?",[studentId,activeSchoolYearId]);
+    if (transfer && date < transfer.joinedDate) return res.status(409).json({message:'Attendance starts on the date the student joined this school.'});
+
+    const [[todayRow]] = await conn.query(
       `SELECT DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS today`,
     );
     const today = todayRow?.today;
@@ -261,7 +274,7 @@ const upsertAdvisoryAttendance = async (req, res) => {
     const activePeriodId = await getActiveGradingPeriodId();
     const requestedPeriodId = term || activePeriodId;
 
-    const [existingRows] = await connection.execute(
+    const [existingRows] = await conn.execute(
       `SELECT grading_period_id AS gradingPeriodId
        FROM advisory_attendance_records
        WHERE class_id = ? AND student_id = ? AND attendance_date = ?
@@ -283,7 +296,7 @@ const upsertAdvisoryAttendance = async (req, res) => {
       return res.status(400).json({ success: false, message: "No active grading period is available." });
     }
 
-    const [periodRows] = await connection.execute(
+    const [periodRows] = await conn.execute(
       `SELECT gp.id, gp.is_active AS isActive,
               DATE_FORMAT(gp.start_date, '%Y-%m-%d') AS startDate,
               DATE_FORMAT(gp.end_date, '%Y-%m-%d') AS endDate
@@ -302,11 +315,11 @@ const upsertAdvisoryAttendance = async (req, res) => {
       return res.status(400).json({ success: false, message: "Attendance can only be marked today while the active grading period is open." });
     }
 
-    if (!existingPeriodId && date !== today) {
+    if (!existingPeriodId && date !== today && !transfer) {
       return res.status(400).json({ success: false, message: "New attendance can only be marked for today. Existing past marks may be edited." });
     }
 
-    const [studentRows] = await connection.execute(
+    const [studentRows] = await conn.execute(
       `SELECT s.id
        FROM elem_students s
        INNER JOIN classes c ON c.id = ? AND c.grade_level_id = s.grade_level_id
@@ -322,28 +335,24 @@ const upsertAdvisoryAttendance = async (req, res) => {
     }
 
     if (status === null) {
-      await connection.execute(
+      await conn.execute(
         `DELETE FROM advisory_attendance_records
          WHERE class_id = ? AND student_id = ? AND attendance_date = ?`,
         [classId, studentId, date],
       );
     } else if (existingPeriodId) {
-      await connection.execute(
+      await conn.execute(
         `UPDATE advisory_attendance_records
          SET status = ?, recorded_by = ?
          WHERE class_id = ? AND student_id = ? AND attendance_date = ?`,
         [status, teacherId, classId, studentId, date],
       );
 
-      if (status === "A") {
-        try {
-          await notifyAbsence({ studentId, date });
-        } catch (notifErr) {
-          console.error("Absence notification error:", notifErr);
-        }
-      }
+      await conn.commit(); committed = true;
+      conn.release(); conn = null;
+
     } else {
-      await connection.execute(
+      await conn.execute(
         `INSERT INTO advisory_attendance_records
            (section_id, class_id, grading_period_id, student_id, attendance_date, status, recorded_by)
          VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -351,31 +360,25 @@ const upsertAdvisoryAttendance = async (req, res) => {
         [sectionId ?? null, classId, gradingPeriodId, studentId, date, status, teacherId],
       );
 
-      if (status === "A") {
-        try {
-          await notifyAbsence({ studentId, date });
-        } catch (notifErr) {
-          console.error("Absence notification error:", notifErr);
-        }
-      }
+      await conn.commit(); committed = true;
+      conn.release(); conn = null;
 
-      try {
-        await notifyAttendanceComplete({ classId, date });
-      } catch (notifErr) {
-        console.error("Attendance-complete notification error:", notifErr);
-      }
+
+
     }
 
-    return res.status(200).json({
-      success: true,
-      termId: gradingPeriodId ? String(gradingPeriodId) : null,
-    });
+    if (!committed) { await conn.commit(); committed = true; }
+    if (conn) { conn.release(); conn = null; }
+    const response = res.status(200).json({success:true,termId:gradingPeriodId?String(gradingPeriodId):null});
+    if(status==='A')try{await notifyAbsence({studentId,date});}catch(error){console.error('Absence notification failed:',error.code||error.name);}
+    if(!existingPeriodId&&status!==null)try{await notifyAttendanceComplete({classId,date});}catch(error){console.error('Attendance-complete notification failed:',error.code||error.name);}
+    return response;
   } catch (error) {
-    console.error("Error saving advisory attendance:", error);
+    if (!error.status) console.error("Error saving advisory attendance:", error.code || error.name);
     return res
-      .status(500)
-      .json({ success: false, message: "Internal server error." });
-  }
+      .status(error.status || 500)
+      .json({ success: false, message: error.status ? error.message : "Internal server error." });
+  } finally { if (conn) { if (!committed) await conn.rollback(); conn.release(); } }
 };
 
 module.exports = {

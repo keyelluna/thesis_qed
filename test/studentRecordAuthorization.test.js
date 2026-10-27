@@ -44,12 +44,16 @@ test.before(async () => {
 });
 test.beforeEach(() => {
   database = new DatabaseSync(':memory:');
+  database.function('CURDATE', () => '2090-10-13');
   database.function('NOW', () => '2090-10-13 12:00:00');
   database.function('CONCAT', {varargs:true}, (...values) => values.join(''));
   database.function('DATE_FORMAT', (value, format) => { assert.equal(format,'%Y-%m-%d');return String(value).slice(0,10); });
   database.exec(`
+    CREATE TABLE student_transfer_ins(student_id INTEGER,school_year_id INTEGER,joined_date TEXT,recorded_by INTEGER,created_at TEXT,PRIMARY KEY(student_id,school_year_id));
+ CREATE TABLE student_dropout_events(id INTEGER,student_id INTEGER,school_year_id INTEGER,effective_date TEXT,reversed_at TEXT);
     CREATE TABLE school_year(id INTEGER PRIMARY KEY, is_active INTEGER, school_year TEXT);
     INSERT INTO school_year VALUES(6,0,'Old'),(7,1,'Current'),(8,0,'Future');
+    CREATE TABLE grading_periods(id INTEGER,school_year_id INTEGER,start_date TEXT,end_date TEXT);INSERT INTO grading_periods VALUES(1,7,'2090-06-01','2091-03-31');
     CREATE TABLE grade_level(id INTEGER PRIMARY KEY, grade_level TEXT);
     INSERT INTO grade_level VALUES(1,'Grade 1'),(2,'Grade 2'),(3,'Grade 3'),(4,'Grade 4'),(5,'Grade 5'),(6,'Grade 6');
     CREATE TABLE grade_level_sections(id INTEGER PRIMARY KEY, section_name TEXT);
@@ -194,4 +198,18 @@ test('Student directory returns guardian identity and phone from the same non-de
  assert.equal(student.guardian_first_name,'Mara');assert.equal(student.guardian_last_name,'Cruz');assert.equal(student.guardian_contact_number,'09123456789');
  const legacy=result.body.data.find(row=>row.id===101);assert.equal(legacy.parent_guardian_name,'Legacy guardian');assert.equal(legacy.guardian_first_name,null);assert.equal(legacy.guardian_contact_number,null);
  assert.equal(result.body.data.some(row=>row.id===105),false);assert.equal(mutations,0);
+});
+
+for(const joinedDate of [undefined,'','2026-02-30','2089-10-01','2090-10-14','2091-04-01'])test('transferee registration rejects invalid/outside-year/future date '+joinedDate,async()=>{
+ const result=await request('/addNewStudent',{role:'ADMIN',userId:901},'POST',{...payload,isTransferee:true,joinedDate});
+ assert.equal(result.status,400);assert.equal(database.prepare('SELECT COUNT(*) n FROM elem_students').get().n,13);assert.equal(database.prepare('SELECT COUNT(*) n FROM student_transfer_ins').get().n,0);
+});
+test('admin creates student and school-year transfer entry together, directory reads actual joining date',async()=>{
+ const result=await request('/addNewStudent',{role:'ADMIN',userId:901},'POST',{...payload,isTransferee:true,joinedDate:'2090-10-01'});
+ assert.equal(result.status,201);const transfer=database.prepare('SELECT * FROM student_transfer_ins').get();assert.equal(transfer.joined_date,'2090-10-01');assert.equal(transfer.school_year_id,7);assert.equal(transfer.recorded_by,901);
+ const directory=await request('/allStudents',{role:'ADMIN',userId:901});assert.equal(directory.body.data.find(s=>s.student_number==='S900').joined_date,'2090-10-01');
+});
+test('non-transferee ignores stray joining date and creates no transfer entry',async()=>{
+ assert.equal((await request('/addNewStudent',{role:'ADMIN',userId:901},'POST',{...payload,isTransferee:false,joinedDate:'2090-10-01'})).status,201);
+ assert.equal(database.prepare('SELECT COUNT(*) n FROM student_transfer_ins').get().n,0);
 });

@@ -26,8 +26,8 @@ async function getMonthlyReport(req, res) {
     const months = reportingMonths(terms);
     if (!months.includes(month)) fail(400, 'Select a month within this school year’s grading periods.');
     const [roster] = await conn.execute(
-      `SELECT s.id, s.gender, CONCAT_WS(' ', s.first_name, NULLIF(s.middle_name, ''), s.last_name) AS name
-       FROM elem_students s WHERE s.current_school_year_id = ? AND s.grade_level_id = ?
+      `SELECT s.id, s.gender, DATE_FORMAT(ti.joined_date,'%Y-%m-%d') AS joinedDate, CONCAT_WS(' ', s.first_name, NULLIF(s.middle_name, ''), s.last_name) AS name
+       FROM elem_students s LEFT JOIN student_transfer_ins ti ON ti.student_id=s.id AND ti.school_year_id=s.current_school_year_id WHERE s.current_school_year_id = ? AND s.grade_level_id = ?
        AND s.section_id <=> ? AND s.is_deleted = 0 AND s.status <> 'graduated' ORDER BY s.id`, [yearId, schoolClass.gradeId, schoolClass.sectionId]);
     const [year, monthNumber] = month.split('-').map(Number);
     const nextMonth = monthNumber === 12 ? String(year + 1) + '-01-01' : String(year) + '-' + String(monthNumber + 1).padStart(2, '0') + '-01';
@@ -35,9 +35,12 @@ async function getMonthlyReport(req, res) {
       `SELECT a.student_id AS studentId, DATE_FORMAT(a.attendance_date, '%Y-%m-%d') AS date, a.status
        FROM advisory_attendance_records a JOIN grading_periods gp ON gp.id = a.grading_period_id AND gp.school_year_id = ?
        WHERE a.class_id = ? AND a.attendance_date >= ? AND a.attendance_date < ? ORDER BY a.attendance_date, a.student_id`, [yearId, classId, month + '-01', nextMonth]);
+    const dropouts = await require('./dropout.service').activeDropouts(conn,classId,yearId);
     const [principals] = await conn.execute("SELECT CONCAT_WS(' ', first_name, NULLIF(middle_name, ''), last_name) AS name, role AS designation FROM principal_table WHERE is_deleted = 0 AND LOWER(status) = 'active' ORDER BY id");
     const principal = principals.length === 1 ? principals[0] : null;
-    const data = { ...aggregateReport(roster, records, month), classId: String(classId), schoolYearId: String(yearId), schoolYearLabel: schoolClass.schoolYearLabel,
+    const data = { ...aggregateReport(roster, records, month, dropouts), classId: String(classId), schoolYearId: String(yearId), schoolYearLabel: schoolClass.schoolYearLabel,
+      transferIns: roster.filter(s=>s.joinedDate?.slice(0,7)===month).map(s=>({studentId:String(s.id),name:s.name,joinedDate:s.joinedDate})),
+      dropouts: dropouts.filter(d=>d.effectiveDate.slice(0,7)===month).map(d=>({...d,name:roster.find(s=>String(s.id)===d.studentId)?.name||'Student '+d.studentId})),
       gradeSection: [schoolClass.gradeLevel, schoolClass.sectionName].filter(Boolean).join(' - '), month, months,
       adviserName: schoolClass.adviserName || '', principalName: principal?.name || '', principalDesignation: principal?.designation || '',
       principalSource: principal ? 'system' : 'manual' };

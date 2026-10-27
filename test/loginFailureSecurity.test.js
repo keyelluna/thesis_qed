@@ -40,8 +40,24 @@ test('valid login preserves secure cookie, HS256 session and normal user respons
   const { res } = await login('valid');
   assert.equal(res.code, 200); assert.equal(res.session.name, 'token');
   assert.equal(res.session.options.httpOnly, true); assert.equal(res.session.options.secure, true);
-  assert.equal(res.session.options.sameSite, 'none'); assert.equal(res.session.options.maxAge, 3600000);
+  assert.equal(res.session.options.sameSite, 'none'); assert.equal(res.session.options.maxAge, undefined);
   const claims = jwt.verify(res.session.value, secret, { algorithms: ['HS256'] });
   assert.equal(validSessionClaims(claims), true); assert.equal(claims.userId, 101);
+  assert.equal(claims.exp-claims.iat,3600);
   assert.equal(res.body.user.role, 'PARENT');
+});
+
+test('remembered login aligns seven-day cookie lifetime with signed token expiry',async()=>{
+ const {res}=await login('valid',{userName:'synthetic',password:'Synthetic123!',rememberMe:true});
+ assert.equal(res.code,200);assert.equal(res.session.options.httpOnly,true);assert.equal(res.session.options.secure,true);assert.equal(res.session.options.sameSite,'none');assert.equal(res.session.options.maxAge,604800000);
+ const claims=jwt.verify(res.session.value,secret,{algorithms:['HS256']});assert.equal(claims.exp-claims.iat,604800);
+ assert.equal(jwt.verify(res.session.value,secret,{clockTimestamp:claims.iat+172800}).userId,101);
+ assert.throws(()=>jwt.verify(res.session.value,secret,{clockTimestamp:claims.exp}),{name:'TokenExpiredError'});
+});
+test('unchecked login replaces persistence with a session cookie and one-hour token',async()=>{
+ const {res}=await login('valid',{userName:'synthetic',password:'Synthetic123!',rememberMe:false});assert.equal(res.code,200);assert.equal(res.session.options.maxAge,undefined);assert.equal(res.session.options.expires,undefined);
+ const claims=jwt.decode(res.session.value);assert.equal(claims.exp-claims.iat,3600);
+});
+for(const rememberMe of ['true','false',1,null,{},[]])test('malformed remember choice never grants a persistent session: '+JSON.stringify(rememberMe),async()=>{
+ const {res,writes}=await login('valid',{userName:'synthetic',password:'Synthetic123!',rememberMe});assert.equal(res.code,400);assert.equal(res.session,undefined);assert.equal(writes.length,0);
 });

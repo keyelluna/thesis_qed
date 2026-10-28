@@ -217,12 +217,18 @@ function createPool() {
 
     waitForConnections: true,
     connectionLimit: POOL_CONNECTION_LIMIT,
+    maxIdle: 1,
+    idleTimeout: 10000,
     queueLimit: 0,
 
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
     connectTimeout: 10000,
   });
+
+  if (process.env.VERCEL === '1') {
+    require('@vercel/functions').attachDatabasePool(rawPool);
+  }
 
   rawPool.on("connection", (conn) => {
     console.log("MySQL pool: new connection opened.");

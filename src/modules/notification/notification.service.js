@@ -45,10 +45,14 @@ const sendNotification = async ({
     createdAt: new Date().toISOString(),
   };
 
-  try {
-    getIO().to(`user:${userId}`).emit('notification:new', notification);
-  } catch (err) {
-    console.error('Socket emit failed:', err.message);
+  // Vercel clients refresh persisted notifications; process-local socket rooms
+  // cannot reliably broadcast across independently scaled function instances.
+  if (process.env.VERCEL !== '1') {
+    try {
+      getIO().to(`user:${userId}`).emit('notification:new', notification);
+    } catch (err) {
+      console.error('Socket emit failed:', err.message);
+    }
   }
 
   return notification;

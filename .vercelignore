@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+node_modules
+.git
+test
+docs
+*.log
+*.txt
+deployment-*.json
+deployment-readonly-check.cjs

@@ -10,7 +10,7 @@ function configurationError() {
 }
 
 function databaseTlsOptions(env = process.env, readFile = fs.readFileSync) {
-  const required = env.NODE_ENV === 'production' || env.RENDER === 'true';
+  const required = env.NODE_ENV === 'production' || env.RENDER === 'true' || env.VERCEL === '1';
   const mode = env.DB_TLS_MODE || (required || env.DB_TLS_CA_FILE ? 'verify-full' : 'disabled');
   if (!['verify-full', 'disabled'].includes(mode) || (required && mode !== 'verify-full')) throw configurationError();
   if (mode === 'disabled') return undefined;

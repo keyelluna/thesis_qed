@@ -1,4 +1,16 @@
 const { diagnostic } = require('./requestDiagnostics');
+const net = require('node:net');
+
+// The database is reachable over IPv4; Render's IPv6 route is unavailable.
+// Avoid Node's short dual-stack attempt timeout. mysql2 still owns its 10s
+// connection deadline and upgrades this socket using the original TLS hostname.
+function ipv4DatabaseStream({ config }, connect = net.createConnection) {
+  const socket = connect({ host: config.host, port: config.port, family: 4, autoSelectFamily: false });
+  socket.setNoDelay(true);
+  if (config.enableKeepAlive) socket.once('connect', () => socket.setKeepAlive(true, config.keepAliveInitialDelay));
+  return socket;
+}
+
 // Only acquisition is bounded here. Never race a running transaction or replay a write.
 function boundPoolAcquisition(pool, { timeoutMs = 10000, setTimer = setTimeout, clearTimer = clearTimeout, report = diagnostic } = {}) {
   const acquire = pool.getConnection.bind(pool);
@@ -51,4 +63,4 @@ function databaseHealth(pool, { timeoutMs = 5000, setTimer = setTimeout, clearTi
     }
   };
 }
-module.exports = { boundPoolAcquisition, databaseHealth };
+module.exports = { boundPoolAcquisition, databaseHealth, ipv4DatabaseStream };

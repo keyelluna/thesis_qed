@@ -43,7 +43,7 @@ function actualPool(env, failure) {
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../config/db.js'),'utf8'),context);
   return {options,db:context.module.exports,logs,calls:()=>calls};
 }
-test('actual pool initialization uses verified TLS in production', () => {const f=actualPool(production);assert.equal(f.options.ssl.rejectUnauthorized,true);assert.equal(f.options.ssl.verifyIdentity,true);assert.equal(f.options.connectTimeout,10000);});
+test('actual pool initialization uses verified TLS in production', () => {const f=actualPool(production);assert.equal(f.options.ssl.rejectUnauthorized,true);assert.equal(f.options.ssl.verifyIdentity,true);assert.equal(f.options.connectTimeout,10000);assert.equal(typeof f.options.stream,'function');assert.equal(f.options.host,production.DB_HOST);});
 test('actual pool initialization leaves local development compatible', () => assert.equal(actualPool({NODE_ENV:'development'}).options.ssl,undefined));
 test('actual pool rejects production plaintext before connection creation', () => assert.throws(()=>actualPool({...production,DB_TLS_MODE:'disabled'}),{code:'DB_TLS_CONFIG'}));
 test('actual pool sanitizes TLS acquisition errors and never retries the SELECT', async () => {const f=actualPool(production,Object.assign(Error('private certificate and credentials'),{code:'HANDSHAKE_SSL_ERROR'}));await assert.rejects(f.db.query('SELECT 1'),e=>e.code==='HANDSHAKE_SSL_ERROR'&&!e.message.includes('private'));assert.equal(f.calls(),1);assert.ok(f.logs.some(s=>s.includes('db_tls_failed')));assert.ok(f.logs.every(s=>!s.includes('credentials')));});

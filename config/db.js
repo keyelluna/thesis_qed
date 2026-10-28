@@ -166,7 +166,7 @@ require("dotenv").config({
 });
 
 const mysql = require("mysql2");
-const { boundPoolAcquisition } = require("../src/operations/databaseReliability");
+const { boundPoolAcquisition, ipv4DatabaseStream } = require("../src/operations/databaseReliability");
 const { diagnostic } = require("../src/operations/requestDiagnostics");
 const { databaseTlsOptions, sanitizedDatabaseTlsError } = require("../src/operations/databaseTls");
 
@@ -209,6 +209,7 @@ function createPool() {
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
     ssl,
+    stream: ipv4DatabaseStream,
 
     timezone: "+08:00",
     dateStrings: true,

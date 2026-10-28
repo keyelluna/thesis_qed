@@ -11,6 +11,12 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const { requestDiagnostics, operationalError, notFound } = require('./src/operations/requestDiagnostics');
 const { databaseHealth } = require('./src/operations/databaseReliability');
+if (process.env.RENDER === 'true') {
+  void require('./src/operations/databaseNetworkProbe').probeDatabaseNetwork({
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT || 3306),
+  });
+}
 
 const apiRoutes = require('./src/routes/index.js');
 const { initSocket } = require('./socket.js');

@@ -229,3 +229,10 @@ test('score commit response is delivered without waiting for optional notificati
  try{await acknowledged;assert.equal(res.code,200);assert.equal(res.body.success,true);assert.equal(f.stats().active,false);assert.ok(f.events.includes('commit'));}
  finally{release();await saving;}
 });
+
+test('batch scores commit together using one checkout and rollback the whole batch on conflict',async t=>{
+ const f=fixture(t),res=f.response();await f.controller.upsertScores({...f.request(),body:{edits:[{studentId:201,itemId:11,value:5,expectedValue:10},{studentId:202,itemId:11,value:6,expectedValue:10}]}},res);
+ assert.equal(res.code,200);assert.equal(f.stats().acquisitions,1);assert.equal(f.events.filter(e=>e==='commit').length,1);
+ const before=f.state(),conflict=f.response();await f.controller.upsertScores({...f.request(),body:{edits:[{studentId:201,itemId:11,value:7,expectedValue:5},{studentId:202,itemId:11,value:8,expectedValue:999}]}},conflict);
+ assert.equal(conflict.code,409);assert.deepEqual(f.state(),before);
+});

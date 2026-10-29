@@ -529,7 +529,7 @@ const getScores = async (req, res) => {
   }
 };
 
-const upsertScore = async (req, res) => {
+const upsertScore = async (req, res, batch = {}) => {
   let db, inTransaction = false, commitAttempted = false, discard = false;
   let status = 200, body = { success: true }, notification;
   try {
@@ -544,8 +544,8 @@ const upsertScore = async (req, res) => {
     if (!studentId || !itemId) reject(400, 'studentId and itemId are required.');
     if ((value !== null && (!Number.isFinite(value) || value < 0)) || (conditional && expected !== null && (!Number.isFinite(expected) || expected < 0))) reject(400, 'Score must be a finite, non-negative number or blank.');
 
-    db = await connection.getConnection();
-    try { await db.beginTransaction(); inTransaction = true; }
+    db = batch.db || await connection.getConnection();
+    try { if (!batch.db) await db.beginTransaction(); inTransaction = true; }
     catch (error) { discard = true; throw error; }
     // Match deletion's lock order. Lock the student before snapshot reads so
     // score edits in different subjects also serialize advisory recalculation.
@@ -578,9 +578,10 @@ const upsertScore = async (req, res) => {
       [itemId, studentId, value]
     );
 
-    await recalcStudentSubject(studentId, subjectSectionId, item.gradingPeriodId, db);
+    if(batch.db)batch.recalculate.set(studentId+':'+item.gradingPeriodId,[studentId,subjectSectionId,item.gradingPeriodId]);
+    else await recalcStudentSubject(studentId, subjectSectionId, item.gradingPeriodId, db);
     commitAttempted = true;
-    await db.commit(); inTransaction = false;
+    if (!batch.db) await db.commit(); inTransaction = false;
     if (!scores.length || previous !== value) notification = { studentId, itemId, value, topicId: item.topicId };
   } catch (error) {
     console.error("Error saving score:", error);
@@ -588,18 +589,18 @@ const upsertScore = async (req, res) => {
       discard = true; status = 503;
       body = { success: false, outcome: 'uncertain', message: 'Score saving could not be confirmed. Reload this class to check the stored score before saving again.' };
     } else {
-      if (inTransaction) { try { await db.rollback(); } catch (rollbackError) { discard = true; console.error('Score rollback failed:', rollbackError); } }
+      if (inTransaction && !batch.db) { try { await db.rollback(); } catch (rollbackError) { discard = true; console.error('Score rollback failed:', rollbackError); } }
       status = [400, 403, 409].includes(error.statusCode) ? error.statusCode : 500;
       body = { success: false, message: status === 500 ? 'Internal server error.' : error.message, outcome: error.outcome || 'not_saved' };
     }
   } finally {
-    if (db) { try { if (discard) db.destroy(); else db.release(); } catch (cleanupError) { console.error('Score connection cleanup failed:', cleanupError); if (!discard) { try { db.destroy(); } catch (destroyError) { console.error('Score connection destruction failed:', destroyError); } } } }
+    if (db && !batch.db) { try { if (discard) db.destroy(); else db.release(); } catch (cleanupError) { console.error('Score connection cleanup failed:', cleanupError); if (!discard) { try { db.destroy(); } catch (destroyError) { console.error('Score connection destruction failed:', destroyError); } } } }
   }
   // Acknowledge the committed grade before optional notification reads/delivery.
   const response = res.status(status).json(body);
   // Notifications are secondary and use only committed, current score state.
   // No delivery runs for rollback/unknown commit; durable delivery is separate.
-  if (notification) {
+  if (notification && !batch.db) {
     const delivery = (async () => {
     const { studentId, itemId, value, topicId } = notification;
     try {
@@ -615,6 +616,40 @@ const upsertScore = async (req, res) => {
     await delivery;
   }
   return response;
+};
+
+
+const upsertScores = async (req,res) => {
+ const edits=req.body?.edits;
+ if(!Array.isArray(edits)||!edits.length||edits.length>1000||edits.some(e=>!e||!e.studentId||!e.itemId||!Object.hasOwn(e,'expectedValue'))||new Set(edits.map(e=>e.studentId+':'+e.itemId)).size!==edits.length)return res.status(400).json({success:false,outcome:'not_saved',message:'Choose unique valid score edits.'});
+ let db,commitAttempted=false,discard=false;
+ try {
+  db=await connection.getConnection();try{await db.beginTransaction();}catch(error){discard=true;throw error;}
+  const metadata=new Map(),transaction=Object.assign(Object.create(db),{execute(sql,args=[]){
+   const reusable=/^\s*SELECT\b/i.test(sql)&&!/grade_scores|subject_grade_cache|advisory_overall_grades/i.test(sql);
+   if(!reusable)return db.execute(sql,args);
+   const key=JSON.stringify([sql,args]);if(!metadata.has(key))metadata.set(key,db.execute(sql,args));return metadata.get(key);
+  }}),context={db:transaction,recalculate:new Map()};
+  for(const edit of [...edits].sort((a,b)=>Number(a.studentId)-Number(b.studentId)||Number(a.itemId)-Number(b.itemId))){
+   const reply={code:200,status(code){this.code=code;return this;},json(body){this.body=body;return this;}};
+   await upsertScore({...req,body:edit},reply,context);
+   if(reply.code!==200)throw Object.assign(new Error(reply.body.message),{status:reply.code,outcome:reply.body.outcome});
+  }
+  for(const args of context.recalculate.values())await recalcStudentSubject(...args,transaction);
+  commitAttempted=true;await db.commit();
+  db.release();db=null;
+  const response=res.json({success:true,count:edits.length});
+  const delivery=(async()=>{try{
+   for(const edit of edits)if(edit.value!==null){await connection.execute("DELETE FROM notifications WHERE student_id = ? AND grade_item_id = ? AND title = 'Missed Activity' AND EXISTS (SELECT 1 FROM grade_scores WHERE item_id = ? AND student_id = ? AND score IS NOT NULL)",[edit.studentId,edit.itemId,edit.itemId,edit.studentId]);await notifyLowGradeScore({studentId:edit.studentId,itemId:edit.itemId});}
+   for(const itemId of new Set(edits.map(edit=>edit.itemId)))await notifyMissingForItem(itemId);
+  }catch(error){console.error('Post-commit batch notification failed:',error.code||error.name);}})();
+  if(globalThis.process?.env?.VERCEL==='1')require('@vercel/functions').waitUntil(delivery);await delivery;
+  return response;
+ }catch(error){
+  discard=discard||commitAttempted;
+  if(db&&!commitAttempted)try{await db.rollback();}catch{discard=true;}
+  return res.status(commitAttempted?503:error.status||500).json({success:false,outcome:commitAttempted?'uncertain':error.outcome||'not_saved',message:commitAttempted?'Score saving could not be confirmed. Reload this class before saving again.':error.status?error.message:'Scores were not saved. Please retry.'});
+ }finally{if(db){if(discard)db.destroy();else db.release();}}
 };
 
 const notifyMissing = async (req, res) => {
@@ -852,6 +887,7 @@ module.exports = {
   deleteItem,
   getScores,
   upsertScore,
+  upsertScores,
   notifyMissing,
   getHolistic,
   upsertHolistic,

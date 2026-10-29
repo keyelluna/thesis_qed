@@ -108,6 +108,8 @@ exports.provisionAccount = async (req, res) => {
       finally { if (releaseFailed || (transaction && !committed)) conn.destroy(); else conn.release(); }
     }
   }
+
+  console.log(`[Account Created] Username: ${account.userName} | Password: ${password}`);
   // Email is external to the transaction: a delivery failure must not undo a valid account.
   let delivery;
   try { delivery = await sendCredentialsEmail({ to: account.email, firstName: account.firstName, userName: account.userName, password, role: account.role }); }

@@ -1,21 +1,13 @@
 const connection = require("../../../../config/db");
 const { notifyAbsence, notifyAttendanceComplete } = require("../../notification/notification.service");
 
-async function getActiveGradingPeriodId() {
-  const [rows] = await connection.execute(
+async function getActiveGradingPeriodId(db = connection) {
+  const [rows] = await db.execute(
     `SELECT gp.id
      FROM grading_periods gp
      INNER JOIN school_year sy ON gp.school_year_id = sy.id
      WHERE sy.is_active = 1 AND gp.is_active = 1
      LIMIT 1`,
-  );
-  return rows.length > 0 ? rows[0].id : null;
-}
-
-// Kinukuha ang ID ng active na school year.
-async function getActiveSchoolYearId() {
-  const [rows] = await connection.execute(
-    `SELECT id FROM school_year WHERE is_active = 1 LIMIT 1`,
   );
   return rows.length > 0 ? rows[0].id : null;
 }
@@ -32,32 +24,20 @@ async function loadAdvisoryClasses(req, res, next) {
       });
     }
 
-    const [teacherRows] = await connection.execute(
-      `SELECT id FROM teacher_table WHERE user_id = ?`,
-      [authId],
-    );
-    if (teacherRows.length === 0) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Teacher record not found." });
-    }
-    const teacherId = teacherRows[0].id;
-
-    const activeSchoolYearId = await getActiveSchoolYearId();
-    if (!activeSchoolYearId) {
-      return res.status(200).json({ success: true, data: [] });
-    }
-
+    // Resolve teacher, active year and owned classes in one database round trip.
     const [classRows] = await connection.execute(
       `SELECT c.id AS classId, c.section_id, gls.section_name AS sectionName,
-              gl.grade_level AS gradeLevel, c.school_year_id AS schoolYearId, sy.school_year AS schoolYearLabel
+              gl.grade_level AS gradeLevel, c.school_year_id AS schoolYearId,
+              sy.school_year AS schoolYearLabel, t.id AS teacherId
        FROM classes c
-       INNER JOIN school_year sy ON sy.id = c.school_year_id
+       INNER JOIN teacher_table t ON t.id = c.class_adviser_id
+       INNER JOIN school_year sy ON sy.id = c.school_year_id AND sy.is_active = 1
        LEFT JOIN grade_level_sections gls ON c.section_id = gls.id
        INNER JOIN grade_level gl ON c.grade_level_id = gl.id
-       WHERE c.class_adviser_id = ? AND c.school_year_id = ? AND c.status = 'Active'`,
-      [teacherId, activeSchoolYearId],
+       WHERE t.user_id = ? AND c.status = 'Active'`,
+      [authId],
     );
+    const teacherId = classRows[0]?.teacherId;
 
     req.teacherId = teacherId;
     req.advisoryClasses = classRows; // full list, possibly empty
@@ -99,7 +79,7 @@ const getAdvisorySectionsList = async (req, res) => {
       });
     }
 
-    const activeSchoolYearId = await getActiveSchoolYearId();
+    const activeSchoolYearId = classes[0].schoolYearId;
 
     const [terms] = await connection.execute(
       `SELECT gp.id,
@@ -175,7 +155,7 @@ const getAdvisoryAttendance = async (req, res) => {
     const { classId } = req.advisorySection;
     const { term, allPeriods } = req.query;
 
-    const activeSchoolYearId = await getActiveSchoolYearId();
+    const activeSchoolYearId = req.advisorySection.schoolYearId;
 
     // Hindi isasama ang graduated at ang mga estudyanteng wala sa current school year.
     let sql = `
@@ -250,7 +230,9 @@ const upsertAdvisoryAttendance = async (req, res) => {
       return res.status(400).json({ success: false, message: "status must be P, A, L, E, or null." });
     }
 
-    const activeSchoolYearId = await getActiveSchoolYearId();
+    // Reuse the active year resolved by ownership middleware.
+    // Never borrow another pool connection while holding a transaction.
+    const activeSchoolYearId = req.advisorySection.schoolYearId;
     if (!activeSchoolYearId) {
       return res.status(400).json({ success: false, message: "No active school year is available." });
     }
@@ -271,7 +253,7 @@ const upsertAdvisoryAttendance = async (req, res) => {
       return res.status(400).json({ success: false, message: "Attendance cannot be recorded for a future date." });
     }
 
-    const activePeriodId = await getActiveGradingPeriodId();
+    const activePeriodId = await getActiveGradingPeriodId(conn);
     const requestedPeriodId = term || activePeriodId;
 
     const [existingRows] = await conn.execute(
@@ -319,20 +301,7 @@ const upsertAdvisoryAttendance = async (req, res) => {
       return res.status(400).json({ success: false, message: "New attendance can only be marked for today. Existing past marks may be edited." });
     }
 
-    const [studentRows] = await conn.execute(
-      `SELECT s.id
-       FROM elem_students s
-       INNER JOIN classes c ON c.id = ? AND c.grade_level_id = s.grade_level_id
-       WHERE s.id = ? AND s.current_school_year_id = ?
-         AND s.is_deleted = 0 AND s.status <> 'graduated'
-         AND ((c.section_id IS NOT NULL AND s.section_id = c.section_id)
-           OR (c.section_id IS NULL AND s.section_id IS NULL))
-       LIMIT 1`,
-      [classId, studentId, activeSchoolYearId],
-    );
-    if (studentRows.length === 0) {
-      return res.status(404).json({ success: false, message: "Student is not enrolled in this advisory class for the active school year." });
-    }
+    // Membership was already validated and locked above.
 
     if (status === null) {
       await conn.execute(

@@ -25,7 +25,7 @@ function input(body) {
   if (!["Active", "Inactive"].includes(status)) throw failure(400, "Invalid account status.");
   if (role !== "ADMIN" && !["Male", "Female"].includes(body.gender)) throw failure(400, "Select this user's gender.");
   const first = firstName.toLowerCase().replace(/\s+/g, ""), last = lastName.toLowerCase().replace(/\s+/g, "");
-  const prefix = { TEACHER: "TC_", PRINCIPAL: "PRN.", PARENT: "PRT_", ADMIN: "" }[role];
+  const prefix = { TEACHER: "tc_", PRINCIPAL: "prn_", PARENT: "prt_", ADMIN: "" }[role];
   // Keep the existing institutional username convention; conflicts are explicit.
   const userName = `${prefix}${first}.${last}`;
   if (userName.length > 191) throw failure(400, "Account name is too long.");

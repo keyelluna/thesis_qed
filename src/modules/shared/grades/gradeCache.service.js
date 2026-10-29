@@ -382,9 +382,21 @@ async function recalcAllStudentsForSubject(subjectSectionId, gradingPeriodId, db
         [gradeLevelId]
       );
 
+  // All students share the same immutable grading metadata in this transaction.
+  // Reuse those reads only for this recalculation; never cache mutable scores or grades.
+  const metadata = new Map();
+  const calculationDb = db === connection ? db : Object.assign(Object.create(db), {
+    execute(sql, params = []) {
+      const reusable = /^\s*SELECT\b/i.test(sql) && !/grade_scores|subject_grade_cache|advisory_overall_grades|FOR UPDATE/i.test(sql);
+      if (!reusable) return db.execute(sql, params);
+      const key = JSON.stringify([sql, params]);
+      if (!metadata.has(key)) metadata.set(key, db.execute(sql, params));
+      return metadata.get(key);
+    },
+  });
   for (const s of students) {
-    await recalcSubjectAverage(s.id, subjectSectionId, gradingPeriodId, db);
-    await recalcOverallAverage(s.id, gradingPeriodId, db);
+    await recalcSubjectAverage(s.id, subjectSectionId, gradingPeriodId, calculationDb);
+    await recalcOverallAverage(s.id, gradingPeriodId, calculationDb);
   }
 }
 

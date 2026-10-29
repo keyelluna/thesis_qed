@@ -595,9 +595,12 @@ const upsertScore = async (req, res) => {
   } finally {
     if (db) { try { if (discard) db.destroy(); else db.release(); } catch (cleanupError) { console.error('Score connection cleanup failed:', cleanupError); if (!discard) { try { db.destroy(); } catch (destroyError) { console.error('Score connection destruction failed:', destroyError); } } } }
   }
+  // Acknowledge the committed grade before optional notification reads/delivery.
+  const response = res.status(status).json(body);
   // Notifications are secondary and use only committed, current score state.
   // No delivery runs for rollback/unknown commit; durable delivery is separate.
   if (notification) {
+    const delivery = (async () => {
     const { studentId, itemId, value, topicId } = notification;
     try {
       if (value !== null) {
@@ -606,9 +609,12 @@ const upsertScore = async (req, res) => {
         if (topicId) await notifyLowGradeScore({ studentId, itemId });
       }
       await notifyMissingForItem(itemId);
-    } catch (error) { console.error('Post-commit score notification failed:', error); body.notificationDelivery = 'failed'; }
+    } catch (error) { console.error('Post-commit score notification failed:', error); }
+    })();
+    if (globalThis.process?.env?.VERCEL === '1') require('@vercel/functions').waitUntil(delivery);
+    await delivery;
   }
-  return res.status(status).json(body);
+  return response;
 };
 
 const notifyMissing = async (req, res) => {

@@ -130,3 +130,5 @@ router.post(
 );
 
 module.exports = router;
+
+router.put('/:subjectSectionId/scores/batch',verifyToken,controller.loadSubjectSection,controller.upsertScores);

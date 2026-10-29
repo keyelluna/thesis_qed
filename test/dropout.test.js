@@ -1,9 +1,9 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {DatabaseSync}=require('node:sqlite');const express=require('express'),cookieParser=require('cookie-parser'),jwt=require('jsonwebtoken');
-const secret=require('node:crypto').randomBytes(32).toString('hex');let db,server,base,leased=false,notificationLeases=[],notificationWait;
-async function execute(sql,args=[]){sql=sql.replace(/\s+FOR UPDATE/g,'').replaceAll('<=>','IS').replace(/ON DUPLICATE KEY UPDATE status = VALUES\(status\), grading_period_id = VALUES\(grading_period_id\), recorded_by = VALUES\(recorded_by\)/,'ON CONFLICT(class_id,student_id,attendance_date) DO UPDATE SET status=excluded.status,grading_period_id=excluded.grading_period_id,recorded_by=excluded.recorded_by');sql=sql.replace('ON DUPLICATE KEY UPDATE status=VALUES(status),recorded_by=VALUES(recorded_by)','ON CONFLICT(class_id,student_id,attendance_date) DO UPDATE SET status=excluded.status,recorded_by=excluded.recorded_by');const stmt=db.prepare(sql);if(/^\s*SELECT/i.test(sql))return [stmt.all(...args)];const result=stmt.run(...args);return [{affectedRows:Number(result.changes),insertId:Number(result.lastInsertRowid)}];}
+const secret=require('node:crypto').randomBytes(32).toString('hex');let db,server,base,leased=false,notificationLeases=[],notificationWait, rejectNestedPool=false, statements=[];
+async function execute(sql,args=[]){statements.push(sql);sql=sql.replace(/\s+FOR UPDATE/g,'').replaceAll('<=>','IS').replace(/ON DUPLICATE KEY UPDATE status = VALUES\(status\), grading_period_id = VALUES\(grading_period_id\), recorded_by = VALUES\(recorded_by\)/,'ON CONFLICT(class_id,student_id,attendance_date) DO UPDATE SET status=excluded.status,grading_period_id=excluded.grading_period_id,recorded_by=excluded.recorded_by');sql=sql.replace('ON DUPLICATE KEY UPDATE status=VALUES(status),recorded_by=VALUES(recorded_by)','ON CONFLICT(class_id,student_id,attendance_date) DO UPDATE SET status=excluded.status,recorded_by=excluded.recorded_by');const stmt=db.prepare(sql);if(/^\s*SELECT/i.test(sql))return [stmt.all(...args)];const result=stmt.run(...args);return [{affectedRows:Number(result.changes),insertId:Number(result.lastInsertRowid)}];}
 const conn={execute,query:execute,beginTransaction:async()=>db.exec('BEGIN'),commit:async()=>db.exec('COMMIT'),rollback:async()=>{if(db.isTransaction)db.exec('ROLLBACK');},release(){leased=false;}};
-const id=require.resolve('../config/db');require.cache[id]={id,filename:id,loaded:true,exports:{execute,query:execute,getConnection:async()=>{leased=true;return conn;}}};
+const id=require.resolve('../config/db');require.cache[id]={id,filename:id,loaded:true,exports:{execute:async(...args)=>{if(rejectNestedPool&&leased)throw new Error('Nested pool acquisition');return execute(...args);},query:execute,getConnection:async()=>{leased=true;return conn;}}};
 const notification=require.resolve('../src/modules/notification/notification.service');require.cache[notification]={id:notification,filename:notification,loaded:true,exports:{notifyAbsence:async()=>{},notifyAttendanceComplete:async()=>{notificationLeases.push(leased);if(notificationWait)await notificationWait;}}};
 const router=require('../src/modules/teacher/attendance/advisoryAttendance.router');
 const {consecutiveAbsences}=require('../src/modules/teacher/attendance/dropout.service');
@@ -94,4 +94,22 @@ test('transfer metadata is scoped to advisory; attendance starts on joining date
  assert.equal((await request('/1',{studentId:1,date:'2026-10-14',status:'P',term:1})).status,200);
  assert.equal((await request('/1/students/1/dropout',{...declaration,effectiveDate:'2026-10-13'})).status,400);
  const attendance=await request('/1');assert.equal(attendance.body.data['1']['2026-10-05'],undefined);assert.equal(attendance.body.data['1']['2026-10-14'],'P');
+});
+
+test('individual saves use one connection throughout their transaction',async()=>{
+ rejectNestedPool=true;
+ try {for(const status of ['P','A','L','E',null]) {
+ const result=await request('/1',{studentId:1,date:'2026-10-27',status,term:1});
+ assert.equal(result.status,200,JSON.stringify(result.body));assert.equal(leased,false);
+ }}finally{rejectNestedPool=false;}
+});
+
+test('attendance reads reuse ownership metadata instead of repeating year and teacher lookups',async()=>{
+ statements=[];
+ const result=await request('/1?term=1');
+ assert.equal(result.status,200);
+ assert.equal(statements.length,2,'One ownership query and one attendance query');
+ statements=[];
+ assert.equal((await request('/1?allPeriods=true')).status,200);
+ assert.equal(statements.length,2);
 });

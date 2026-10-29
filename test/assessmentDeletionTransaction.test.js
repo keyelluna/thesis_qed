@@ -182,3 +182,10 @@ test('atomic deletion: response delivery failure cannot roll back or replay comm
   await assert.rejects(f.controller.deleteItem(f.request(), res), /client disconnected/); deleted(f, before);
   assert.deepEqual(f.events, ['acquire', 'begin', 'commit', 'release']);
 });
+
+test('atomic deletion: shared metadata is read once while mutable grade reads remain student-specific',async t=>{
+ const f=fixture(t);assert.equal((await f.remove()).code,200);
+ const metadata=f.calls.filter(call=>/SELECT es.id AS subjectId/.test(call.sql));
+ assert.equal(metadata.length,1);
+ assert.ok(f.calls.filter(call=>/FROM subject_grade_cache/.test(call.sql)).length>1);
+});

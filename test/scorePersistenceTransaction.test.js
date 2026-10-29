@@ -110,7 +110,7 @@ function fixture(t, options = {}) {
       if (id.endsWith('socket.js')) return {getIO:()=>({to:()=>({emit:(...args)=>sockets.push(args)})})};
       if (/notification\.service/.test(id) && !options.actualNotifications) return new Proxy({}, {get:(_target,name)=>async()=>{
         assert.equal(active,false,'notifications must follow confirmed commit and cleanup');assert.ok(events.includes('commit'));notifications.push(String(name));
-        if(options.notificationFails)throw Error('notification rejected');return 0;
+        if(options.notificationGate)await options.notificationGate;if(options.notificationFails)throw Error('notification rejected');return 0;
       }});
       if (/gradeSubmissionHistory\.service|templateStorage\.service|mailer\.service/.test(id)) return new Proxy({}, { get: () => () => { throw Error(`External side effect forbidden: ${id}`); } });
       const resolved = nativeRequire.resolve(id);
@@ -118,7 +118,7 @@ function fixture(t, options = {}) {
       if (id === 'mysql2' || id === 'dotenv') throw Error(`External database configuration forbidden: ${id}`);
       return nativeRequire(id);
     }
-    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { require: isolatedRequire, module, exports: module.exports, console: { error: (...args) => errors.push(args) }, Date, Set, Map, Buffer }, { filename });
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { require: isolatedRequire, module, exports: module.exports, console: { error: (...args) => errors.push(args) }, Date, Set, Map, Buffer, process }, { filename });
     return module.exports;
   }
   const controller = load(path.resolve(__dirname, '../src/modules/teacher/gradebook/subjectGrading.controller.js'));
@@ -196,7 +196,7 @@ for(const options of [{missingPeriod:true},{missingSubject:true},{engine:'MyISAM
  const f=fixture(t,options),before=f.state();assert.equal((await f.save()).code,500);unchanged(f,before);assert.deepEqual(f.notifications,[]);
 });
 for(const options of [{notificationFails:true},{fail:'notification-cleanup'}])test(`score committed success survives notification failure ${JSON.stringify(options)}`,async t=>{
- const f=fixture(t,options),before=f.state(),res=await f.save();assert.equal(res.code,200);assert.equal(res.body.success,true);assert.equal(res.body.notificationDelivery,'failed');saved(f,before,5,80);
+ const f=fixture(t,options),before=f.state(),res=await f.save();assert.equal(res.code,200);assert.equal(res.body.success,true);assert.equal(res.body.notificationDelivery,undefined);assert.ok(f.errors.length);saved(f,before,5,80);
  assert.deepEqual(f.events,['acquire','begin','commit','release']);
 });
 test('score actual notification service preserves parent ownership and deduplicates low-score alerts',async t=>{
@@ -221,3 +221,18 @@ test('score release failure destroys connection without falsifying committed suc
  const f=fixture(t,{releaseFails:true}),before=f.state();assert.equal((await f.save()).code,200);saved(f,before,5,80);assert.deepEqual(f.events,['acquire','begin','commit','release','destroy']);
 });
 
+
+test('score commit response is delivered without waiting for optional notifications',async t=>{
+ let release;const gate=new Promise(r=>{release=r;});const f=fixture(t,{notificationGate:gate}),res=f.response();
+ let acknowledge;const acknowledged=new Promise(r=>{acknowledge=r;});const json=res.json.bind(res);res.json=body=>{json(body);acknowledge();return res;};
+ const saving=f.controller.upsertScore(f.request(),res);
+ try{await acknowledged;assert.equal(res.code,200);assert.equal(res.body.success,true);assert.equal(f.stats().active,false);assert.ok(f.events.includes('commit'));}
+ finally{release();await saving;}
+});
+
+test('batch scores commit together using one checkout and rollback the whole batch on conflict',async t=>{
+ const f=fixture(t),res=f.response();await f.controller.upsertScores({...f.request(),body:{edits:[{studentId:201,itemId:11,value:5,expectedValue:10},{studentId:202,itemId:11,value:6,expectedValue:10}]}},res);
+ assert.equal(res.code,200);assert.equal(f.stats().acquisitions,1);assert.equal(f.events.filter(e=>e==='commit').length,1);
+ const before=f.state(),conflict=f.response();await f.controller.upsertScores({...f.request(),body:{edits:[{studentId:201,itemId:11,value:7,expectedValue:5},{studentId:202,itemId:11,value:8,expectedValue:999}]}},conflict);
+ assert.equal(conflict.code,409);assert.deepEqual(f.state(),before);
+});

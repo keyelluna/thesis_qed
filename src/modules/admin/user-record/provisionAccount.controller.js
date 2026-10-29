@@ -109,11 +109,10 @@ exports.provisionAccount = async (req, res) => {
     }
   }
 
-  console.log(`[Account Created] Username: ${account.userName} | Password: ${password}`);
   // Email is external to the transaction: a delivery failure must not undo a valid account.
   let delivery;
   try { delivery = await sendCredentialsEmail({ to: account.email, firstName: account.firstName, userName: account.userName, password, role: account.role }); }
   catch { delivery = { sent: false }; }
   const credentialDelivery = delivery?.sent ? (delivery.redirected ? "test-recipient" : "accepted") : "failed";
-  return res.status(201).json({ success: true, message: `User successfully added to ${tables[account.role]}!`, data: profile, credentialDelivery });
+  return res.status(201).json({ success: true, message: `User successfully added to ${tables[account.role]}!`, data: profile, credentialDelivery, ...(process.env.NODE_ENV !== "production" && { credentials: { userName: account.userName, password } }), });
 };

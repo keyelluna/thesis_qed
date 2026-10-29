@@ -5,5 +5,8 @@
       "maxDuration": 60,
       "includeFiles": "{scripts/**,src/assets/**,src/modules/teacher/attendance/templates/**}"
     }
-  }
+  },
+  "regions": [
+    "sin1"
+  ]
 }

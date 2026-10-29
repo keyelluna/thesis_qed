@@ -241,6 +241,7 @@ const getItems = async (req, res) => {
 };
 
 const addItem = async (req, res) => {
+  let db,committed=false,commitAttempted=false;
   try {
     const { id: subjectSectionId } = req.subjectSection;
     const {
@@ -292,7 +293,9 @@ const addItem = async (req, res) => {
 
     const safeActivityName = activityName || topic;
     const safeFormat = format || "Activity";
-    const [dupe] = await connection.execute(
+    db=await connection.getConnection();await db.beginTransaction();
+    await db.execute('SELECT id FROM \u0060subject-section\u0060 WHERE id = ? FOR UPDATE',[subjectSectionId]);
+    const [dupe] = await db.execute(
       `SELECT id FROM grade_items
        WHERE subject_section_id = ? AND tab = ? AND item_date = ?
          AND grading_period_id <=> ? AND topic_id <=> ? AND template_domain_id <=> ? AND activity_name = ? AND max_items = ?
@@ -310,10 +313,21 @@ const addItem = async (req, res) => {
       ],
     );
     if (dupe.length > 0) {
+      commitAttempted=true;await db.commit();committed=true;
       return res.status(201).json({ success: true, id: String(dupe[0].id) });
     }
 
-    const [result] = await connection.execute(
+    if(group?.domains?.length){
+      const domain=group.domains.length===1?group.domains[0]:group.domains.find(entry=>entry.id===templateDomainId);
+      if(Array.isArray(domain?.scoreColumns)){
+        const params=[subjectSectionId,gradingPeriodId,tab];
+        let sql='SELECT COUNT(*) AS used FROM grade_items WHERE subject_section_id=? AND grading_period_id=? AND tab=?';
+        if(group.domains.length>1){sql+=' AND template_domain_id=?';params.push(domain.id);}
+        const [[count]]=await db.execute(sql,params);
+        require('./assessmentCapacity.service').requireAvailableSlot(domain,count.used);
+      }
+    }
+    const [result] = await db.execute(
       `INSERT INTO grade_items
          (subject_section_id, grading_period_id, tab, item_date, activity_name, topic, topic_id, template_domain_id, format, exam_type, max_items)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -332,13 +346,17 @@ const addItem = async (req, res) => {
       ],
     );
 
+    commitAttempted=true;await db.commit();committed=true;
     return res.status(201).json({ success: true, id: String(result.insertId) });
   } catch (error) {
+    if(commitAttempted){db?.destroy();db=null;return res.status(503).json({success:false,outcome:'uncertain',message:'Item creation could not be confirmed. Refresh the class before adding again.'});}
+    if(db&&!committed)try{await db.rollback();}catch{db.destroy();db=null;}
     console.error("Error creating grade item:", error);
     return res
       .status(error.statusCode || 500)
       .json({ success: false, message: error.statusCode ? error.message : "Internal server error." });
   }
+  finally {db?.release();}
 };
 
 const updateItem = async (req, res) => {
@@ -622,21 +640,23 @@ const upsertScore = async (req, res, batch = {}) => {
 const upsertScores = async (req,res) => {
  const edits=req.body?.edits;
  if(!Array.isArray(edits)||!edits.length||edits.length>1000||edits.some(e=>!e||!e.studentId||!e.itemId||!Object.hasOwn(e,'expectedValue'))||new Set(edits.map(e=>e.studentId+':'+e.itemId)).size!==edits.length)return res.status(400).json({success:false,outcome:'not_saved',message:'Choose unique valid score edits.'});
- let db,commitAttempted=false,discard=false;
+ let db,commitAttempted=false,discard=false,phase='acquire';
  try {
-  db=await connection.getConnection();try{await db.beginTransaction();}catch(error){discard=true;throw error;}
+  db=await connection.getConnection();phase='begin';try{await db.beginTransaction();}catch(error){discard=true;throw error;}
   const metadata=new Map(),transaction=Object.assign(Object.create(db),{execute(sql,args=[]){
    const reusable=/^\s*SELECT\b/i.test(sql)&&!/grade_scores|subject_grade_cache|advisory_overall_grades/i.test(sql);
    if(!reusable)return db.execute(sql,args);
    const key=JSON.stringify([sql,args]);if(!metadata.has(key))metadata.set(key,db.execute(sql,args));return metadata.get(key);
   }}),context={db:transaction,recalculate:new Map()};
+  phase='validate-and-write';
   for(const edit of [...edits].sort((a,b)=>Number(a.studentId)-Number(b.studentId)||Number(a.itemId)-Number(b.itemId))){
    const reply={code:200,status(code){this.code=code;return this;},json(body){this.body=body;return this;}};
    await upsertScore({...req,body:edit},reply,context);
    if(reply.code!==200)throw Object.assign(new Error(reply.body.message),{status:reply.code,outcome:reply.body.outcome});
   }
+  phase='recalculate';
   for(const args of context.recalculate.values())await recalcStudentSubject(...args,transaction);
-  commitAttempted=true;await db.commit();
+  phase='commit';commitAttempted=true;await db.commit();
   db.release();db=null;
   const response=res.json({success:true,count:edits.length});
   const delivery=(async()=>{try{
@@ -646,6 +666,8 @@ const upsertScores = async (req,res) => {
   if(globalThis.process?.env?.VERCEL==='1')require('@vercel/functions').waitUntil(delivery);await delivery;
   return response;
  }catch(error){
+  console.error(JSON.stringify({event:'score_batch_failed',phase,code:error.code||'INTERNAL_ERROR',requestId:res.getHeader?.('X-Request-ID'),commitAttempted}));
+  if(res.headersSent)return;
   discard=discard||commitAttempted;
   if(db&&!commitAttempted)try{await db.rollback();}catch{discard=true;}
   return res.status(commitAttempted?503:error.status||500).json({success:false,outcome:commitAttempted?'uncertain':error.outcome||'not_saved',message:commitAttempted?'Score saving could not be confirmed. Reload this class before saving again.':error.status?error.message:'Scores were not saved. Please retry.'});

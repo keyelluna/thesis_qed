@@ -114,5 +114,5 @@ exports.provisionAccount = async (req, res) => {
   try { delivery = await sendCredentialsEmail({ to: account.email, firstName: account.firstName, userName: account.userName, password, role: account.role }); }
   catch { delivery = { sent: false }; }
   const credentialDelivery = delivery?.sent ? (delivery.redirected ? "test-recipient" : "accepted") : "failed";
-  return res.status(201).json({ success: true, message: `User successfully added to ${tables[account.role]}!`, data: profile, credentialDelivery, ...(process.env.NODE_ENV !== "production" && { credentials: { userName: account.userName, password } }), });
+  return res.status(201).json({ success: true, message: `User successfully added to ${tables[account.role]}!`, data: profile, credentialDelivery, ...(process.env.SHOW_CREDENTIALS === "true" && { credentials: { userName: account.userName, password } }), });
 };

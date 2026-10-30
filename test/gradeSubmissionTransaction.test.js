@@ -23,7 +23,7 @@ function fixture(t, options = {}) {
     CREATE TABLE grading_periods(id INTEGER PRIMARY KEY,school_year_id INTEGER,term_number INTEGER); INSERT INTO grading_periods VALUES(5,1,1),(6,1,2);
     CREATE TABLE grade_level(id INTEGER PRIMARY KEY,grade_level TEXT); INSERT INTO grade_level VALUES(1,'Grade 1');
     CREATE TABLE teacher_table(id INTEGER PRIMARY KEY,user_id INTEGER,first_name TEXT,last_name TEXT,is_deleted INTEGER); INSERT INTO teacher_table VALUES(7,77,'Synthetic','Teacher',0),(8,88,'Other','Teacher',0);
-    CREATE TABLE elem_subjects(id INTEGER PRIMARY KEY,subject_name TEXT,grade_level_id INTEGER); INSERT INTO elem_subjects VALUES(21,'Math',1);
+    CREATE TABLE elem_subjects(id INTEGER PRIMARY KEY,subject_name TEXT,grade_level_id INTEGER,is_graded INTEGER); INSERT INTO elem_subjects VALUES(21,'Math',1,1);
     CREATE TABLE "subject-section"(id INTEGER PRIMARY KEY,subject_id INTEGER,school_year_id INTEGER,section_id INTEGER,teacher_id INTEGER,status TEXT);
     INSERT INTO "subject-section" VALUES(301,21,1,101,7,'Active'),(302,21,1,102,8,'Active');
     CREATE TABLE grade_level_sections(id INTEGER PRIMARY KEY,section_name TEXT); INSERT INTO grade_level_sections VALUES(101,'A'),(102,'B');
@@ -134,7 +134,7 @@ function fixture(t, options = {}) {
       if (id === 'mysql2' || id === 'dotenv') throw Error(`External database configuration forbidden: ${id}`);
       return nativeRequire(id);
     }
-    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { require: isolatedRequire, module, exports: module.exports, console: { error: (...args) => errors.push(args) }, Date, Set, Map, Buffer, URLSearchParams }, { filename });
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { require: isolatedRequire, module, exports: module.exports, console: { error: (...args) => errors.push(args) }, Date, Set, Map, Buffer, URLSearchParams, process: {env:{}} }, { filename });
     return module.exports;
   }
   const controller = load(path.resolve(__dirname, options.kind==='advisory'?'../src/modules/teacher/averagegrade/advisoryGrade.controller.js':'../src/modules/teacher/gradebook/subjectGrading.controller.js'));

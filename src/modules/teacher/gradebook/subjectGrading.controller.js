@@ -283,6 +283,12 @@ const addItem = async (req, res) => {
     structure = structure?.termConfigurations?.[String(termNumber)]
       ? { ...structure, ...structure.termConfigurations[String(termNumber)] }
       : structure;
+    const subjectComponents = structure?.components;
+    if (subjectComponents?.length) {
+      const component = subjectComponents.find(c => templateDomainId === c.id || String(templateDomainId || '').startsWith(c.id + '__'));
+      if (!component) return res.status(400).json({success:false,message:'Choose a valid MAPEH component.'});
+      structure = {...structure, ...component};
+    }
     const group = tab === "writtenWorks" ? structure?.ww : tab === "performanceTask" ? structure?.pt : null;
     if (tab === "exams") {
       const examinations = normalizeExaminations(structure, structure?.examWeightPercent);
@@ -293,7 +299,7 @@ const addItem = async (req, res) => {
     if (group?.domains?.length > 1 && !templateDomainId) {
       return res.status(400).json({ success: false, message: "A template domain is required for this assessment item." });
     }
-    if (templateDomainId && !group?.domains?.some((domain) => domain.id === templateDomainId)) {
+    if (templateDomainId && !(tab === "exams" && subjectComponents?.some(c => c.id === templateDomainId)) && !group?.domains?.some((domain) => domain.id === templateDomainId)) {
       return res.status(400).json({ success: false, message: "Choose a valid template domain for this assessment item." });
     }
 
@@ -328,7 +334,7 @@ const addItem = async (req, res) => {
       if(Array.isArray(domain?.scoreColumns)){
         const params=[subjectSectionId,gradingPeriodId,tab];
         let sql='SELECT COUNT(*) AS used FROM grade_items WHERE subject_section_id=? AND grading_period_id=? AND tab=?';
-        if(group.domains.length>1){sql+=' AND template_domain_id=?';params.push(domain.id);}
+        if(group.domains.length>1 || subjectComponents?.length){sql+=' AND template_domain_id=?';params.push(domain.id);}
         const [[count]]=await db.execute(sql,params);
         require('./assessmentCapacity.service').requireAvailableSlot(domain,count.used);
       }

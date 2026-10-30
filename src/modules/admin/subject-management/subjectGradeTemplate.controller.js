@@ -3,7 +3,7 @@ const crypto = require("crypto");
 const templateStorage = require("../../../services/templateStorage.service");
 const connection = require("../../../../config/db");
 const { parseGradeTemplate } = require("./services/gradeTemplateParser.service");
-const { createGradeTemplateWorkbookMap } = require("./services/gradeTemplateWorkbookMap.service");
+const { createGradeTemplateWorkbookMap, termConfigurations } = require("./services/gradeTemplateWorkbookMap.service");
 const { patchOfficialWorkbook } = require("./services/gradeTemplateOoxml.service");
 const gradeCache = require("../../shared/grades/gradeCache.service");
 const { resolveGradeTemplateForPeriod } = require("../../shared/grades/gradeTemplateResolution.service");
@@ -52,11 +52,7 @@ exports.uploadGradeTemplate = async (req, res) => {
   try {
     parsed = parseGradeTemplate(req.file.buffer);
     exportMap = createGradeTemplateWorkbookMap(req.file.buffer);
-    parsed.structure.termConfigurations = Object.fromEntries(exportMap.terms.map((term) => [String(term.termNumber), {
-      ...term.config,
-      transmutationTable: parsed.structure.transmutationTable,
-      descriptorTable: parsed.structure.descriptorTable,
-    }]));
+    parsed.structure.termConfigurations = Object.fromEntries(Object.entries(termConfigurations(exportMap)).map(([n, config]) => [n, {...config, transmutationTable: parsed.structure.transmutationTable, descriptorTable: parsed.structure.descriptorTable}]));
   } catch (err) {
     return res.status(400).json({ success: false, message: err.message });
   }
@@ -329,11 +325,7 @@ exports.getEffectiveWeights = async (req, res) => {
           }
           const parsed = parseGradeTemplate(masterBuffer);
           const exportMap = createGradeTemplateWorkbookMap(masterBuffer);
-          parsed.structure.termConfigurations = Object.fromEntries(exportMap.terms.map((term) => [String(term.termNumber), {
-            ...term.config,
-            transmutationTable: parsed.structure.transmutationTable,
-            descriptorTable: parsed.structure.descriptorTable,
-          }]));
+          parsed.structure.termConfigurations = Object.fromEntries(Object.entries(termConfigurations(exportMap)).map(([n, config]) => [n, {...config, transmutationTable: parsed.structure.transmutationTable, descriptorTable: parsed.structure.descriptorTable}]));
           templateStructure = parsed.structure;
           await connection.query(
             `UPDATE subject_grade_templates
@@ -512,7 +504,8 @@ exports.exportGradeTemplateBySection = async (req, res) => {
         [JSON.stringify(exportMap), template.templateId],
       );
     }
-    const term = exportMap.terms?.find((entry) => Number(entry.termNumber) === Number(scope.termNumber));
+    const selectedTerms = exportMap.terms?.filter((entry) => Number(entry.termNumber) === Number(scope.termNumber));
+    const term = selectedTerms?.[0];
     if (!term) return res.status(422).json({ success: false, message: "The selected term is not mapped in the configured DepEd template. Please contact the administrator." });
 
     const [items] = await connection.execute(
@@ -522,6 +515,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
         ORDER BY item_date ASC, id ASC`,
       [scope.subjectSectionId, gradingPeriodId],
     );
+    if (selectedTerms?.[0]?.componentId && items.some(item => !selectedTerms.some(t => item.templateDomainId === t.componentId || String(item.templateDomainId || '').startsWith(t.componentId + '__')))) return res.status(422).json({success:false,message:'An assessment has no valid MAPEH component. No workbook was exported.'});
     const itemIds = items.map((item) => item.id);
     const scoreRows = itemIds.length
       ? (await connection.execute(
@@ -531,107 +525,111 @@ exports.exportGradeTemplateBySection = async (req, res) => {
       ))[0]
       : [];
     const scoreMap = new Map(scoreRows.map((row) => [`${row.studentId}:${row.itemId}`, row.score === null ? null : Number(row.score)]));
-    const writes = { "INPUT DATA": {}, [term.sheetName]: {} };
-    const boys = roster.filter((student) => String(student.gender).toLowerCase().startsWith("m"));
-    const girls = roster.filter((student) => String(student.gender).toLowerCase().startsWith("f"));
-    const rowsForGender = { M: term.studentRows.filter((row) => row.gender === "M"), F: term.studentRows.filter((row) => row.gender === "F") };
-    if (roster.some((student) => !["m", "f"].includes(String(student.gender || "").trim().toLowerCase()[0]))) {
-      return res.status(422).json({ success: false, message: "A learner's gender could not be matched to the DepEd template rows. No workbook was exported." });
-    }
-    if (roster.some((student) => !String(student.name || "").trim())) {
-      return res.status(422).json({ success: false, message: "A learner name is missing from the class roster. No workbook was exported." });
-    }
-    if (boys.length > rowsForGender.M.length || girls.length > rowsForGender.F.length) {
-      return res.status(422).json({ success: false, message: "This official template does not have enough learner rows for the current class roster." });
-    }
-    const rowByStudent = new Map();
-    for (const gender of ["M", "F"]) {
-      const students = gender === "M" ? boys : girls;
-      const mappedRows = rowsForGender[gender];
-      for (const mapped of mappedRows) writes["INPUT DATA"][mapped.nameInputCell] = null;
-      students.forEach((student, index) => {
-        const mapped = mappedRows[index];
-        writes["INPUT DATA"][mapped.nameInputCell] = String(student.name || "").trim();
-        rowByStudent.set(String(student.id), mapped.row);
-      });
-    }
-    const metadataValues = {
-      "SCHOOL YEAR": scope.schoolYear,
-      "SUBJECT TEACHER": scope.teacherName,
-      SUBJECT: scope.subjectName,
-      "GRADE LEVEL": scope.gradeLevel,
-      SECTION: scope.sectionName || "",
-    };
-    for (const field of exportMap.sheets?.["INPUT DATA"]?.metadataFields || []) {
-      if (Object.hasOwn(metadataValues, field.label)) writes["INPUT DATA"][field.cell] = String(metadataValues[field.label] ?? "");
-    }
-    for (const cell of term.rawInputCells) writes[term.sheetName][cell] = null;
-
-    const byTab = {
-      writtenWorks: items.filter((item) => item.tab === "writtenWorks"),
-      performanceTask: items.filter((item) => item.tab === "performanceTask"),
-      exams: items.filter((item) => item.tab === "exams"),
-    };
-    for (const category of ["writtenWorks", "performanceTask"]) {
-      const mappedDomains = term.groups[category] || [];
-      for (const domain of mappedDomains) {
-        const domainItems = mappedDomains.length > 1
-          ? byTab[category].filter((item) => String(item.templateDomainId || "") === domain.id)
-          : byTab[category];
-        if (mappedDomains.length > 1 && byTab[category].some((item) => !mappedDomains.some((entry) => entry.id === item.templateDomainId))) {
-          return res.status(422).json({ success: false, message: `${category === "writtenWorks" ? "Written Works" : "Performance Tasks"} contains an item whose domain is not in this template.` });
-        }
-        try {
-          assertMappedCapacity(domainItems.length, domain.scoreColumns.length, domain.label || (category === "writtenWorks" ? "Written Works" : "Performance Tasks"));
-        } catch (capacityError) {
-          return res.status(422).json({ success: false, message: capacityError.message });
-        }
-        domainItems.forEach((item, index) => {
-          const column = domain.scoreColumns[index];
-          writes[term.sheetName][`${require("xlsx").utils.encode_col(column - 1)}${term.highestPossibleRow}`] = Number(item.maxItems);
-          for (const student of roster) {
-            const row = rowByStudent.get(String(student.id));
-            if (!row) continue;
-            const score = scoreMap.get(`${student.id}:${item.id}`);
-            writes[term.sheetName][`${require("xlsx").utils.encode_col(column - 1)}${row}`] = score;
-          }
+    const writes = { "INPUT DATA": {} };
+    for (const term of selectedTerms) {
+      writes[term.sheetName] = {};
+      const componentItems = term.componentId ? items.filter(item => item.templateDomainId === term.componentId || String(item.templateDomainId || "").startsWith(term.componentId + "__")) : items;
+      const boys = roster.filter((student) => String(student.gender).toLowerCase().startsWith("m"));
+      const girls = roster.filter((student) => String(student.gender).toLowerCase().startsWith("f"));
+      const rowsForGender = { M: term.studentRows.filter((row) => row.gender === "M"), F: term.studentRows.filter((row) => row.gender === "F") };
+      if (roster.some((student) => !["m", "f"].includes(String(student.gender || "").trim().toLowerCase()[0]))) {
+        return res.status(422).json({ success: false, message: "A learner's gender could not be matched to the DepEd template rows. No workbook was exported." });
+      }
+      if (roster.some((student) => !String(student.name || "").trim())) {
+        return res.status(422).json({ success: false, message: "A learner name is missing from the class roster. No workbook was exported." });
+      }
+      if (boys.length > rowsForGender.M.length || girls.length > rowsForGender.F.length) {
+        return res.status(422).json({ success: false, message: "This official template does not have enough learner rows for the current class roster." });
+      }
+      const rowByStudent = new Map();
+      for (const gender of ["M", "F"]) {
+        const students = gender === "M" ? boys : girls;
+        const mappedRows = rowsForGender[gender];
+        for (const mapped of mappedRows) writes["INPUT DATA"][mapped.nameInputCell] = null;
+        students.forEach((student, index) => {
+          const mapped = mappedRows[index];
+          writes["INPUT DATA"][mapped.nameInputCell] = String(student.name || "").trim();
+          rowByStudent.set(String(student.id), mapped.row);
         });
       }
-    }
-    const examComponents = term.examinations?.components || [];
-    const claimedExamItemIds = new Set();
-    if (byTab.exams.length && !term.examinations?.enabled) {
-      return res.status(422).json({ success: false, message: "QED has Examination scores, but the pinned official template has no Examination section. No workbook was exported." });
-    }
-    for (const component of examComponents) {
-      const typedItems = component.key.toUpperCase() === "ALL"
-        ? byTab.exams
-        : byTab.exams.filter((item) => String(item.examType || "").toUpperCase() === component.key.toUpperCase());
-      typedItems.forEach((item) => claimedExamItemIds.add(item.id));
-      const column = component.scoreColumn;
-      if (!Number.isInteger(Number(column)) || Number(column) < 1) {
-        return res.status(422).json({ success: false, message: `The pinned template is missing the raw input column for ${component.label}.` });
+      const metadataValues = {
+        "SCHOOL YEAR": scope.schoolYear,
+        "SUBJECT TEACHER": scope.teacherName,
+        SUBJECT: scope.subjectName,
+        "GRADE LEVEL": scope.gradeLevel,
+        SECTION: scope.sectionName || "",
+      };
+      for (const field of exportMap.sheets?.["INPUT DATA"]?.metadataFields || []) {
+        if (Object.hasOwn(metadataValues, field.label)) writes["INPUT DATA"][field.cell] = String(metadataValues[field.label] ?? "");
       }
-      if (typedItems.length) {
-        writes[term.sheetName][`${require("xlsx").utils.encode_col(column - 1)}${term.highestPossibleRow}`] = typedItems.reduce((sum, item) => sum + Number(item.maxItems), 0);
-      }
-      for (const student of roster) {
-        const values = typedItems.map((item) => scoreMap.get(`${student.id}:${item.id}`));
-        const row = rowByStudent.get(String(student.id));
-        if (row) {
-          // A component maps to one official raw-score cell. Do not export a
-          // partial sum while any assessment record in that component is blank.
-          const componentComplete = typedItems.length > 0 && values.every((value) => typeof value === "number");
-          writes[term.sheetName][`${require("xlsx").utils.encode_col(column - 1)}${row}`] = componentComplete
-            ? values.reduce((sum, value) => sum + value, 0)
-            : null;
+      for (const cell of term.rawInputCells) writes[term.sheetName][cell] = null;
+
+      const byTab = {
+        writtenWorks: componentItems.filter((item) => item.tab === "writtenWorks"),
+        performanceTask: componentItems.filter((item) => item.tab === "performanceTask"),
+        exams: componentItems.filter((item) => item.tab === "exams"),
+      };
+      for (const category of ["writtenWorks", "performanceTask"]) {
+        const mappedDomains = term.groups[category] || [];
+        for (const domain of mappedDomains) {
+          const domainItems = mappedDomains.length > 1
+            ? byTab[category].filter((item) => String(item.templateDomainId || "") === domain.id)
+            : byTab[category];
+          if (mappedDomains.length > 1 && byTab[category].some((item) => !mappedDomains.some((entry) => entry.id === item.templateDomainId))) {
+            return res.status(422).json({ success: false, message: `${category === "writtenWorks" ? "Written Works" : "Performance Tasks"} contains an item whose domain is not in this template.` });
+          }
+          try {
+            assertMappedCapacity(domainItems.length, domain.scoreColumns.length, domain.label || (category === "writtenWorks" ? "Written Works" : "Performance Tasks"));
+          } catch (capacityError) {
+            return res.status(422).json({ success: false, message: capacityError.message });
+          }
+          domainItems.forEach((item, index) => {
+            const column = domain.scoreColumns[index];
+            writes[term.sheetName][`${require("xlsx").utils.encode_col(column - 1)}${term.highestPossibleRow}`] = Number(item.maxItems);
+            for (const student of roster) {
+              const row = rowByStudent.get(String(student.id));
+              if (!row) continue;
+              const score = scoreMap.get(`${student.id}:${item.id}`);
+              writes[term.sheetName][`${require("xlsx").utils.encode_col(column - 1)}${row}`] = score;
+            }
+          });
         }
       }
-    }
-    if (byTab.exams.some((item) => !claimedExamItemIds.has(item.id))) {
-      return res.status(422).json({ success: false, message: "QED has Examination scores that do not match a component in the pinned template. No workbook was exported." });
-    }
+      const examComponents = term.examinations?.components || [];
+      const claimedExamItemIds = new Set();
+      if (byTab.exams.length && !term.examinations?.enabled) {
+        return res.status(422).json({ success: false, message: "QED has Examination scores, but the pinned official template has no Examination section. No workbook was exported." });
+      }
+      for (const component of examComponents) {
+        const typedItems = component.key.toUpperCase() === "ALL"
+          ? byTab.exams
+          : byTab.exams.filter((item) => String(item.examType || "").toUpperCase() === component.key.toUpperCase());
+        typedItems.forEach((item) => claimedExamItemIds.add(item.id));
+        const column = component.scoreColumn;
+        if (!Number.isInteger(Number(column)) || Number(column) < 1) {
+          return res.status(422).json({ success: false, message: `The pinned template is missing the raw input column for ${component.label}.` });
+        }
+        if (typedItems.length) {
+          writes[term.sheetName][`${require("xlsx").utils.encode_col(column - 1)}${term.highestPossibleRow}`] = typedItems.reduce((sum, item) => sum + Number(item.maxItems), 0);
+        }
+        for (const student of roster) {
+          const values = typedItems.map((item) => scoreMap.get(`${student.id}:${item.id}`));
+          const row = rowByStudent.get(String(student.id));
+          if (row) {
+            // A component maps to one official raw-score cell. Do not export a
+            // partial sum while any assessment record in that component is blank.
+            const componentComplete = typedItems.length > 0 && values.every((value) => typeof value === "number");
+            writes[term.sheetName][`${require("xlsx").utils.encode_col(column - 1)}${row}`] = componentComplete
+              ? values.reduce((sum, value) => sum + value, 0)
+              : null;
+          }
+        }
+      }
+      if (byTab.exams.some((item) => !claimedExamItemIds.has(item.id))) {
+        return res.status(422).json({ success: false, message: "QED has Examination scores that do not match a component in the pinned template. No workbook was exported." });
+      }
 
+    }
     let exportBuffer;
     try {
       exportBuffer = await patchOfficialWorkbook(masterBuffer, writes, exportMap);

@@ -269,7 +269,7 @@ async function getActiveSubjectSectionsForScope(context, db = connection) {
         `SELECT ss.id, ss.teacher_id AS teacherId
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON ss.subject_id = es.id
-         WHERE ss.status = 'Active'
+         WHERE ss.status = 'Active' AND es.is_graded = 1
            AND ss.school_year_id = ${ACTIVE_SCHOOL_YEAR}
            AND (
              ss.section_id = ?
@@ -281,7 +281,7 @@ async function getActiveSubjectSectionsForScope(context, db = connection) {
         `SELECT ss.id, ss.teacher_id AS teacherId
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON ss.subject_id = es.id
-         WHERE ss.status = 'Active' AND ss.section_id IS NULL AND es.grade_level_id = ?
+         WHERE ss.status = 'Active' AND es.is_graded = 1 AND ss.section_id IS NULL AND es.grade_level_id = ?
            AND ss.school_year_id = ${ACTIVE_SCHOOL_YEAR}`,
         [gradeLevelId]
       );

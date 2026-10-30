@@ -95,7 +95,7 @@ async function loadSubjectSection(req, res, next) {
     // Pati ang adviser (classes) ay kukunin lang mula sa active school year.
     const [ssRows] = await connection.execute(
       `SELECT ss.id, ss.section_id, es.subject_name AS subjectName,
-              es.grade_level_id AS gradeLevelId,
+              es.grade_level_id AS gradeLevelId, es.is_graded AS isGraded,
               gl.grade_level AS gradeLevel, gls.section_name AS sectionName,
               c.class_adviser_id AS adviserId,
               CONCAT(advT.first_name, ' ', advT.last_name) AS adviserName
@@ -125,6 +125,11 @@ async function loadSubjectSection(req, res, next) {
 
     req.teacherId = teacherId;
     req.subjectSection = ssRows[0];
+    // Non-graded subjects support holistic evaluation only.
+    const assessmentPath = /^\/[^/]+\/(items|scores|submission|topics|interventions)(\/|$)/.test(req.path);
+    if (Number(req.subjectSection.isGraded) === 0 && assessmentPath) {
+      return res.status(403).json({ success: false, message: "Assessments and grades are unavailable for non-graded subjects." });
+    }
     next();
   } catch (error) {
     console.error("Error verifying subject-section access:", error);
@@ -170,6 +175,7 @@ const getSubjectSectionInfo = async (req, res) => {
       success: true,
       data: {
         subjectName,
+        isGraded: Number(req.subjectSection.isGraded) !== 0,
         gradeLevel,
         sectionName: sectionName || null,
         roster: students.map((s) => ({

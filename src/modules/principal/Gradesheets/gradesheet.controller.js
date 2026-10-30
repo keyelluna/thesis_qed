@@ -604,7 +604,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
             ON es.id = ss.subject_id
           INNER JOIN teacher_table t
             ON t.id = ss.teacher_id
-          WHERE ss.status = 'Active'
+          WHERE ss.status = 'Active' AND es.is_graded = 1
             AND ss.school_year_id = ?
             AND (
               ss.section_id = ?
@@ -627,7 +627,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
             ON es.id = ss.subject_id
           INNER JOIN teacher_table t
             ON t.id = ss.teacher_id
-          WHERE ss.status = 'Active'
+          WHERE ss.status = 'Active' AND es.is_graded = 1
             AND ss.school_year_id = ?
             AND ss.section_id IS NULL
             AND es.grade_level_id = ?

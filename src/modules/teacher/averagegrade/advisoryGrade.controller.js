@@ -217,20 +217,8 @@ const getAdvisoryGradebook = async (req, res) => {
     );
 
 
-    // Overall average looked up for BOTH sectioned and section-less
-    // (single-section-per-grade-level) advisory classes.
-    const overallByStudent = new Map();
-    const scope = advisoryScope(req.advisorySection);
-    const [overallRows] = await connection.execute(
-      `SELECT student_id AS studentId, overall_average AS overallAverage
-       FROM advisory_overall_grades
-       WHERE ${scope.column} = ? AND grading_period_id = ?`,
-      [scope.value, gradingPeriodId],
-    );
-    overallRows.forEach((r) =>
-      overallByStudent.set(r.studentId, r.overallAverage),
-    );
-
+    // Calculate from the same visible subject grades returned below. This
+    // keeps a running average current even before every subject is complete.
     const studentsOut = students.map((student) => {
       const grades = {};
       for (const ss of subjectSections) {
@@ -268,6 +256,12 @@ const getAdvisoryGradebook = async (req, res) => {
           isOwnAdvisory: isOwnAdvisorySubject,
         };
       }
+      const availableGrades = Object.values(grades)
+        .map(cell => cell.termGrade)
+        .filter(grade => typeof grade === 'number' && Number.isFinite(grade));
+      const overallAverage = availableGrades.length
+        ? Math.round(availableGrades.reduce((sum, grade) => sum + grade, 0) / availableGrades.length * 100) / 100
+        : null;
       return {
         studentId: String(student.id),
         firstName: student.firstName,
@@ -275,11 +269,9 @@ const getAdvisoryGradebook = async (req, res) => {
         middleName: student.middleName,
         gender: student.gender === "Female" ? "F" : "M",
         grades,
-        overallAverage:
-          overallByStudent.has(student.id) &&
-          overallByStudent.get(student.id) !== null
-            ? Number(overallByStudent.get(student.id))
-            : null,
+        overallAverage,
+        averageSubjectCount: availableGrades.length,
+        overallAverageComplete: availableGrades.length === subjectSections.length,
       };
     });
 

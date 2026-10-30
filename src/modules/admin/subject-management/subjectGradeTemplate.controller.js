@@ -476,8 +476,24 @@ exports.exportGradeTemplateBySection = async (req, res) => {
         [scope.schoolYearId, scope.gradeLevelId],
       );
 
-    const resolved = await resolveGradeTemplateForPeriod(scope.subjectSectionId, gradingPeriodId, {
-      pinIfEmpty: true,
+    // The selected period establishes access; the download contains the whole
+    // class record for this subject-section and school year.
+    const [items] = await connection.execute(
+      `SELECT gi.id, gi.tab, gi.item_date AS itemDate, gi.exam_type AS examType,
+              gi.template_domain_id AS templateDomainId, gi.max_items AS maxItems,
+              gi.grading_period_id AS gradingPeriodId, gp.term_number AS termNumber
+         FROM grade_items gi
+         INNER JOIN grading_periods gp ON gp.id = gi.grading_period_id
+        WHERE gi.subject_section_id = ? AND gp.school_year_id = ?
+          AND gp.term_number BETWEEN 1 AND 3
+        ORDER BY gp.term_number ASC, gi.item_date ASC, gi.id ASC`,
+      [scope.subjectSectionId, scope.schoolYearId],
+    );
+    const recordedPeriods = [...new Map(items.map(item => [String(item.gradingPeriodId), item])).values()]
+      .sort((a, b) => Number(a.termNumber) - Number(b.termNumber));
+    const masterPeriodId = recordedPeriods[0]?.gradingPeriodId ?? gradingPeriodId;
+    const resolved = await resolveGradeTemplateForPeriod(scope.subjectSectionId, masterPeriodId, {
+      pinIfEmpty: recordedPeriods.length === 0,
       assignmentSource: "first_export",
       requireWorkbook: true,
     });
@@ -485,6 +501,12 @@ exports.exportGradeTemplateBySection = async (req, res) => {
       return res.status(404).json({ success: false, message: "No official grade template is configured for this subject." });
     }
     const template = resolved.template;
+    for (const period of recordedPeriods.slice(1)) {
+      const other = await resolveGradeTemplateForPeriod(scope.subjectSectionId, period.gradingPeriodId, {pinIfEmpty: false});
+      if (!other.template || other.template.checksum !== template.checksum) {
+        return res.status(409).json({success:false,message:'The recorded terms use different official template versions. Their templates must be reconciled before exporting one complete class record.'});
+      }
+    }
     const masterBuffer = template.workbookBuffer;
     const checksum = template.checksum;
     let exportMap = template.exportMap;
@@ -504,18 +526,10 @@ exports.exportGradeTemplateBySection = async (req, res) => {
         [JSON.stringify(exportMap), template.templateId],
       );
     }
-    const selectedTerms = exportMap.terms?.filter((entry) => Number(entry.termNumber) === Number(scope.termNumber));
-    const term = selectedTerms?.[0];
-    if (!term) return res.status(422).json({ success: false, message: "The selected term is not mapped in the configured DepEd template. Please contact the administrator." });
-
-    const [items] = await connection.execute(
-      `SELECT id, tab, item_date AS itemDate, exam_type AS examType,
-              template_domain_id AS templateDomainId, max_items AS maxItems
-         FROM grade_items WHERE subject_section_id = ? AND grading_period_id = ?
-        ORDER BY item_date ASC, id ASC`,
-      [scope.subjectSectionId, gradingPeriodId],
-    );
-    if (selectedTerms?.[0]?.componentId && items.some(item => !selectedTerms.some(t => item.templateDomainId === t.componentId || String(item.templateDomainId || '').startsWith(t.componentId + '__')))) return res.status(422).json({success:false,message:'An assessment has no valid MAPEH component. No workbook was exported.'});
+    const selectedTerms = exportMap.terms || [];
+    if (![1,2,3].every(n => selectedTerms.some(t => Number(t.termNumber) === n))) {
+      return res.status(422).json({success:false,message:'The official template must map all three terms to export the complete class record.'});
+    }
     const itemIds = items.map((item) => item.id);
     const scoreRows = itemIds.length
       ? (await connection.execute(
@@ -528,7 +542,12 @@ exports.exportGradeTemplateBySection = async (req, res) => {
     const writes = { "INPUT DATA": {} };
     for (const term of selectedTerms) {
       writes[term.sheetName] = {};
-      const componentItems = term.componentId ? items.filter(item => item.templateDomainId === term.componentId || String(item.templateDomainId || "").startsWith(term.componentId + "__")) : items;
+      const termItems = items.filter(item => Number(item.termNumber) === Number(term.termNumber));
+      const termComponents = selectedTerms.filter(t => Number(t.termNumber) === Number(term.termNumber));
+      if (term.componentId && termItems.some(item => !termComponents.some(t => item.templateDomainId === t.componentId || String(item.templateDomainId || '').startsWith(t.componentId + '__')))) {
+        return res.status(422).json({success:false,message:'An assessment has no valid MAPEH component. No workbook was exported.'});
+      }
+      const componentItems = term.componentId ? termItems.filter(item => item.templateDomainId === term.componentId || String(item.templateDomainId || "").startsWith(term.componentId + "__")) : termItems;
       const boys = roster.filter((student) => String(student.gender).toLowerCase().startsWith("m"));
       const girls = roster.filter((student) => String(student.gender).toLowerCase().startsWith("f"));
       const rowsForGender = { M: term.studentRows.filter((row) => row.gender === "M"), F: term.studentRows.filter((row) => row.gender === "F") };
@@ -638,7 +657,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
       return res.status(422).json({ success: false, message: "The official template could not be safely prepared for export. Please contact the administrator or upload a valid template." });
     }
     const baseName = path.parse(template.fileName).name.replace(/[^a-z0-9_-]+/gi, "-");
-    const fileName = `${baseName}-QED-TERM-${scope.termNumber}.xlsx`;
+    const fileName = `${baseName}-QED-CLASS-RECORD.xlsx`;
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
     res.setHeader("X-QED-Template-Version", String(template.templateId));

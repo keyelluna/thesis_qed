@@ -192,7 +192,8 @@ const getTermPerformance = async (req, res) => {
        WHERE ${sectionId !== null
          ? '(ss.section_id = ? OR (ss.section_id IS NULL AND es.grade_level_id = ?))'
          : 'ss.section_id IS NULL AND es.grade_level_id = ?'}
-         AND ss.status = 'Active' AND ss.school_year_id = ?`,
+         AND ss.status = 'Active' AND ss.school_year_id = ?
+         AND es.is_graded = 1`,
       sectionId !== null ? [sectionId, gradeLevelId, activeSchoolYearId] : [gradeLevelId, activeSchoolYearId]
     );
 

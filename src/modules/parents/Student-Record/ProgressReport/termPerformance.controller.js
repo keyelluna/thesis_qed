@@ -1,3 +1,4 @@
+const { getSubjectComponentGrades } = require('../../../shared/grades/gradeCache.service');
 const { isParentReportReleased } = require('./parentReportRelease');
 const connection = require('../../../../../config/db');
 
@@ -241,6 +242,15 @@ const getTermPerformance = async (req, res) => {
       );
     }
 
+    const componentGrades = new Map();
+    for (const gp of gradingPeriods) {
+      if (!canRelease(gp)) continue;
+      for (const ss of subjectSections) {
+        if (/\bMAPEH\b/i.test(ss.subjectName)) {
+          componentGrades.set(`${ss.id}_${gp.id}`, await getSubjectComponentGrades(studentId, ss.id, gp.id));
+        }
+      }
+    }
     const subjectsByPeriodId = new Map();
     for (const gp of gradingPeriods) {
       subjectsByPeriodId.set(
@@ -248,6 +258,7 @@ const getTermPerformance = async (req, res) => {
         subjectSections.map((ss) => ({
           subject: ss.subjectName,
           grade: gradeBySubjectAndPeriod.get(`${ss.id}_${gp.id}`) ?? null,
+          ...(componentGrades.has(`${ss.id}_${gp.id}`) ? { components: componentGrades.get(`${ss.id}_${gp.id}`) } : {}),
         }))
       );
     }

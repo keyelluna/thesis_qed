@@ -428,8 +428,17 @@ exports.getEnrolledChildren = async (req, res) => {
         ON elem_students.grade_level_id = grade_level.id
       LEFT JOIN grade_level_sections 
         ON elem_students.section_id = grade_level_sections.id
-      LEFT JOIN classes 
-        ON grade_level_sections.id = classes.section_id
+      LEFT JOIN classes
+        ON classes.id = (
+          SELECT c.id FROM classes c
+          WHERE (c.section_id = elem_students.section_id
+                 OR (c.section_id IS NULL AND elem_students.section_id IS NULL))
+            AND c.grade_level_id = elem_students.grade_level_id
+            AND c.school_year_id = elem_students.current_school_year_id
+            AND c.status = 'Active'
+          ORDER BY c.id DESC
+          LIMIT 1
+        )
       LEFT JOIN teacher_table 
         ON classes.class_adviser_id = teacher_table.id
       WHERE parent_student.parent_id = ?

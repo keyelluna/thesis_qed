@@ -1,3 +1,4 @@
+const { isParentReportReleased } = require('./parentReportRelease');
 const connection = require("../../.././../../config/db");
 
 // Same advisory submission scope as the academic report, including sectionless classes.
@@ -18,7 +19,7 @@ function visibilityEntry(row) {
     termNumber: row.termNumber,
     termLabel: row.termLabel,
     submitted, isVisible, termEnded,
-    available: submitted && isVisible && termEnded,
+    available: isParentReportReleased({ isVisible, termEnded }),
   };
 }
 

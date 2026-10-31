@@ -1,3 +1,4 @@
+const { isParentReportReleased } = require('../ProgressReport/parentReportRelease');
 const connection = require('../../../../../config/db');
 
 /**
@@ -49,8 +50,8 @@ async function loadParentStudent(req, res, next) {
  * match the parent-side `Term[]` type:
  *   { key, label, released, releaseDate?, average?, subjects: SubjectGrade[] }
  *
- * Parents receive grades only after advisory submission, the term end date,
- * and the adviser's visibility release for this student and grading period.
+ * Parents receive grades only after the term end date and the adviser's
+ * visibility release for this student and grading period.
  */
 async function getStudentTermPerformance(req, res) {
   try {
@@ -117,19 +118,8 @@ async function getStudentTermPerformance(req, res) {
       ])
     );
 
-    // Which (section, term) pairs has the advisory teacher submitted?
-    const [submissions] = await connection.execute(
-      `SELECT grading_period_id AS gradingPeriodId
-       FROM grade_submissions
-       WHERE ${sectionId !== null ? 'section_id = ?' : 'section_id IS NULL AND grade_level_id = ?'}
-         AND grading_period_id IN (${periodPlaceholders})`,
-      [sectionId ?? gradeLevelId, ...periodIds]
-    );
-    const submittedPeriodIds = new Set(submissions.map((s) => s.gradingPeriodId));
-
     const terms = periods.map((period) => {
-      const isSubmitted = submittedPeriodIds.has(period.id) &&
-        Number(period.isVisible) === 1 && Number(period.termEnded) === 1;
+      const isReleased = isParentReportReleased(period);
 
       const subjects = subjectSections.map((ss) => ({
         subject: ss.subjectName,
@@ -145,9 +135,9 @@ async function getStudentTermPerformance(req, res) {
       return {
         key: String(period.id),
         label: period.termLabel,
-        released: isSubmitted && overallAverage !== null,
-        average: isSubmitted ? overallAverage ?? undefined : undefined,
-        subjects: isSubmitted ? subjects : [],
+        released: isReleased && overallAverage !== null,
+        average: isReleased ? overallAverage ?? undefined : undefined,
+        subjects: isReleased ? subjects : [],
       };
     });
 

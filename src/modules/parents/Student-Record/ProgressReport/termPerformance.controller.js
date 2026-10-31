@@ -1,3 +1,4 @@
+const { isParentReportReleased } = require('./parentReportRelease');
 const connection = require('../../../../../config/db');
 
 const TERM_LABEL_FALLBACK = (termNumber) => `Term ${termNumber}`;
@@ -182,8 +183,9 @@ const getTermPerformance = async (req, res) => {
       [sectionId ?? gradeLevelId, ...periodIds]
     );
     const releasedPeriodIds = new Set(submissionRows.map((r) => r.gradingPeriodId));
-    const canRelease = (gp) => releasedPeriodIds.has(gp.id) &&
-      (String(req.user?.role).toLowerCase() !== 'parent' || (Number(gp.isVisible) === 1 && Number(gp.termEnded) === 1));
+    const canRelease = (gp) => String(req.user?.role).toLowerCase() === 'parent'
+      ? isParentReportReleased(gp)
+      : releasedPeriodIds.has(gp.id);
 
     const [subjectSections] = await connection.execute(
       `SELECT ss.id, es.subject_name AS subjectName

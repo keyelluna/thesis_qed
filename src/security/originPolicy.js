@@ -1,11 +1,13 @@
-const PRODUCTION_ORIGIN = 'https://qed-front-end-6upk.vercel.app';
+const PRODUCTION_ORIGIN = 'https://qed-mseuf-candelaria.vercel.app';
+// Keep the previous domain available during the domain transition.
+const LEGACY_PRODUCTION_ORIGIN = 'https://qed-front-end-6upk.vercel.app';
 const DEVELOPMENT_ORIGIN = 'http://localhost:5173';
 const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 function approvedOrigins(environment = process.env.NODE_ENV) {
   return environment === 'development'
-    ? [PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN]
-    : [PRODUCTION_ORIGIN];
+    ? [PRODUCTION_ORIGIN, LEGACY_PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN]
+    : [PRODUCTION_ORIGIN, LEGACY_PRODUCTION_ORIGIN];
 }
 
 function exactOrigin(value, environment) {

@@ -54,12 +54,12 @@ async function getAdvisorySubmissionHistory({ sectionId, gradeLevelId, gradingPe
     ? `SELECT ss.id
        FROM \`subject-section\` ss
        INNER JOIN elem_subjects es ON es.id = ss.subject_id
-       WHERE ss.status = 'Active'
+       WHERE ss.status = 'Active' AND es.is_graded = 1
          AND (ss.section_id = ? OR (ss.section_id IS NULL AND es.grade_level_id = ?))`
     : `SELECT ss.id
        FROM \`subject-section\` ss
        WHERE ss.status = 'Active' AND ss.section_id IS NULL AND ss.subject_id IN (
-         SELECT id FROM elem_subjects WHERE grade_level_id = ?
+         SELECT id FROM elem_subjects WHERE is_graded = 1 AND grade_level_id = ?
        )`;
 
   const [rows] = await connection.execute(

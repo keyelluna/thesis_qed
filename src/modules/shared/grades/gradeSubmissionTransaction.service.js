@@ -32,7 +32,7 @@ async function runGradeSubmission(req, kind, validate = async () => {}) {
     if (kind === 'subject') {
       const [rows] = await db.execute(`SELECT ss.id, ss.section_id AS sectionId, es.grade_level_id AS gradeLevelId, ss.school_year_id AS schoolYearId
         FROM \`subject-section\` ss INNER JOIN elem_subjects es ON es.id = ss.subject_id
-        WHERE ss.id = ? AND ss.teacher_id = ? AND ss.school_year_id = ? FOR UPDATE`,
+        WHERE ss.id = ? AND ss.teacher_id = ? AND ss.school_year_id = ? AND es.is_graded = 1 FOR UPDATE`,
         [req.subjectSection.id, req.teacherId, yearId]);
       if (!rows.length) reject(403, 'You do not own this subject in the current school year.');
       scope = rows[0];

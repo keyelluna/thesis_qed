@@ -1,3 +1,4 @@
+const { resolveHolisticTerm, getCurrentWeekStartDate, schoolWeekday } = require('./holisticPeriod');
 const { studentBelongsToSubject } = require('../gradebook/subjectStudent.authorization');
 const connection = require('../../../../config/db');
 const { loadSubjectSection } = require('../gradebook/subjectGrading.controller');
@@ -9,28 +10,7 @@ const ACTIVE_SY_ID = `(SELECT id FROM school_year WHERE is_active = 1 LIMIT 1)`;
 const rosterFilter = (alias) =>
   `${alias}.is_deleted = 0 AND ${alias}.status <> 'graduated' AND ${alias}.current_school_year_id = ${ACTIVE_SY_ID}`;
 
-async function getActiveTermNumber() {
-  const [rows] = await connection.execute(
-    `SELECT gp.term_number AS termNumber
-     FROM grading_periods gp
-     INNER JOIN school_year sy ON gp.school_year_id = sy.id
-     WHERE sy.is_active = 1 AND gp.is_active = 1
-     LIMIT 1`
-  );
-  return rows.length > 0 ? rows[0].termNumber : 1;
-}
 
-function getCurrentWeekStartDate() {
-  const now = new Date();
-  const day = now.getDay();
-  const diffToMonday = day === 0 ? -6 : 1 - day;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() + diffToMonday);
-  const year = monday.getFullYear();
-  const month = String(monday.getMonth() + 1).padStart(2, "0");
-  const date = String(monday.getDate()).padStart(2, "0");
-  return `${year}-${month}-${date}`;
-}
 
 function computeTrendFromRows(rows) {
   if (rows.length === 0) {
@@ -203,15 +183,16 @@ const upsertHolistic = async (req, res) => {
         ? requestedWeekStartDate
         : getCurrentWeekStartDate();
 
-    const termNumber = Math.min(3, Math.max(1, Number(requestedTermNumber) || (await getActiveTermNumber())));
 
-    if (weekStartDate === getCurrentWeekStartDate() && [0, 6].includes(new Date().getDay())) {
+    if (weekStartDate === getCurrentWeekStartDate() && [0, 6].includes(schoolWeekday())) {
       return res.status(423).json({ success: false, message: "Weekly holistic records are locked for the weekend. Recording opens Monday." });
     }
 
     if (!(await studentBelongsToSubject(studentId,req.subjectSection))) {
       return res.status(403).json({success:false,message:"This student is not enrolled in your class."});
     }
+
+    const termNumber = await resolveHolisticTerm(connection, subjectSectionId, weekStartDate, requestedTermNumber);
 
     await connection.execute(
       `INSERT INTO holistic_ratings (subject_section_id, student_id, week_start_date, term_number, axis, rating)
@@ -229,6 +210,7 @@ const upsertHolistic = async (req, res) => {
 
     return res.status(200).json({ success: true, weekStartDate, termNumber });
   } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
     console.error("Error saving holistic rating:", error);
     return res.status(500).json({ success: false, message: "Internal server error." });
   }

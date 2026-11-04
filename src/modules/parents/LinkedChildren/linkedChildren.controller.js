@@ -43,12 +43,16 @@ exports.getChildren = async (req, res) => {
     grade_level_sections.section_name,
     CONCAT(teacher_table.first_name, ' ', teacher_table.last_name) AS adviser_name
   FROM elem_students
-  INNER JOIN grade_level 
+  LEFT JOIN grade_level
     ON elem_students.grade_level_id = grade_level.id
-  INNER JOIN grade_level_sections 
+  LEFT JOIN grade_level_sections
     ON elem_students.section_id = grade_level_sections.id
   LEFT JOIN classes 
-    ON grade_level_sections.id = classes.section_id
+    ON (classes.section_id = elem_students.section_id
+        OR (classes.section_id IS NULL AND elem_students.section_id IS NULL))
+   AND classes.grade_level_id = elem_students.grade_level_id
+   AND classes.school_year_id = elem_students.current_school_year_id
+   AND classes.status = 'Active'
   LEFT JOIN teacher_table 
     ON classes.class_adviser_id = teacher_table.id
     WHERE elem_students.student_number = ?
@@ -56,6 +60,8 @@ exports.getChildren = async (req, res) => {
     AND LOWER(elem_students.first_name) = LOWER(?)
     AND elem_students.is_deleted = 0
     AND ${HIDE_GRADUATED_AFTER_SCHOOL_YEAR_CHANGE()}
+  ORDER BY classes.id DESC
+  LIMIT 1
 `;
     const [rows] = await connection.query(query, [
       studentNumber,
@@ -64,6 +70,16 @@ exports.getChildren = async (req, res) => {
     ]);
 
     if (rows.length > 0) {
+      const [existingLink] = await connection.query(
+        `SELECT 1 FROM parent_student WHERE student_id = ? LIMIT 1`,
+        [rows[0].id]
+      );
+      if (existingLink.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: "Student already linked to a parent",
+        });
+      }
       return res.status(200).json({
         success: true,
         message: "Information Matched!",
@@ -122,13 +138,15 @@ exports.linkedChildren = async (req, res) => {
     }
     const parentId = parentRows[0].id;
 
+    // Serialize link attempts for this student, even when no link exists yet.
     const [studentRows] = await dbConn.query(
       `SELECT id, student_number FROM elem_students
        WHERE student_number = ?
          AND LOWER(last_name) = LOWER(?)
          AND LOWER(first_name) = LOWER(?)
          AND is_deleted = 0
-         AND ${HIDE_GRADUATED_AFTER_SCHOOL_YEAR_CHANGE("elem_students")}`,
+         AND ${HIDE_GRADUATED_AFTER_SCHOOL_YEAR_CHANGE("elem_students")}
+       FOR UPDATE`,
       [studentNumber, lastName, firstName]
     );
 
@@ -143,7 +161,7 @@ exports.linkedChildren = async (req, res) => {
     const student = studentRows[0];
 
     const [existingLink] = await dbConn.query(
-      `SELECT * FROM parent_student WHERE student_id = ?`,
+      `SELECT * FROM parent_student WHERE student_id = ? FOR UPDATE`,
       [student.id]
     );
 
@@ -410,8 +428,17 @@ exports.getEnrolledChildren = async (req, res) => {
         ON elem_students.grade_level_id = grade_level.id
       LEFT JOIN grade_level_sections 
         ON elem_students.section_id = grade_level_sections.id
-      LEFT JOIN classes 
-        ON grade_level_sections.id = classes.section_id
+      LEFT JOIN classes
+        ON classes.id = (
+          SELECT c.id FROM classes c
+          WHERE (c.section_id = elem_students.section_id
+                 OR (c.section_id IS NULL AND elem_students.section_id IS NULL))
+            AND c.grade_level_id = elem_students.grade_level_id
+            AND c.school_year_id = elem_students.current_school_year_id
+            AND c.status = 'Active'
+          ORDER BY c.id DESC
+          LIMIT 1
+        )
       LEFT JOIN teacher_table 
         ON classes.class_adviser_id = teacher_table.id
       WHERE parent_student.parent_id = ?

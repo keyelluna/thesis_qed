@@ -1,3 +1,5 @@
+const { getSubjectComponentGrades } = require('../../../shared/grades/gradeCache.service');
+const { isParentReportReleased } = require('./parentReportRelease');
 const connection = require('../../../../../config/db');
 
 const TERM_LABEL_FALLBACK = (termNumber) => `Term ${termNumber}`;
@@ -182,8 +184,9 @@ const getTermPerformance = async (req, res) => {
       [sectionId ?? gradeLevelId, ...periodIds]
     );
     const releasedPeriodIds = new Set(submissionRows.map((r) => r.gradingPeriodId));
-    const canRelease = (gp) => releasedPeriodIds.has(gp.id) &&
-      (String(req.user?.role).toLowerCase() !== 'parent' || (Number(gp.isVisible) === 1 && Number(gp.termEnded) === 1));
+    const canRelease = (gp) => String(req.user?.role).toLowerCase() === 'parent'
+      ? isParentReportReleased(gp)
+      : releasedPeriodIds.has(gp.id);
 
     const [subjectSections] = await connection.execute(
       `SELECT ss.id, es.subject_name AS subjectName
@@ -192,7 +195,8 @@ const getTermPerformance = async (req, res) => {
        WHERE ${sectionId !== null
          ? '(ss.section_id = ? OR (ss.section_id IS NULL AND es.grade_level_id = ?))'
          : 'ss.section_id IS NULL AND es.grade_level_id = ?'}
-         AND ss.status = 'Active' AND ss.school_year_id = ?`,
+         AND ss.status = 'Active' AND ss.school_year_id = ?
+         AND es.is_graded = 1`,
       sectionId !== null ? [sectionId, gradeLevelId, activeSchoolYearId] : [gradeLevelId, activeSchoolYearId]
     );
 
@@ -238,6 +242,15 @@ const getTermPerformance = async (req, res) => {
       );
     }
 
+    const componentGrades = new Map();
+    for (const gp of gradingPeriods) {
+      if (!canRelease(gp)) continue;
+      for (const ss of subjectSections) {
+        if (/\bMAPEH\b/i.test(ss.subjectName)) {
+          componentGrades.set(`${ss.id}_${gp.id}`, await getSubjectComponentGrades(studentId, ss.id, gp.id));
+        }
+      }
+    }
     const subjectsByPeriodId = new Map();
     for (const gp of gradingPeriods) {
       subjectsByPeriodId.set(
@@ -245,6 +258,7 @@ const getTermPerformance = async (req, res) => {
         subjectSections.map((ss) => ({
           subject: ss.subjectName,
           grade: gradeBySubjectAndPeriod.get(`${ss.id}_${gp.id}`) ?? null,
+          ...(componentGrades.has(`${ss.id}_${gp.id}`) ? { components: componentGrades.get(`${ss.id}_${gp.id}`) } : {}),
         }))
       );
     }

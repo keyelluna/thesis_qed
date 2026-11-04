@@ -1,5 +1,5 @@
 const connection = require('../../../../config/db');
-const { summarize } = require('./examinationStatistics');
+const { summarize, summarizeCoverage } = require('./examinationStatistics');
 
 exports.getExaminationAnalytics = async (req, res) => {
   const { schoolYear = '', term = 'Term 1', grade = '', section = '', subject = '', examination = 'ST1' } = req.query;
@@ -10,7 +10,7 @@ exports.getExaminationAnalytics = async (req, res) => {
   try {
     const [years] = await connection.query('SELECT id, school_year AS label, is_active AS active FROM school_year ORDER BY id DESC');
     const yearId = schoolYear || years.find(year => year.active)?.id || years[0]?.id;
-    if (!yearId) return res.json({ success: true, data: { ...summarize([]), schoolYear: null, options: { years, terms: [], sections: [], subjects: [] } } });
+    if (!yearId) return res.json({ success: true, data: { ...summarize([]), coverage: summarizeCoverage([]), schoolYear: null, options: { years, terms: [], sections: [], subjects: [] } } });
     const [terms] = await connection.query('SELECT term_label AS label FROM grading_periods WHERE school_year_id = ? ORDER BY term_number', [yearId]);
     const [assignments] = await connection.query(`SELECT ss.id, ss.section_id AS sectionId, gls.section_name AS section,
       es.id AS subjectId, es.subject_name AS subject, gl.grade_level AS grade
@@ -31,8 +31,27 @@ exports.getExaminationAnalytics = async (req, res) => {
       JOIN elem_subjects es ON es.id = ss.subject_id JOIN grade_level gl ON gl.id = es.grade_level_id
       JOIN elem_students st ON st.id = gs.student_id
       WHERE ${conditions.join(' AND ')} ORDER BY es.subject_name, gi.id, gs.student_id`, params);
+    // Include eligible roster members without scores. Historical years use their
+    // archived enrollment, never their present-day grade or section.
+    const [expectedRows] = await connection.query(`SELECT st.studentId, gi.id AS itemId,
+      ss.id AS subjectSectionId, UPPER(gi.exam_type) AS examination, gi.max_items AS hps, gs.score
+      FROM grade_items gi
+      JOIN \`subject-section\` ss ON ss.id = gi.subject_section_id
+      JOIN grading_periods gp ON gp.id = gi.grading_period_id
+      JOIN elem_subjects es ON es.id = ss.subject_id
+      JOIN grade_level gl ON gl.id = es.grade_level_id
+      JOIN (
+        SELECT id AS studentId, grade_level_id AS gradeLevelId, section_id AS sectionId, is_deleted
+        FROM elem_students WHERE current_school_year_id = ? AND status <> 'graduated'
+        UNION
+        SELECT enrolled.id AS studentId, history.grade_level_id AS gradeLevelId, history.section_id AS sectionId, enrolled.is_deleted
+        FROM student_year_records history JOIN elem_students enrolled ON enrolled.id = history.student_id
+        WHERE history.school_year_id = ? AND enrolled.current_school_year_id <> ? AND history.status <> 'graduated'
+      ) st ON st.gradeLevelId = es.grade_level_id AND (ss.section_id IS NULL OR ss.section_id = st.sectionId)
+      LEFT JOIN grade_scores gs ON gs.item_id = gi.id AND gs.student_id = st.studentId
+      WHERE ${conditions.join(' AND ')} ORDER BY ss.id, gi.id, st.studentId`, [yearId, yearId, yearId, ...params]);
     const unique = (rows, key, label) => [...new Map(rows.filter(row => row[key] != null).map(row => [String(row[key]), { id: String(row[key]), label: row[label] }])).values()];
-    return res.json({ success: true, data: { ...summarize(rows), schoolYear: String(yearId), options: {
+    return res.json({ success: true, data: { ...summarize(rows), coverage: summarizeCoverage(expectedRows), schoolYear: String(yearId), options: {
       years: years.map(year => ({ id: String(year.id), label: year.label })), terms: terms.map(row => row.label),
       sections: unique(assignments.filter(row => !grade || row.grade === grade), 'sectionId', 'section'),
       subjects: unique(assignments.filter(row => (!grade || row.grade === grade) && (!section || String(row.sectionId) === section)), 'subjectId', 'subject'),

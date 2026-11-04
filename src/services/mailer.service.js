@@ -9,7 +9,7 @@ const DEV_EMAIL_OVERRIDE = process.env.NODE_ENV !== "production"
 const CREDENTIAL_EMAIL_OVERRIDE = DEV_EMAIL_OVERRIDE ||
   (process.env.NODE_ENV === "development" ? "kimlourenluna.dev@gmail.com" : "");
 const APP_BASE_URL = process.env.NODE_ENV === "production"
-  ? "https://qed-front-end-6upk.vercel.app" : "http://localhost:5173";
+  ? "https://qed-mseuf-candelaria.vercel.app" : "http://localhost:5173";
 
 const logoPath = path.join(__dirname, "../assets/images/QED_Logo.png");
 const logoBase64 = fs.readFileSync(logoPath).toString("base64");

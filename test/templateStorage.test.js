@@ -55,9 +55,9 @@ function exportDb(pinned) {
     calls.push(sql);
     if (sql.includes("INNER JOIN teacher_table")) return [[{ subjectSectionId: 22, subjectId: 3, schoolYearId: 2, sectionId: 9, termNumber: 1 }]];
     if (sql.includes("FROM elem_students")) return [[]];
+    if (sql.includes("FROM grade_items")) return [[]];
     if (sql.includes("INNER JOIN grading_periods")) return [[{ subjectId: 3, schoolYearId: 2, termNumber: 1 }]];
     if (sql.includes("FROM subject_grade_template_periods p")) return [[pinned]];
-    if (sql.includes("FROM grade_items")) return [[]];
     throw new Error("Unexpected query");
   } };
 }

@@ -1,7 +1,7 @@
 const XLSX = require("xlsx");
 
 function readGrid(sheet, maxRows = 200, maxCols = 80) {
-  const values = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null, blankrows: true, range: 0 });
+  const values = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null, blankrows: true, range: {s:{r:0,c:0},e: XLSX.utils.decode_range(sheet["!ref"] || "A1").e} });
   return values.slice(0, maxRows).map((row) => row.slice(0, maxCols));
 }
 
@@ -66,7 +66,7 @@ function parseGroup(grid, key, start, end, domainRow, headerRow, weightsRow) {
 
 function parseGradeTemplate(fileBuffer) {
   const workbook = XLSX.read(fileBuffer, { type: "buffer" });
-  const sheet = workbook.Sheets["TERM 1"];
+  const sheet = workbook.Sheets["TERM 1"] || workbook.Sheets["TERM 1 M and A"];
   const helper = workbook.Sheets.HELPER;
   if (!sheet || !helper) throw new Error("The workbook must contain 'TERM 1' and 'HELPER' sheets.");
   const grid = readGrid(sheet);
@@ -137,6 +137,11 @@ function parseGradeTemplate(fileBuffer) {
     examWeightedScoreColumn: examinations.outputs.weightedScoreColumn === undefined ? undefined : examinations.outputs.weightedScoreColumn + 1,
   };
   structure.layout = layout;
+  if (!workbook.Sheets['TERM 1']) {
+    const {createGradeTemplateWorkbookMap, termConfigurations} = require('./gradeTemplateWorkbookMap.service');
+    const configs = termConfigurations(createGradeTemplateWorkbookMap(fileBuffer));
+    Object.assign(structure, configs['1'], {termConfigurations:configs});
+  }
   return {
     structure,
     wwWeightPercent: ww.weightPercent,

@@ -1,4 +1,4 @@
-function calculateOfficialGrade({ ww, pt, exam, weights, examinations, transmutationTable }) {
+function calculateOfficialGrade({ ww, pt, exam, weights, examinations, transmutationTable, transmutationMode }) {
   const required = [];
   if (Number(weights?.ww) > 0) required.push(ww);
   if (Number(weights?.pt) > 0) required.push(pt);
@@ -11,7 +11,7 @@ function calculateOfficialGrade({ ww, pt, exam, weights, examinations, transmuta
 
   const initialGrade = required.reduce((sum, category) => sum + Number(category.ws), 0);
   const match = (transmutationTable || []).find((row) =>
-    initialGrade >= Number(row.igMin) && initialGrade <= Number(row.igMax)
+    initialGrade >= Number(row.igMin) && (transmutationMode === "descendingMinimum" || initialGrade <= Number(row.igMax))
   );
   const termGrade = match && Number.isFinite(Number(match.transmuted)) ? Number(match.transmuted) : null;
   return { isComplete: termGrade !== null, initialGrade, termGrade };

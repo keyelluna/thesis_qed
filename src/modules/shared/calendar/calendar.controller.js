@@ -3,14 +3,18 @@ const connection = require("../../../../config/db");
 const HOLIDAY_TYPE_MAP = {
   regular: "regular holiday",
   "regular holiday": "regular holiday",
+  "special-non-working": "special non-working day",
   special_non_working: "special non-working day",
   "special non-working day": "special non-working day",
+  "special-working": "special working day",
   special_working: "special working day",
   "special working day": "special working day",
 };
 
 function resolveHolidayType(input) {
-  return HOLIDAY_TYPE_MAP[input] || null;
+  return typeof input === "string" && Object.hasOwn(HOLIDAY_TYPE_MAP, input)
+    ? HOLIDAY_TYPE_MAP[input]
+    : null;
 }
 
 async function getActiveSchoolYearId() {

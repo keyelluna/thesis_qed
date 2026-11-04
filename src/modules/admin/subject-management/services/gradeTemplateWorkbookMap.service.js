@@ -15,7 +15,7 @@ function address(row, column) {
 }
 
 function readGrid(sheet) {
-  return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null, blankrows: true });
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null, blankrows: true, range: {s:{r:0,c:0},e: XLSX.utils.decode_range(sheet["!ref"] || "A1").e} });
 }
 
 function findCell(grid, regex) {
@@ -177,7 +177,7 @@ function parseExaminations(grid, headerRow, hpsRow, start, end) {
   };
 }
 
-function parseTerm(sheet, termNumber) {
+function parseTerm(sheet, termNumber, sheetName = `TERM ${termNumber}`, componentId, componentLabel) {
   const grid = readGrid(sheet);
   const wwHeader = findCell(grid, /WRITTEN.*ORAL WORKS/i);
   const ptHeader = findCell(grid, /PRODUCT.*PERFORMANCE/i);
@@ -215,6 +215,7 @@ function parseTerm(sheet, termNumber) {
     writtenWorks: parseWeightedDomains(grid, wwHeader.column, ptHeader.column - 1, domainRow, headerRow, hpsHeader.row),
     performanceTask: parseWeightedDomains(grid, ptHeader.column, (examHeader?.column ?? initialHeader.column) - 1, domainRow, headerRow, hpsHeader.row),
   };
+  if (componentId) for (const domains of Object.values(groups)) for (const domain of domains) domain.id = `${componentId}__${domain.id}`;
   const config = {
     ww: { key: "writtenWorks", weightPercent: groups.writtenWorks.reduce((sum, entry) => sum + entry.weightPercent, 0), domains: groups.writtenWorks },
     pt: { key: "performanceTask", weightPercent: groups.performanceTask.reduce((sum, entry) => sum + entry.weightPercent, 0), domains: groups.performanceTask },
@@ -245,7 +246,7 @@ function parseTerm(sheet, termNumber) {
 
   return {
     termNumber,
-    sheetName: `TERM ${termNumber}`,
+    sheetName, componentId, componentLabel,
     headerRow,
     highestPossibleRow: hpsHeader.row,
     studentRows: studentMap,
@@ -264,9 +265,19 @@ function formulaCells(sheet) {
 
 function createGradeTemplateWorkbookMap(buffer) {
   const workbook = XLSX.read(buffer, { type: "buffer", cellFormula: true });
-  const missing = REQUIRED_SHEETS.filter((name) => !workbook.Sheets[name]);
+  const composite = !workbook.Sheets['TERM 1'] && !!workbook.Sheets['TERM 1 M and A'];
+  const componentDefinitions = [{id:'music_arts',label:'Music and Arts',suffix:'M and A'}, {id:'pe_health',label:'Physical Education and Health',suffix:'PE and H'}];
+  const requiredSheets = composite ? ['INPUT DATA', ...[1,2,3].flatMap(n => componentDefinitions.map(c => `TERM ${n} ${c.suffix}`)), 'FINAL GRADES', 'HELPER'] : REQUIRED_SHEETS;
+  const missing = requiredSheets.filter((name) => !workbook.Sheets[name]);
   if (missing.length) throw new Error(`Workbook is missing required sheet(s): ${missing.join(", ")}.`);
-  const terms = [1, 2, 3].map((termNumber) => parseTerm(workbook.Sheets[`TERM ${termNumber}`], termNumber));
+  const terms = [1,2,3].flatMap(n => composite ? componentDefinitions.map(c => parseTerm(workbook.Sheets[`TERM ${n} ${c.suffix}`], n, `TERM ${n} ${c.suffix}`, c.id, c.label)) : [parseTerm(workbook.Sheets[`TERM ${n}`], n)]);
+  if (composite) {
+    const final = workbook.Sheets['FINAL GRADES'];
+    for (const [address, expected] of Object.entries({H15:'AVERAGE(F15:G15)',K15:'AVERAGE(I15:J15)',N15:'AVERAGE(L15:M15)',O15:'AVERAGE(H15,K15,N15)'})) {
+      if (!String(final[address]?.f || '').toUpperCase().includes(expected)) throw new Error(`Unsupported MAPEH aggregation formula at FINAL GRADES!${address}.`);
+    }
+    for (const term of terms) if (JSON.stringify(term.studentRows) !== JSON.stringify(terms[0].studentRows)) throw new Error('MAPEH component learner rows must match.');
+  }
   const inputDataCells = [...new Set(terms.flatMap((term) => term.studentRows.map((row) => row.nameInputCell)))];
   const termHeaderInputs = new Set();
   for (const term of terms) {
@@ -298,7 +309,7 @@ function createGradeTemplateWorkbookMap(buffer) {
     if (dataSheet[ref]?.f) throw new Error(`INPUT DATA ${ref} is formula-driven and cannot be treated as a raw input.`);
   }
   const sheets = {};
-  for (const name of REQUIRED_SHEETS) {
+  for (const name of requiredSheets) {
     const sheet = workbook.Sheets[name];
     sheets[name] = {
       formulaCells: formulaCells(sheet),
@@ -320,4 +331,10 @@ function createGradeTemplateWorkbookMap(buffer) {
   };
 }
 
-module.exports = { createGradeTemplateWorkbookMap };
+function termConfigurations(map) {
+  return Object.fromEntries([1,2,3].map(n => {
+    const terms = map.terms.filter(t => t.termNumber === n);
+    return [String(n), {...terms[0].config, ...(terms[0].componentId ? {transmutationMode:'descendingMinimum',components: terms.map(t => ({id:t.componentId,label:t.componentLabel,...t.config}))} : {})}];
+  }));
+}
+module.exports = { createGradeTemplateWorkbookMap, termConfigurations };

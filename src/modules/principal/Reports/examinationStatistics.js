@@ -62,4 +62,21 @@ function summarize(rows) {
     distribution,
   };
 }
-module.exports = { statistics, summarize };
+function summarizeCoverage(rows) {
+  const results = new Map();
+  for (const row of rows) {
+    const key = `${row.studentId}:${row.subjectSectionId}:${row.examination}`;
+    if (!results.has(key)) results.set(key, new Map());
+    const items = results.get(key);
+    const score = Number(row.score), hps = Number(row.hps);
+    const valid = row.score !== null && row.score !== undefined && String(row.score).trim() !== '' &&
+      Number.isFinite(score) && Number.isFinite(hps) && hps > 0 && score >= 0 && score <= hps;
+    const previous = items.get(row.itemId);
+    if (previous && (previous.score !== score || previous.hps !== hps || previous.valid !== valid)) previous.conflict = true;
+    else if (!previous) items.set(row.itemId, { score, hps, valid, conflict: false });
+  }
+  const expectedResults = results.size;
+  const completeResults = [...results.values()].filter(items => [...items.values()].every(item => item.valid && !item.conflict)).length;
+  return { expectedResults, completeResults, percentage: expectedResults ? completeResults / expectedResults * 100 : null };
+}
+module.exports = { statistics, summarize, summarizeCoverage };

@@ -43,6 +43,70 @@ function categoryTotals(items, studentId, scoresByItemId) {
 
 // ---- Core recalculation ----
 
+function calculateSubjectGrade(template, weights, items, studentId, scoresByItemId) {
+    const wwItems = items.filter((i) => i.tab === "writtenWorks");
+    const ptItems = items.filter((i) => i.tab === "performanceTask");
+    const examItems = items.filter((i) => i.tab === "exams");
+
+    const calcGroup = (groupItems, groupTemplate, weight) => {
+      if (groupTemplate?.domains?.length > 1) {
+        let ws = 0;
+        const domainIds = new Set(groupTemplate.domains.map((domain) => domain.id));
+        let complete = !groupItems.some((item) => item.templateDomainId && !domainIds.has(item.templateDomainId));
+        let hasItems = false;
+        for (const domain of groupTemplate.domains) {
+          const domainItems = groupItems.filter((item) => item.templateDomainId === domain.id);
+          const totals = categoryTotals(domainItems, studentId, scoresByItemId);
+          hasItems ||= totals.totalItems > 0;
+          if (!totals.isComplete) complete = false;
+          if (!totals.totalItems) { complete = false; continue; }
+          ws += (computePS(totals.total, totals.highestPossible) * Number(domain.weightPercent)) / 100;
+        }
+        return { ws: hasItems && complete ? ws : null, complete: hasItems && complete };
+      }
+      const totals = categoryTotals(groupItems, studentId, scoresByItemId);
+      if (!totals.totalItems) return { ws: null, complete: false };
+      return { ws: computeWS(computePS(totals.total, totals.highestPossible), weight), complete: totals.isComplete };
+    };
+
+    const ww = calcGroup(wwItems, template?.structure?.ww, weights.ww);
+    const pt = calcGroup(ptItems, template?.structure?.pt, weights.pt);
+    let examWs = null;
+    const examConfiguration = normalizeExaminations(template?.structure, weights.exam);
+    let examComplete = !examConfiguration.enabled && examItems.length === 0;
+    if (examConfiguration.enabled) {
+      let combinedPs = 0;
+      let hasExamItems = false;
+      examComplete = true;
+      for (const component of examConfiguration.components) {
+        const componentItems = component.key === "ALL"
+          ? examItems
+          : examItems.filter((item) => String(item.examType || "").toUpperCase() === component.key.toUpperCase());
+        const totals = categoryTotals(componentItems, studentId, scoresByItemId);
+        hasExamItems ||= totals.totalItems > 0;
+        if (!totals.totalItems || !totals.isComplete) examComplete = false;
+        if (totals.highestPossible) combinedPs += (computePS(totals.total, totals.highestPossible) * Number(component.weightPercent)) / 100;
+      }
+      examComplete = hasExamItems && examComplete;
+      examWs = examComplete ? computeWS(combinedPs, weights.exam) : null;
+    }
+
+    const table = template?.structure?.transmutationTable || [];
+    const officialGrade = calculateOfficialGrade({
+      ww: { ws: ww.ws, isComplete: ww.complete },
+      pt: { ws: pt.ws, isComplete: pt.complete },
+      exam: { ws: examWs, isComplete: examComplete },
+      weights,
+      examinations: examConfiguration,
+      transmutationTable: table,
+      transmutationMode: template?.structure?.transmutationMode,
+    });
+    // `subject_grade_cache.average` is the published subject Term Grade. Never
+    // substitute Initial Grade when an approved transmutation table is absent
+    // or does not cover the calculated IG.
+    return officialGrade;
+  }
+
 async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId, db = connection) {
   const [ssRows] = await db.execute(
     `SELECT es.id AS subjectId, es.subject_name AS subjectName, gl.grade_level AS gradeLevel
@@ -156,67 +220,11 @@ async function recalcSubjectAverage(studentId, subjectSectionId, gradingPeriodId
       .map((r) => [`${studentId}:${r.itemId}`, Number(r.score)])
   );
 
-  const wwItems = items.filter((i) => i.tab === "writtenWorks");
-  const ptItems = items.filter((i) => i.tab === "performanceTask");
-  const examItems = items.filter((i) => i.tab === "exams");
-
-  const calcGroup = (groupItems, groupTemplate, weight) => {
-    if (groupTemplate?.domains?.length > 1) {
-      let ws = 0;
-      const domainIds = new Set(groupTemplate.domains.map((domain) => domain.id));
-      let complete = !groupItems.some((item) => item.templateDomainId && !domainIds.has(item.templateDomainId));
-      let hasItems = false;
-      for (const domain of groupTemplate.domains) {
-        const domainItems = groupItems.filter((item) => item.templateDomainId === domain.id);
-        const totals = categoryTotals(domainItems, studentId, scoresByItemId);
-        hasItems ||= totals.totalItems > 0;
-        if (!totals.isComplete) complete = false;
-        if (!totals.totalItems) { complete = false; continue; }
-        ws += (computePS(totals.total, totals.highestPossible) * Number(domain.weightPercent)) / 100;
-      }
-      return { ws: hasItems && complete ? ws : null, complete: hasItems && complete };
-    }
-    const totals = categoryTotals(groupItems, studentId, scoresByItemId);
-    if (!totals.totalItems) return { ws: null, complete: false };
-    return { ws: computeWS(computePS(totals.total, totals.highestPossible), weight), complete: totals.isComplete };
-  };
-
-  const ww = calcGroup(wwItems, template?.structure?.ww, weights.ww);
-  const pt = calcGroup(ptItems, template?.structure?.pt, weights.pt);
-  let examWs = null;
-  const examConfiguration = normalizeExaminations(template?.structure, weights.exam);
-  let examComplete = !examConfiguration.enabled && examItems.length === 0;
-  if (examConfiguration.enabled) {
-    let combinedPs = 0;
-    let hasExamItems = false;
-    examComplete = true;
-    for (const component of examConfiguration.components) {
-      const componentItems = component.key === "ALL"
-        ? examItems
-        : examItems.filter((item) => String(item.examType || "").toUpperCase() === component.key.toUpperCase());
-      const totals = categoryTotals(componentItems, studentId, scoresByItemId);
-      hasExamItems ||= totals.totalItems > 0;
-      if (!totals.totalItems || !totals.isComplete) examComplete = false;
-      if (totals.highestPossible) combinedPs += (computePS(totals.total, totals.highestPossible) * Number(component.weightPercent)) / 100;
-    }
-    examComplete = hasExamItems && examComplete;
-    examWs = examComplete ? computeWS(combinedPs, weights.exam) : null;
-  }
-
-  const table = template?.structure?.transmutationTable || [];
-  const officialGrade = calculateOfficialGrade({
-    ww: { ws: ww.ws, isComplete: ww.complete },
-    pt: { ws: pt.ws, isComplete: pt.complete },
-    exam: { ws: examWs, isComplete: examComplete },
-    weights,
-    examinations: examConfiguration,
-    transmutationTable: table,
-  });
-  // `subject_grade_cache.average` is the published subject Term Grade. Never
-  // substitute Initial Grade when an approved transmutation table is absent
-  // or does not cover the calculated IG.
-  const average = officialGrade.termGrade;
-  const isComplete = officialGrade.isComplete;
+  const calculate = (template, weights, items) => calculateSubjectGrade(template, weights, items, studentId, scoresByItemId);
+  const components = template?.structure?.components;
+  const results = components?.length ? components.map(c => calculate({structure:{...template.structure,...c}}, {ww:c.ww.weightPercent,pt:c.pt.weightPercent,exam:c.examWeightPercent}, items.filter(i => i.templateDomainId === c.id || String(i.templateDomainId || '').startsWith(c.id + '__')))) : [calculate(template,weights,items)];
+  const isComplete = results.every(r => r.isComplete) && (!components?.length || items.every(i => components.some(c => i.templateDomainId === c.id || String(i.templateDomainId || '').startsWith(c.id + '__'))));
+  const average = isComplete ? (components?.length ? Math.round(results.reduce((s,r)=>s+r.termGrade,0)/results.length) : results[0].termGrade) : null;
 
   await db.execute(
     `INSERT INTO subject_grade_cache (student_id, subject_section_id, grading_period_id, average, is_complete)
@@ -269,7 +277,7 @@ async function getActiveSubjectSectionsForScope(context, db = connection) {
         `SELECT ss.id, ss.teacher_id AS teacherId
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON ss.subject_id = es.id
-         WHERE ss.status = 'Active'
+         WHERE ss.status = 'Active' AND es.is_graded = 1
            AND ss.school_year_id = ${ACTIVE_SCHOOL_YEAR}
            AND (
              ss.section_id = ?
@@ -281,7 +289,7 @@ async function getActiveSubjectSectionsForScope(context, db = connection) {
         `SELECT ss.id, ss.teacher_id AS teacherId
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON ss.subject_id = es.id
-         WHERE ss.status = 'Active' AND ss.section_id IS NULL AND es.grade_level_id = ?
+         WHERE ss.status = 'Active' AND es.is_graded = 1 AND ss.section_id IS NULL AND es.grade_level_id = ?
            AND ss.school_year_id = ${ACTIVE_SCHOOL_YEAR}`,
         [gradeLevelId]
       );
@@ -400,7 +408,35 @@ async function recalcAllStudentsForSubject(subjectSectionId, gradingPeriodId, db
   }
 }
 
+// Read-only component grades using the same pinned template and calculation as the cache.
+async function getSubjectComponentGrades(studentId, subjectSectionId, gradingPeriodId, db = connection) {
+  const resolved = await resolveGradeTemplateForPeriod(subjectSectionId, gradingPeriodId, { pinIfEmpty: false, db });
+  if (!resolved.template) return [];
+  const structure = { ...resolved.template.structure, ...resolved.template.structure.termConfigurations?.[String(resolved.termNumber)] };
+  if (!structure.components?.length) return [];
+  const [items] = await db.execute(
+    `SELECT id, tab, max_items AS maxItems, exam_type AS examType, template_domain_id AS templateDomainId
+     FROM grade_items WHERE subject_section_id = ? AND grading_period_id = ?`,
+    [subjectSectionId, gradingPeriodId]
+  );
+  const [scores] = items.length ? await db.execute(
+    `SELECT item_id AS itemId, score FROM grade_scores WHERE student_id = ? AND item_id IN (${items.map(() => '?').join(',')})`,
+    [studentId, ...items.map(item => item.id)]
+  ) : [[]];
+  const scoresByItemId = new Map(scores.filter(row => row.score !== null).map(row => [`${studentId}:${row.itemId}`, Number(row.score)]));
+  return structure.components.map(component => {
+    const result = calculateSubjectGrade(
+      { structure: { ...structure, ...component } },
+      { ww: component.ww.weightPercent, pt: component.pt.weightPercent, exam: component.examWeightPercent },
+      items.filter(item => item.templateDomainId === component.id || String(item.templateDomainId || '').startsWith(component.id + '__')),
+      studentId, scoresByItemId
+    );
+    return { id: component.id, subject: component.label, grade: result.isComplete ? result.termGrade : null };
+  });
+}
+
 module.exports = {
+  getSubjectComponentGrades,
   recalcStudentSubject,
   recalcAllStudentsForSubject,
   recalcOverallAverage,

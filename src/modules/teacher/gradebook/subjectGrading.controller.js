@@ -1,3 +1,4 @@
+const { resolveHolisticTerm, getCurrentWeekStartDate, schoolWeekday } = require('../holistic/holisticPeriod');
 const { runGradeSubmission } = require('../../shared/grades/gradeSubmissionTransaction.service');
 const { studentBelongsToSubject } = require('./subjectStudent.authorization');
 const { requireTeacherStudentIdentity } = require('../../admin/student-record/studentRecord.authorization');
@@ -39,28 +40,7 @@ async function getActiveGradingPeriodId() {
   return rows.length > 0 ? rows[0].id : null;
 }
 
-async function getActiveTermNumber() {
-  const [rows] = await connection.execute(
-    `SELECT gp.term_number AS termNumber
-     FROM grading_periods gp
-     INNER JOIN school_year sy ON gp.school_year_id = sy.id
-     WHERE sy.is_active = 1 AND gp.is_active = 1
-     LIMIT 1`,
-  );
-  return rows.length > 0 ? rows[0].termNumber : 1;
-}
 
-function getCurrentWeekStartDate() {
-  const now = new Date();
-  const day = now.getDay();
-  const diffToMonday = day === 0 ? -6 : 1 - day;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() + diffToMonday);
-  const year = monday.getFullYear();
-  const month = String(monday.getMonth() + 1).padStart(2, "0");
-  const date = String(monday.getDate()).padStart(2, "0");
-  return `${year}-${month}-${date}`;
-}
 
 async function loadSubjectSection(req, res, next) {
   try {
@@ -95,7 +75,7 @@ async function loadSubjectSection(req, res, next) {
     // Pati ang adviser (classes) ay kukunin lang mula sa active school year.
     const [ssRows] = await connection.execute(
       `SELECT ss.id, ss.section_id, es.subject_name AS subjectName,
-              es.grade_level_id AS gradeLevelId,
+              es.grade_level_id AS gradeLevelId, es.is_graded AS isGraded,
               gl.grade_level AS gradeLevel, gls.section_name AS sectionName,
               c.class_adviser_id AS adviserId,
               CONCAT(advT.first_name, ' ', advT.last_name) AS adviserName
@@ -125,6 +105,11 @@ async function loadSubjectSection(req, res, next) {
 
     req.teacherId = teacherId;
     req.subjectSection = ssRows[0];
+    // Non-graded subjects support holistic evaluation only.
+    const assessmentPath = /^\/[^/]+\/(items|scores|submission|topics|interventions)(\/|$)/.test(req.path);
+    if (Number(req.subjectSection.isGraded) === 0 && assessmentPath) {
+      return res.status(403).json({ success: false, message: "Assessments and grades are unavailable for non-graded subjects." });
+    }
     next();
   } catch (error) {
     console.error("Error verifying subject-section access:", error);
@@ -170,6 +155,7 @@ const getSubjectSectionInfo = async (req, res) => {
       success: true,
       data: {
         subjectName,
+        isGraded: Number(req.subjectSection.isGraded) !== 0,
         gradeLevel,
         sectionName: sectionName || null,
         roster: students.map((s) => ({
@@ -277,6 +263,12 @@ const addItem = async (req, res) => {
     structure = structure?.termConfigurations?.[String(termNumber)]
       ? { ...structure, ...structure.termConfigurations[String(termNumber)] }
       : structure;
+    const subjectComponents = structure?.components;
+    if (subjectComponents?.length) {
+      const component = subjectComponents.find(c => templateDomainId === c.id || String(templateDomainId || '').startsWith(c.id + '__'));
+      if (!component) return res.status(400).json({success:false,message:'Choose a valid MAPEH component.'});
+      structure = {...structure, ...component};
+    }
     const group = tab === "writtenWorks" ? structure?.ww : tab === "performanceTask" ? structure?.pt : null;
     if (tab === "exams") {
       const examinations = normalizeExaminations(structure, structure?.examWeightPercent);
@@ -287,7 +279,7 @@ const addItem = async (req, res) => {
     if (group?.domains?.length > 1 && !templateDomainId) {
       return res.status(400).json({ success: false, message: "A template domain is required for this assessment item." });
     }
-    if (templateDomainId && !group?.domains?.some((domain) => domain.id === templateDomainId)) {
+    if (templateDomainId && !(tab === "exams" && subjectComponents?.some(c => c.id === templateDomainId)) && !group?.domains?.some((domain) => domain.id === templateDomainId)) {
       return res.status(400).json({ success: false, message: "Choose a valid template domain for this assessment item." });
     }
 
@@ -322,7 +314,7 @@ const addItem = async (req, res) => {
       if(Array.isArray(domain?.scoreColumns)){
         const params=[subjectSectionId,gradingPeriodId,tab];
         let sql='SELECT COUNT(*) AS used FROM grade_items WHERE subject_section_id=? AND grading_period_id=? AND tab=?';
-        if(group.domains.length>1){sql+=' AND template_domain_id=?';params.push(domain.id);}
+        if(group.domains.length>1 || subjectComponents?.length){sql+=' AND template_domain_id=?';params.push(domain.id);}
         const [[count]]=await db.execute(sql,params);
         require('./assessmentCapacity.service').requireAvailableSlot(domain,count.used);
       }
@@ -710,7 +702,7 @@ const getHolistic = async (req, res) => {
     )
       ? req.query.weekStartDate
       : getCurrentWeekStartDate();
-    const termNumber = Math.min(3, Math.max(1, Number(req.query.term) || 1));
+    const termNumber = await resolveHolisticTerm(connection, subjectSectionId, requestedWeek, req.query.term);
 
     const [rows] = await connection.execute(
       `SELECT student_id, axis, rating, DATE_FORMAT(week_start_date, '%Y-%m-%d') AS weekStartDate
@@ -733,9 +725,10 @@ const getHolistic = async (req, res) => {
       termNumber,
       locked:
         requestedWeek < getCurrentWeekStartDate() ||
-        [0, 6].includes(new Date().getDay()),
+        [0, 6].includes(schoolWeekday()),
     });
   } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
     console.error(
       "Error fetching holistic ratings:",
       error.code,
@@ -782,14 +775,10 @@ const upsertHolistic = async (req, res) => {
         ? requestedWeekStartDate
         : getCurrentWeekStartDate();
 
-    const termNumber = Math.min(
-      3,
-      Math.max(1, Number(requestedTermNumber) || (await getActiveTermNumber())),
-    );
 
     if (
       weekStartDate === getCurrentWeekStartDate() &&
-      [0, 6].includes(new Date().getDay())
+      [0, 6].includes(schoolWeekday())
     ) {
       return res
         .status(423)
@@ -804,6 +793,8 @@ const upsertHolistic = async (req, res) => {
       return res.status(403).json({success:false,message:"This student is not enrolled in your class."});
     }
 
+    const termNumber = await resolveHolisticTerm(connection, subjectSectionId, weekStartDate, requestedTermNumber);
+
     await connection.execute(
       `INSERT INTO holistic_ratings (subject_section_id, student_id, week_start_date, term_number, axis, rating)
        VALUES (?, ?, ?, ?, ?, ?)
@@ -813,6 +804,7 @@ const upsertHolistic = async (req, res) => {
 
     return res.status(200).json({ success: true, weekStartDate, termNumber });
   } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
     console.error("Error saving holistic rating:", error);
     return res
       .status(500)

@@ -42,7 +42,7 @@ function summarize(rows) {
     values.push(value); students.add(String(row.studentId));
     distribution[Math.min(9, Math.floor(value / 10))].count++;
     const key = `${row.subjectId}:${row.examination}`;
-    const group = groups.get(key) ?? { subjectId: row.subjectId, subject: row.subject, examination: row.examination, values: [], students: new Set(), members: [], cohortKnown: true };
+    const group = groups.get(key) ?? { subjectId: row.subjectId, subject: row.subject, grade: row.grade ?? null, examination: row.examination, values: [], students: new Set(), members: [], cohortKnown: true };
     group.values.push(value); group.students.add(String(row.studentId));
     group.cohortKnown = group.cohortKnown && row.sectionId != null;
     group.members.push(JSON.stringify([String(row.studentId), String(row.sectionId)]));
@@ -58,7 +58,7 @@ function summarize(rows) {
   };
   return {
     summary: { ...statistics(values), students: students.size, scale: 'Percentage (0–100)' },
-    rows: [...groups.values()].map(group => ({ subjectId: group.subjectId, subject: group.subject, examination: group.examination, ...statistics(group.values), students: group.students.size, comparisonCohort: groupCohort(group) })),
+    rows: [...groups.values()].map(group => ({ subjectId: group.subjectId, subject: group.subject, grade: group.grade, examination: group.examination, ...statistics(group.values), students: group.students.size, comparisonCohort: groupCohort(group) })),
     distribution,
   };
 }

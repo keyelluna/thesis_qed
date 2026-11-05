@@ -835,7 +835,7 @@ const getGradeSubmissionStatus = async (req, res) => {
     }
 
     const [rows] = await connection.execute(
-      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt,
+      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%s+08:00') AS submittedAt,
               (SELECT CAST(MAX(h.id) AS CHAR) FROM grade_submission_history h WHERE h.submission_type = 'subject' AND h.subject_section_id = subject_grade_submissions.subject_section_id AND h.grading_period_id = subject_grade_submissions.grading_period_id) AS submissionVersion
        FROM subject_grade_submissions
        WHERE subject_section_id = ? AND grading_period_id = ?`,

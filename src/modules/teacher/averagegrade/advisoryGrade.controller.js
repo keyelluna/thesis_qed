@@ -196,7 +196,7 @@ const getAdvisoryGradebook = async (req, res) => {
 
     const [submissionRows] = await connection.execute(
       `SELECT sgs.subject_section_id AS subjectSectionId,
-              DATE_FORMAT(sgs.submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt,
+              DATE_FORMAT(sgs.submitted_at, '%Y-%m-%dT%H:%i:%s+08:00') AS submittedAt,
               CONCAT(t.first_name, ' ', t.last_name) AS submittedByName
        FROM subject_grade_submissions sgs
        INNER JOIN teacher_table t ON sgs.submitted_by = t.id
@@ -343,7 +343,7 @@ const getSubmissionStatus = async (req, res) => {
     const scope = advisoryScope(req.advisorySection);
 
     const [rows] = await connection.execute(
-      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt,
+      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%s+08:00') AS submittedAt,
               (SELECT CAST(MAX(h.id) AS CHAR) FROM grade_submission_history h WHERE h.submission_type = 'advisory' AND h.${scope.column} = grade_submissions.${scope.column} ${scope.column === 'grade_level_id' ? 'AND h.section_id IS NULL' : ''} AND h.grading_period_id = grade_submissions.grading_period_id) AS submissionVersion
        FROM grade_submissions
        WHERE ${scope.column} = ? AND grading_period_id = ?`,
@@ -435,7 +435,7 @@ const getGradeVisibility = async (req, res) => {
 
     const [visRows] = await connection.execute(
       `SELECT student_id AS studentId, is_visible AS isVisible,
-              DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') AS updatedAt
+              DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%s+08:00') AS updatedAt
        FROM grade_visibility
        WHERE student_id IN (${placeholders}) AND grading_period_id = ?`,
       [...studentIds, gradingPeriodId],

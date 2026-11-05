@@ -507,7 +507,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
           gs.submitted_by AS submittedBy,
           DATE_FORMAT(
             gs.submitted_at,
-            '%Y-%m-%dT%H:%i:%sZ'
+            '%Y-%m-%dT%H:%i:%s+08:00'
           ) AS submittedAt,
           CONCAT(t.first_name, ' ', t.last_name) AS submittedByName
         FROM grade_submissions gs
@@ -536,7 +536,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
           gs.submitted_by AS submittedBy,
           DATE_FORMAT(
             gs.submitted_at,
-            '%Y-%m-%dT%H:%i:%sZ'
+            '%Y-%m-%dT%H:%i:%s+08:00'
           ) AS submittedAt,
           CONCAT(t.first_name, ' ', t.last_name) AS submittedByName
         FROM grade_submissions gs
@@ -769,7 +769,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
           sgs.submitted_by AS submittedBy,
           DATE_FORMAT(
             sgs.submitted_at,
-            '%Y-%m-%dT%H:%i:%sZ'
+            '%Y-%m-%dT%H:%i:%s+08:00'
           ) AS submittedAt,
           CONCAT(t.first_name, ' ', t.last_name)
             AS submittedByName

@@ -67,7 +67,7 @@ async function getAdvisorySubmissionHistory({ sectionId, gradeLevelId, gradingPe
             h.submission_type AS type,
             CASE WHEN h.submission_type = 'subject' THEN es.subject_name ELSE 'Advisory gradebook' END AS label,
             CONCAT(t.first_name, ' ', t.last_name) AS submittedByName,
-            DATE_FORMAT(h.submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt
+            DATE_FORMAT(h.submitted_at, '%Y-%m-%dT%H:%i:%s+08:00') AS submittedAt
      FROM grade_submission_history h
      LEFT JOIN \`subject-section\` ss ON ss.id = h.subject_section_id
      LEFT JOIN elem_subjects es ON es.id = ss.subject_id

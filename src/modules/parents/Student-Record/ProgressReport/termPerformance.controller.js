@@ -1,3 +1,4 @@
+const {studentDroppedPeriods} = require('../../../shared/grades/dropoutAcademicPolicy');
 const { getSubjectComponentGrades } = require('../../../shared/grades/gradeCache.service');
 const { isParentReportReleased } = require('./parentReportRelease');
 const connection = require('../../../../../config/db');
@@ -263,15 +264,18 @@ const getTermPerformance = async (req, res) => {
       );
     }
 
+    const droppedPeriods = await studentDroppedPeriods(connection,studentId,activeSchoolYearId);
     const data = gradingPeriods.map((gp) => {
+      const dropped = droppedPeriods.has(String(gp.id));
       const released = canRelease(gp);
       return {
         key: `term_${gp.id}`,
         label: gp.termLabel || TERM_LABEL_FALLBACK(gp.termNumber),
         termNumber: gp.termNumber,
         released,
-        average: released ? overallByPeriodId.get(gp.id) ?? undefined : undefined,
-        subjects: released ? (subjectsByPeriodId.get(gp.id) || []) : [],
+        dropped,
+        average: released && !dropped ? overallByPeriodId.get(gp.id) ?? undefined : undefined,
+        subjects: released ? (subjectsByPeriodId.get(gp.id) || []).map(row => dropped ? {...row,grade:null,components:row.components?.map(c=>({...c,grade:null}))} : row) : [],
       };
     });
 

@@ -1,3 +1,4 @@
+const {activeOnDateSql} = require('../../shared/grades/dropoutAcademicPolicy');
 const { subjectGradePublished } = require('../publishedGrades.sql');
 // reports.controller.js
 const connection = require("../../../../config/db");
@@ -214,7 +215,7 @@ async function getHolisticByGradeLevel(termNumber, schoolYearId) {
      WHERE hr.term_number = ?
        AND ss.school_year_id = ?
        AND st.is_deleted = 0
-       AND st.status <> 'graduated'
+       AND st.status <> 'graduated' AND ${activeOnDateSql("hr.student_id","ss.school_year_id","DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)")}
      GROUP BY gl.id, gl.grade_level, hr.axis`,
     [termNumber, schoolYearId]
   );
@@ -240,7 +241,7 @@ async function getHolisticBySubject(termNumber, schoolYearId) {
      WHERE hr.term_number = ?
        AND ss.school_year_id = ?
        AND st.is_deleted = 0
-       AND st.status <> 'graduated'
+       AND st.status <> 'graduated' AND ${activeOnDateSql("hr.student_id","ss.school_year_id","DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)")}
      GROUP BY es.subject_name, hr.axis`,
     [termNumber, schoolYearId]
   );

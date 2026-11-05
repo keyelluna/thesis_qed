@@ -1,3 +1,4 @@
+const {activeOnDateSql} = require('../../../shared/grades/dropoutAcademicPolicy');
 // attendance.controller.js
 const connection = require("../../.././../../config/db");
 
@@ -172,7 +173,7 @@ exports.getAttendanceSummary = async (req, res) => {
        SUM(CASE WHEN aar.status = 'E' THEN 1 ELSE 0 END) AS excused_count,
        COUNT(*) AS total_days
      FROM advisory_attendance_records aar
-     WHERE aar.student_id = ?
+     WHERE aar.student_id = ? AND ${activeOnDateSql("aar.student_id","(SELECT dropout_gp.school_year_id FROM grading_periods dropout_gp WHERE dropout_gp.id=aar.grading_period_id)","aar.attendance_date")}
        AND aar.grading_period_id IN (?)
      GROUP BY aar.grading_period_id, month_key`,
         [studentId, periodIds],

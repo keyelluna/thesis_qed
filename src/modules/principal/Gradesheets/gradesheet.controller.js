@@ -1,3 +1,4 @@
+const {periodDropouts} = require('../../shared/grades/dropoutAcademicPolicy');
 const connection = require("../../../../config/db");
 
 const getActiveSchoolYearId = async () => {
@@ -860,7 +861,9 @@ const getPrincipalSectionGradebook = async (req, res) => {
     //
     // Principal reaches this point ONLY after advisory submission.
     // ============================================================
+    const droppedStudents = await periodDropouts(connection, gradingPeriodId);
     const studentsOut = students.map((student) => {
+      const dropped = droppedStudents.has(String(student.id));
       const grades = {};
 
       for (const subject of subjectSections) {
@@ -897,6 +900,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
           status = "not_submitted";
         }
 
+        if (dropped) status = "dropped";
         const visibleAverage =
           status === "submitted" &&
           cache.isComplete &&
@@ -925,6 +929,8 @@ const getPrincipalSectionGradebook = async (req, res) => {
 
       return {
         studentId: String(student.id),
+        dropped,
+        dropoutEffectiveDate: droppedStudents.get(String(student.id)) ?? null,
 
         firstName: student.firstName,
         middleName: student.middleName,
@@ -938,7 +944,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
         grades,
 
         overallAverage:
-          overallByStudent.has(student.id)
+          !dropped && overallByStudent.has(student.id)
             ? overallByStudent.get(student.id)
             : null,
       };
@@ -963,7 +969,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
 
         if (isOwnAdvisory) {
           // Same approach as teacher gradebook.
-          submitted = students.every((student) => {
+          submitted = students.filter((student) => !droppedStudents.has(String(student.id))).every((student) => {
             const cache = cacheByKey.get(
               `${student.id}:${subject.subjectSectionId}`
             );

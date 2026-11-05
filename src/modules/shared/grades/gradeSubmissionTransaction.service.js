@@ -1,3 +1,4 @@
+const {periodDropouts} = require('./dropoutAcademicPolicy');
 const connection = require('../../../../config/db');
 const { recordSubjectGradeSubmission, recordAdvisoryGradeSubmission } = require('./gradeSubmissionHistory.service');
 const { recalcOverallAverage } = require('./gradeCache.service');
@@ -73,7 +74,8 @@ async function runGradeSubmission(req, kind, validate = async () => {}) {
       await db.execute(`INSERT INTO ${table} (${column}, grading_period_id, submitted_by) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE submitted_by = VALUES(submitted_by), submitted_at = CURRENT_TIMESTAMP`, [value, period, req.teacherId]);
       const history = { subjectSectionId: req.subjectSection?.id, sectionId: scope.sectionId, gradeLevelId: scope.gradeLevelId, gradingPeriodId: period, teacherId: req.teacherId };
       await (kind === 'subject' ? recordSubjectGradeSubmission : recordAdvisoryGradeSubmission)(history, db);
-      for (const student of students) await recalcOverallAverage(student.id, period, db);
+      const droppedStudents = await periodDropouts(db,period);
+      for (const student of students) if(!droppedStudents.has(String(student.id))) await recalcOverallAverage(student.id, period, db);
       notification = true;
     } else body.alreadySubmitted = true;
     commitAttempted = true;

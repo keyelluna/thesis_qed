@@ -398,7 +398,7 @@ exports.getTotalStudents = async (req, res) => {
        JOIN school_year sy ON sy.id = es.current_school_year_id
        WHERE es.is_deleted = 0
          AND sy.is_active = 1
-         AND es.status != 'graduated'
+         AND es.status != 'graduated' AND ${require('../../shared/grades/dropoutAcademicPolicy').activeOnDateSql('es.id','es.current_school_year_id','CURDATE()')}
          AND ${scope.sql}`, scope.params,
     );
 

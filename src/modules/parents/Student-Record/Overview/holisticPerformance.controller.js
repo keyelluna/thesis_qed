@@ -1,3 +1,4 @@
+const {activeOnDateSql} = require('../../../shared/grades/dropoutAcademicPolicy');
 const connection = require('../../../../../config/db');
 
 const AXES = ["cognitive", "emotional", "social", "behavioral"];
@@ -127,7 +128,7 @@ async function getStudentWeeklyEvaluation(req, res) {
     const [rows] = await connection.execute(
       `SELECT DATE_FORMAT(week_start_date, '%Y-%m-%d') AS week, axis, rating
        FROM holistic_ratings
-       WHERE subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?`,
+       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)")} AND subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?`,
       [...subjectSectionIds, studentId, termNumber]
     );
 
@@ -254,7 +255,7 @@ async function getStudentTermAverages(req, res) {
     const [aggRows] = await connection.execute(
       `SELECT term_number, axis, AVG(rating) AS avgRating, COUNT(*) AS cnt
        FROM holistic_ratings
-       WHERE subject_section_id IN (${sectionPlaceholders})
+       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)")} AND subject_section_id IN (${sectionPlaceholders})
          AND student_id = ?
          AND term_number IN (${termNumberPlaceholders})
        GROUP BY term_number, axis`,

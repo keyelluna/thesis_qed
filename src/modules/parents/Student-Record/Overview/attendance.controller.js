@@ -1,3 +1,4 @@
+const {activeOnDateSql} = require('../../../shared/grades/dropoutAcademicPolicy');
 const connection = require("../../../../../config/db");
 
 /**
@@ -87,16 +88,16 @@ exports.getMonthlyAttendance = async (req, res) => {
       ? await connection.query(
           `SELECT COUNT(DISTINCT attendance_date) AS school_days
            FROM advisory_attendance_records
-           WHERE section_id = ? AND MONTH(attendance_date) = ? AND YEAR(attendance_date) = ?`,
-          [student.section_id, monthNum, yearNum],
+           WHERE section_id = ? AND ${activeOnDateSql("?", "(SELECT dropout_year.current_school_year_id FROM elem_students dropout_year WHERE dropout_year.id=?)", "attendance_date")} AND MONTH(attendance_date) = ? AND YEAR(attendance_date) = ?`,
+          [student.section_id,student_id,student_id, monthNum, yearNum],
         )
       : await connection.query(
           `SELECT COUNT(DISTINCT aar.attendance_date) AS school_days
            FROM advisory_attendance_records aar
            INNER JOIN classes c ON c.id = aar.class_id
-           WHERE c.grade_level_id = ? AND c.section_id IS NULL
+           WHERE c.grade_level_id = ? AND c.section_id IS NULL AND ${activeOnDateSql("?","c.school_year_id","aar.attendance_date")}
              AND MONTH(aar.attendance_date) = ? AND YEAR(aar.attendance_date) = ?`,
-          [student.grade_level_id, monthNum, yearNum],
+          [student.grade_level_id,student_id, monthNum, yearNum],
         );
 
     const schoolDays = schoolDaysRows[0].school_days || 0;
@@ -105,7 +106,7 @@ exports.getMonthlyAttendance = async (req, res) => {
     const [statusRows] = await connection.query(
       `SELECT status, COUNT(*) AS total
        FROM advisory_attendance_records
-       WHERE student_id = ?
+       WHERE student_id = ? AND ${activeOnDateSql("advisory_attendance_records.student_id","(SELECT dropout_year.current_school_year_id FROM elem_students dropout_year WHERE dropout_year.id=advisory_attendance_records.student_id)","advisory_attendance_records.attendance_date")}
          AND MONTH(attendance_date) = ?
          AND YEAR(attendance_date) = ?
        GROUP BY status`,

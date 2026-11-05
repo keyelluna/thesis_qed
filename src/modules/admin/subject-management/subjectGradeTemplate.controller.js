@@ -1,3 +1,4 @@
+const {dropoutDateSql} = require('../../shared/grades/dropoutAcademicPolicy');
 const path = require("path");
 const crypto = require("crypto");
 const templateStorage = require("../../../services/templateStorage.service");
@@ -443,7 +444,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
               ss.school_year_id AS schoolYearId, es.subject_name AS subjectName,
               es.grade_level_id AS gradeLevelId, gl.grade_level AS gradeLevel, gls.section_name AS sectionName,
               sy.school_year AS schoolYear, CONCAT(t.first_name, ' ', t.last_name) AS teacherName,
-              gp.term_number AS termNumber
+              gp.term_number AS termNumber, DATE_FORMAT(gp.end_date,'%Y-%m-%d') AS periodEndDate
          FROM \`subject-section\` ss
          INNER JOIN elem_subjects es ON es.id = ss.subject_id
          INNER JOIN grade_level gl ON gl.id = es.grade_level_id
@@ -460,7 +461,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
 
     const [roster] = scope.sectionId
       ? await connection.execute(
-        `SELECT s.id, s.gender, CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
+        `SELECT s.id, s.gender, ${dropoutDateSql("s.id","s.current_school_year_id")} AS dropoutEffectiveDate, CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
            FROM elem_students s
           WHERE s.is_deleted = 0 AND s.status <> 'graduated'
             AND s.current_school_year_id = ? AND s.section_id = ?
@@ -468,7 +469,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
         [scope.schoolYearId, scope.sectionId],
       )
       : await connection.execute(
-        `SELECT s.id, s.gender, CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
+        `SELECT s.id, s.gender, ${dropoutDateSql("s.id","s.current_school_year_id")} AS dropoutEffectiveDate, CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
            FROM elem_students s
           WHERE s.is_deleted = 0 AND s.status <> 'graduated'
             AND s.current_school_year_id = ? AND s.grade_level_id = ? AND s.section_id IS NULL
@@ -481,7 +482,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
     const [items] = await connection.execute(
       `SELECT gi.id, gi.tab, gi.item_date AS itemDate, gi.exam_type AS examType,
               gi.template_domain_id AS templateDomainId, gi.max_items AS maxItems,
-              gi.grading_period_id AS gradingPeriodId, gp.term_number AS termNumber
+              gi.grading_period_id AS gradingPeriodId, gp.term_number AS termNumber, DATE_FORMAT(gp.end_date,'%Y-%m-%d') AS periodEndDate
          FROM grade_items gi
          INNER JOIN grading_periods gp ON gp.id = gi.grading_period_id
         WHERE gi.subject_section_id = ? AND gp.school_year_id = ?
@@ -543,6 +544,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
     for (const term of selectedTerms) {
       writes[term.sheetName] = {};
       const termItems = items.filter(item => Number(item.termNumber) === Number(term.termNumber));
+      const droppedForTerm = student => !!student.dropoutEffectiveDate && !!termItems[0]?.periodEndDate && student.dropoutEffectiveDate <= termItems[0].periodEndDate;
       const termComponents = selectedTerms.filter(t => Number(t.termNumber) === Number(term.termNumber));
       if (term.componentId && termItems.some(item => !termComponents.some(t => item.templateDomainId === t.componentId || String(item.templateDomainId || '').startsWith(t.componentId + '__')))) {
         return res.status(422).json({success:false,message:'An assessment has no valid MAPEH component. No workbook was exported.'});
@@ -567,7 +569,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
         for (const mapped of mappedRows) writes["INPUT DATA"][mapped.nameInputCell] = null;
         students.forEach((student, index) => {
           const mapped = mappedRows[index];
-          writes["INPUT DATA"][mapped.nameInputCell] = String(student.name || "").trim();
+          writes["INPUT DATA"][mapped.nameInputCell] = String(student.name || "").trim() + (student.dropoutEffectiveDate ? ` (Dropped ${student.dropoutEffectiveDate})` : "");
           rowByStudent.set(String(student.id), mapped.row);
         });
       }
@@ -608,7 +610,8 @@ exports.exportGradeTemplateBySection = async (req, res) => {
             for (const student of roster) {
               const row = rowByStudent.get(String(student.id));
               if (!row) continue;
-              const score = scoreMap.get(`${student.id}:${item.id}`);
+              // Leave affected terms ungraded in the official template; original scores stay in the database.
+              const score = droppedForTerm(student) ? null : scoreMap.get(`${student.id}:${item.id}`);
               writes[term.sheetName][`${require("xlsx").utils.encode_col(column - 1)}${row}`] = score;
             }
           });
@@ -637,7 +640,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
           if (row) {
             // A component maps to one official raw-score cell. Do not export a
             // partial sum while any assessment record in that component is blank.
-            const componentComplete = typedItems.length > 0 && values.every((value) => typeof value === "number");
+            const componentComplete = !droppedForTerm(student) && typedItems.length > 0 && values.every((value) => typeof value === "number");
             writes[term.sheetName][`${require("xlsx").utils.encode_col(column - 1)}${row}`] = componentComplete
               ? values.reduce((sum, value) => sum + value, 0)
               : null;

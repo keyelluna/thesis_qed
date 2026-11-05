@@ -1,3 +1,4 @@
+const {eligibleForPeriodSql} = require('../../shared/grades/dropoutAcademicPolicy');
 const connection = require('../../../../config/db');
 const { summarize, summarizeCoverage } = require('./examinationStatistics');
 
@@ -30,7 +31,7 @@ exports.getExaminationAnalytics = async (req, res) => {
       JOIN grading_periods gp ON gp.id = gi.grading_period_id
       JOIN elem_subjects es ON es.id = ss.subject_id JOIN grade_level gl ON gl.id = es.grade_level_id
       JOIN elem_students st ON st.id = gs.student_id
-      WHERE ${conditions.join(' AND ')} ORDER BY es.subject_name, gi.id, gs.student_id`, params);
+      WHERE ${conditions.join(' AND ')} AND ${eligibleForPeriodSql('gs.student_id','gp.id')} ORDER BY es.subject_name, gi.id, gs.student_id`, params);
     // Include eligible roster members without scores. Historical years use their
     // archived enrollment, never their present-day grade or section.
     const [expectedRows] = await connection.query(`SELECT st.studentId, gi.id AS itemId,
@@ -49,7 +50,7 @@ exports.getExaminationAnalytics = async (req, res) => {
         WHERE history.school_year_id = ? AND enrolled.current_school_year_id <> ? AND history.status <> 'graduated'
       ) st ON st.gradeLevelId = es.grade_level_id AND (ss.section_id IS NULL OR ss.section_id = st.sectionId)
       LEFT JOIN grade_scores gs ON gs.item_id = gi.id AND gs.student_id = st.studentId
-      WHERE ${conditions.join(' AND ')} ORDER BY ss.id, gi.id, st.studentId`, [yearId, yearId, yearId, ...params]);
+      WHERE ${conditions.join(' AND ')} AND ${eligibleForPeriodSql('st.studentId','gp.id')} ORDER BY ss.id, gi.id, st.studentId`, [yearId, yearId, yearId, ...params]);
     const unique = (rows, key, label) => [...new Map(rows.filter(row => row[key] != null).map(row => [String(row[key]), { id: String(row[key]), label: row[label] }])).values()];
     return res.json({ success: true, data: { ...summarize(rows), coverage: summarizeCoverage(expectedRows), schoolYear: String(yearId), options: {
       years: years.map(year => ({ id: String(year.id), label: year.label })), terms: terms.map(row => row.label),

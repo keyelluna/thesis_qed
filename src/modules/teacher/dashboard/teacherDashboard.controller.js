@@ -1,3 +1,4 @@
+const {activeOnDateSql} = require('../../shared/grades/dropoutAcademicPolicy');
 const { getTeacherScheduleRows } = require('../../../services/teacherSchedule.service');
 const connection = require('../../../../config/db');
 
@@ -93,7 +94,7 @@ const getDashboardStats = async (req, res) => {
             )
        WHERE c.class_adviser_id = ?
          AND st.is_deleted = 0
-         AND st.status <> 'graduated'
+         AND st.status <> 'graduated' AND ${activeOnDateSql('st.id','st.current_school_year_id','CURDATE()')}
          AND c.school_year_id = ${ACTIVE_SY_SUBQUERY}
          AND st.current_school_year_id = ${ACTIVE_SY_SUBQUERY}`,
       [teacherId]
@@ -110,7 +111,7 @@ const getDashboardStats = async (req, res) => {
          INNER JOIN elem_subjects sub ON sub.id = ss.subject_id
          INNER JOIN elem_students st
            ON st.is_deleted = 0
-          AND st.status <> 'graduated'
+          AND st.status <> 'graduated' AND ${activeOnDateSql('st.id','st.current_school_year_id','CURDATE()')}
           AND st.current_school_year_id = ${ACTIVE_SY_SUBQUERY}
           AND (
                 (ss.section_id IS NOT NULL AND st.section_id = ss.section_id)
@@ -127,7 +128,7 @@ const getDashboardStats = async (req, res) => {
          FROM classes c
          INNER JOIN elem_students st
            ON st.is_deleted = 0
-          AND st.status <> 'graduated'
+          AND st.status <> 'graduated' AND ${activeOnDateSql('st.id','st.current_school_year_id','CURDATE()')}
           AND st.current_school_year_id = ${ACTIVE_SY_SUBQUERY}
           AND (
                 (c.section_id IS NOT NULL AND st.section_id = c.section_id)

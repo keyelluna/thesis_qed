@@ -1,3 +1,4 @@
+const {activeOnDateSql} = require('../../shared/grades/dropoutAcademicPolicy');
 const { advisoryGradePublished } = require('../publishedGrades.sql');
 const connection = require("../../../../config/db");
 
@@ -20,7 +21,7 @@ exports.getOverviewAttendance = async (req, res) => {
          ) AS attendance
        FROM advisory_attendance_records aar
        JOIN elem_students st ON aar.student_id = st.id
-       WHERE aar.grading_period_id = ?
+       WHERE aar.grading_period_id = ? AND ${activeOnDateSql("aar.student_id","st.current_school_year_id","aar.attendance_date")}
          AND st.status <> 'graduated'
          AND st.is_deleted = 0`,
       [currentTerm.id]
@@ -299,7 +300,7 @@ exports.getOverviewSummary = async (req, res) => {
       connection.query('SELECT COUNT(*) AS total FROM teacher_table WHERE is_deleted = 0'),
       connection.query(`SELECT ROUND(SUM(aar.status = 'P') / COUNT(*) * 100, 1) AS attendance
         FROM advisory_attendance_records aar JOIN elem_students st ON st.id = aar.student_id
-        WHERE aar.grading_period_id = ? AND st.is_deleted = 0 AND st.status <> 'graduated'`, [term?.id ?? null]),
+        WHERE aar.grading_period_id = ? AND ${activeOnDateSql("aar.student_id","st.current_school_year_id","aar.attendance_date")} AND st.is_deleted = 0 AND st.status <> 'graduated'`, [term?.id ?? null]),
       connection.query(`SELECT ROUND(AVG(aog.overall_average), 2) AS academicPerf
         FROM elem_students st LEFT JOIN advisory_overall_grades aog
           ON aog.student_id = st.id AND aog.grading_period_id = ? AND ${advisoryGradePublished()}

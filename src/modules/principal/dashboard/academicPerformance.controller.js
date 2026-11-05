@@ -1,3 +1,4 @@
+const {activeOnDateSql} = require('../../shared/grades/dropoutAcademicPolicy');
 const { advisoryGradePublished } = require('../publishedGrades.sql');
 const connection = require("../../../../config/db");
 const { getCurrentGradingPeriod } = require("./utils/gradingPeriod");
@@ -157,7 +158,7 @@ exports.getPerformanceTrend = async (req, res) => {
        JOIN school_year sy
          ON sy.id = ss.school_year_id
          AND sy.is_active = 1
-       WHERE hr.term_number IN (${termPlaceholders})
+       WHERE hr.term_number IN (${termPlaceholders}) AND ${activeOnDateSql("hr.student_id","ss.school_year_id","DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)")}
        GROUP BY hr.term_number, hr.axis`,
       termNumbers,
     );

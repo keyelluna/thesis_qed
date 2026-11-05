@@ -1,3 +1,4 @@
+const {periodDropouts} = require('../../shared/grades/dropoutAcademicPolicy');
 const { runGradeSubmission } = require('../../shared/grades/gradeSubmissionTransaction.service');
 const connection = require("../../../../config/db");
 const { getSingleTermVisibility } = require('../../parents/Student-Record/ProgressReport/progressVisibility.controller');
@@ -219,7 +220,9 @@ const getAdvisoryGradebook = async (req, res) => {
 
     // Calculate from the same visible subject grades returned below. This
     // keeps a running average current even before every subject is complete.
+    const droppedStudents = await periodDropouts(connection, gradingPeriodId);
     const studentsOut = students.map((student) => {
+      const dropped = droppedStudents.has(String(student.id));
       const grades = {};
       for (const ss of subjectSections) {
         const cell = cacheByKey.get(`${student.id}:${ss.subjectSectionId}`) || {
@@ -244,6 +247,7 @@ const getAdvisoryGradebook = async (req, res) => {
           status = "not_submitted";
         }
 
+        if (dropped) status = "dropped";
         grades[String(ss.subjectSectionId)] = {
           status,
           termGrade: status === "submitted" && cell.isComplete && cell.average !== null ? Number(cell.average) : null,
@@ -264,6 +268,8 @@ const getAdvisoryGradebook = async (req, res) => {
         : null;
       return {
         studentId: String(student.id),
+        dropped,
+        dropoutEffectiveDate: droppedStudents.get(String(student.id)) ?? null,
         firstName: student.firstName,
         lastName: student.lastName,
         middleName: student.middleName,
@@ -285,7 +291,7 @@ const getAdvisoryGradebook = async (req, res) => {
             s.subjectSectionId,
           );
           if (isOwnAdvisorySubject) {
-            const allComplete = students.every(
+            const allComplete = students.filter(student => !droppedStudents.has(String(student.id))).every(
               (student) =>
                 cacheByKey.get(`${student.id}:${s.subjectSectionId}`)
                   ?.isComplete,

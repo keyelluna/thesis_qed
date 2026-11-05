@@ -1,3 +1,4 @@
+const {eligibleForPeriodSql} = require('../shared/grades/dropoutAcademicPolicy');
 const { getIO } = require('../../../socket.js');
 const db = require('../../../config/db.js');
 const { sendGradeVisibilityEmail } = require('../../services/mailer.service.js')
@@ -115,7 +116,7 @@ const notifyMissingForItem = async (itemId) => {
          OR (ss.section_id IS NULL AND es.grade_level_id = sub.grade_level_id)
           )
      LEFT JOIN grade_scores gs ON gs.item_id = gi.id AND gs.student_id = es.id
-     WHERE gi.id = ? AND gs.score IS NULL`,
+     WHERE gi.id = ? AND gs.score IS NULL AND ${eligibleForPeriodSql("es.id","gi.grading_period_id")}`,
     [itemId]
   );
 

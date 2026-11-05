@@ -34,11 +34,15 @@ async function ensureAuditLogTable() {
 }
 
 function actionForMethod(method, endpoint) {
-  const path = endpoint.toLowerCase();
+  const path = endpoint.split('?')[0].toLowerCase();
+  if (path === '/api/auth/logout') return 'LOGOUT';
+  if (path === '/api/auth/login') return 'LOGIN';
+  if (/delete|remove/.test(path)) return 'DELETE';
   if (/submit|release|approve/.test(path)) return "SUBMIT";
   if (/upload/.test(path)) return "UPLOAD";
   if (method === "POST" && /create|add|register/.test(path)) return "CREATE";
-  return ({ POST: "CREATE", PUT: "UPDATE", PATCH: "UPDATE", DELETE: "DELETE" })[method] || "CHANGE";
+  if (/update|edit|save/.test(path)) return "UPDATE";
+  return ({ POST: "CHANGE", PUT: "UPDATE", PATCH: "UPDATE", DELETE: "DELETE" })[method] || "CHANGE";
 }
 
 function resourceFromPath(path) {
@@ -139,7 +143,7 @@ async function listAuditLogs({ page = 1, limit = 25, search = "", role = "", act
     SELECT id, actor_user_id,
            CONVERT(actor_username USING utf8mb4) COLLATE utf8mb4_unicode_ci AS actor_username,
            CONVERT(actor_role USING utf8mb4) COLLATE utf8mb4_unicode_ci AS actor_role,
-           CONVERT(action_type USING utf8mb4) COLLATE utf8mb4_unicode_ci AS action_type,
+           CONVERT(CASE WHEN LOWER(SUBSTRING_INDEX(endpoint, '?', 1)) = '/api/auth/logout' THEN 'LOGOUT' ELSE action_type END USING utf8mb4) COLLATE utf8mb4_unicode_ci AS action_type,
            CONVERT(resource_name USING utf8mb4) COLLATE utf8mb4_unicode_ci AS resource_name,
            CONVERT(resource_id USING utf8mb4) COLLATE utf8mb4_unicode_ci AS resource_id,
            CONVERT(http_method USING utf8mb4) COLLATE utf8mb4_unicode_ci AS http_method,
@@ -194,7 +198,7 @@ async function listAuditLogs({ page = 1, limit = 25, search = "", role = "", act
             al.actor_role AS actorRole, al.action_type AS action, al.resource_name AS resource, al.resource_id AS resourceId,
             al.http_method AS httpMethod, al.endpoint, al.status_code AS statusCode,
             al.changed_fields AS changedFields, al.ip_address AS ipAddress,
-            al.user_agent AS userAgent, al.created_at AS createdAt
+            al.user_agent AS userAgent, DATE_FORMAT(al.created_at, '%Y-%m-%dT%H:%i:%s+08:00') AS createdAt
      FROM (${eventRowsSql}) al
      ${joins}
      ${where}

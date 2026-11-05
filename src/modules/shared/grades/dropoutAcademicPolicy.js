@@ -31,6 +31,7 @@ async function saveHolisticRating(pool, {subjectSectionId, studentId, weekStartD
   const db = await pool.getConnection();
   try {
     await db.beginTransaction();
+    await db.execute('SELECT id FROM `subject-section` WHERE id = ? FOR UPDATE', [subjectSectionId]);
     // Serialize with declaration/reversal, which locks this same student row.
     await db.execute('SELECT id FROM elem_students WHERE id = ? FOR UPDATE', [studentId]);
     const [notJoined]=await db.execute(`SELECT ti.student_id FROM student_transfer_ins ti JOIN \`subject-section\` ss ON ss.school_year_id=ti.school_year_id WHERE ss.id=? AND ti.student_id=? AND ti.joined_date>LEAST(DATE_ADD(?, INTERVAL 4 DAY),(SELECT MAX(gp.end_date) FROM grading_periods gp WHERE gp.school_year_id=ss.school_year_id AND gp.term_number=?)) LIMIT 1`,[subjectSectionId,studentId,weekStartDate,termNumber]);

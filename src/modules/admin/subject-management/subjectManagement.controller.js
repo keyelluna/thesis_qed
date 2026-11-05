@@ -1,3 +1,4 @@
+const {LOCK_MESSAGE,recordsExistSql,hasRecords}=require('./subjectRecordPolicy');
 const connection = require("../../../../config/db");
 
 exports.getSubjectSectionsByGrade = async (req, res) => {
@@ -14,7 +15,9 @@ exports.getSubjectSectionsByGrade = async (req, res) => {
         gls.section_name  AS section_name,
         ss.teacher_id     AS teacher_id,
         sy.school_year    AS school_year,
-        ss.status         AS status
+        ss.status         AS status,
+        ${recordsExistSql('ss.id')} AS structure_locked,
+        EXISTS (SELECT 1 FROM \`subject-section\` shared_assignment WHERE shared_assignment.subject_id=es.id AND ${recordsExistSql('shared_assignment.id')}) AS grade_level_locked
       FROM \`subject-section\` ss
       JOIN elem_subjects es        ON es.id = ss.subject_id
       LEFT JOIN grade_level_sections gls ON gls.id = ss.section_id
@@ -57,6 +60,8 @@ exports.getSubjectSectionsByGrade = async (req, res) => {
     const data = rows.map((r) => ({
       ...r,
       is_graded: Boolean(r.is_graded),
+      structure_locked: Boolean(Number(r.structure_locked)),
+      grade_level_locked: Boolean(Number(r.grade_level_locked)),
       weightDistribution: weightsBySubject[r.subject_id] ?? [],
     }));
 
@@ -352,10 +357,11 @@ exports.updateSubjectSection = async (req, res) => {
 
     const [existingRows] = await conn.query(
       `SELECT ss.subject_id, ss.section_id, ss.teacher_id, ss.school_year_id,
-              es.subject_name, es.grade_level_id, gls.section_name
+              es.subject_name, es.grade_level_id, gls.section_name, sy.school_year
          FROM \`subject-section\` ss
          JOIN elem_subjects es ON es.id = ss.subject_id
          LEFT JOIN grade_level_sections gls ON gls.id = ss.section_id
+         JOIN school_year sy ON sy.id=ss.school_year_id
         WHERE ss.id = ? LIMIT 1 FOR UPDATE`,
       [id]
     );
@@ -370,6 +376,9 @@ exports.updateSubjectSection = async (req, res) => {
     const nextName = String(subjectName ?? existing.subject_name).trim();
     const nextGradeLevelId = Number(gradeLevelId ?? existing.grade_level_id);
     const gradeChanged = nextGradeLevelId !== Number(existing.grade_level_id);
+
+    const scopeChanged = gradeChanged || (sectionName !== undefined && String(sectionName).trim() !== String(existing.section_name ?? '').trim()) || (schoolYear !== undefined && String(schoolYear).trim() !== String(existing.school_year));
+    if (scopeChanged && await hasRecords(conn, id, subjectId, gradeChanged)) reject(409, {success:false,message:LOCK_MESSAGE});
 
     if (nextName.toLowerCase() !== String(existing.subject_name).trim().toLowerCase() || gradeChanged) {
       const [duplicateSubjects] = await conn.query(
@@ -595,35 +604,45 @@ exports.assignTeacherToSection = async (req, res) => {
     });
   }
 
+  let conn;
   try {
-    const [existingRows] = await connection.query(
-      `SELECT id, school_year_id FROM \`subject-section\` WHERE id = ? AND school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1) LIMIT 1`,
+    conn=await connection.getConnection();
+    await conn.beginTransaction();
+    const [existingRows] = await conn.query(
+      `SELECT id, section_id, subject_id, school_year_id FROM \`subject-section\` WHERE id = ? AND school_year_id = (SELECT id FROM school_year WHERE is_active = 1 LIMIT 1) LIMIT 1 FOR UPDATE`,
       [id]
     );
     if (existingRows.length === 0) {
+      await conn.rollback();
       return res.status(404).json({
         success: false,
         message: "Subject assignment not found.",
       });
     }
 
-    const [sectionRows] = await connection.query(
+    const [sectionRows] = await conn.query(
       `SELECT id FROM grade_level_sections WHERE section_name = ? AND grade_level_id = ? AND school_year_id = ? AND is_active = 1 LIMIT 1`,
       [sectionName, gradeLevelId, existingRows[0].school_year_id]
     );
     if (sectionRows.length === 0) {
+      await conn.rollback();
       return res.status(404).json({
         success: false,
         message: `Section "${sectionName}" not found for this grade level.`,
       });
     }
     const sectionId = sectionRows[0].id;
+    if(Number(sectionId)!==Number(existingRows[0].section_id) && await hasRecords(conn,id,existingRows[0].subject_id)) {
+      await conn.rollback();
+      return res.status(409).json({success:false,message:LOCK_MESSAGE});
+    }
 
-    await connection.query(
+    await conn.query(
       `UPDATE \`subject-section\` SET section_id = ?, teacher_id = ? WHERE id = ?`,
       [sectionId, teacherId ?? 0, id]
     );
 
+    await conn.commit();
     return res.status(200).json({
       success: true,
       message: "Teacher assigned successfully.",
@@ -634,12 +653,13 @@ exports.assignTeacherToSection = async (req, res) => {
       },
     });
   } catch (error) {
+    if(conn)await conn.rollback();
     console.error("Database Error:", error);
     res.status(500).json({
       success: false,
       message: "Database error occurred.",
     });
-  }
+  } finally { if(conn)conn.release(); }
 };
 
 exports.toggleSubjectStatus = async (req, res) => {

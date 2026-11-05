@@ -158,7 +158,7 @@ exports.getPerformanceTrend = async (req, res) => {
        JOIN school_year sy
          ON sy.id = ss.school_year_id
          AND sy.is_active = 1
-       WHERE hr.term_number IN (${termPlaceholders}) AND ${activeOnDateSql("hr.student_id","ss.school_year_id","DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)")}
+       WHERE hr.term_number IN (${termPlaceholders}) AND ${activeOnDateSql("hr.student_id", "ss.school_year_id", "DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)", "hr.term_number")}
        GROUP BY hr.term_number, hr.axis`,
       termNumbers,
     );

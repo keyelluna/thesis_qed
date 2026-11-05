@@ -215,7 +215,7 @@ async function getHolisticByGradeLevel(termNumber, schoolYearId) {
      WHERE hr.term_number = ?
        AND ss.school_year_id = ?
        AND st.is_deleted = 0
-       AND st.status <> 'graduated' AND ${activeOnDateSql("hr.student_id","ss.school_year_id","DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)")}
+       AND st.status <> 'graduated' AND ${activeOnDateSql("hr.student_id", "ss.school_year_id", "DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)", "hr.term_number")}
      GROUP BY gl.id, gl.grade_level, hr.axis`,
     [termNumber, schoolYearId]
   );
@@ -241,7 +241,7 @@ async function getHolisticBySubject(termNumber, schoolYearId) {
      WHERE hr.term_number = ?
        AND ss.school_year_id = ?
        AND st.is_deleted = 0
-       AND st.status <> 'graduated' AND ${activeOnDateSql("hr.student_id","ss.school_year_id","DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)")}
+       AND st.status <> 'graduated' AND ${activeOnDateSql("hr.student_id", "ss.school_year_id", "DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)", "hr.term_number")}
      GROUP BY es.subject_name, hr.axis`,
     [termNumber, schoolYearId]
   );

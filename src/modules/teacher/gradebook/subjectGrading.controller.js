@@ -1,4 +1,4 @@
-const {withdrawalTypeSql,activeOnDateSql,dropoutDateSql,eligibleForPeriodSql,assertPeriodWriteAllowed,saveHolisticRating} = require('../../shared/grades/dropoutAcademicPolicy');
+const {joinedDateSql,withdrawalTypeSql,activeOnDateSql,dropoutDateSql,eligibleForPeriodSql,assertPeriodWriteAllowed,saveHolisticRating} = require('../../shared/grades/dropoutAcademicPolicy');
 const { resolveHolisticTerm, getCurrentWeekStartDate, schoolWeekday } = require('../holistic/holisticPeriod');
 const { runGradeSubmission } = require('../../shared/grades/gradeSubmissionTransaction.service');
 const { studentBelongsToSubject } = require('./subjectStudent.authorization');
@@ -134,7 +134,7 @@ const getSubjectSectionInfo = async (req, res) => {
 
     const [students] = section_id
       ? await connection.execute(
-          `SELECT s.id, s.gender, ${dropoutDateSql("s.id", "s.current_school_year_id")} AS dropoutEffectiveDate, ${withdrawalTypeSql("s.id", "s.current_school_year_id")} AS withdrawalType,
+          `SELECT s.id, s.gender, ${dropoutDateSql("s.id", "s.current_school_year_id")} AS dropoutEffectiveDate, ${joinedDateSql("s.id", "s.current_school_year_id")} AS joinedDate, ${withdrawalTypeSql("s.id", "s.current_school_year_id")} AS withdrawalType,
                   CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
            FROM elem_students s
            WHERE s.section_id = ? AND ${ROSTER_FILTER}
@@ -142,7 +142,7 @@ const getSubjectSectionInfo = async (req, res) => {
           [section_id],
         )
       : await connection.execute(
-          `SELECT s.id, s.gender, ${dropoutDateSql("s.id", "s.current_school_year_id")} AS dropoutEffectiveDate, ${withdrawalTypeSql("s.id", "s.current_school_year_id")} AS withdrawalType,
+          `SELECT s.id, s.gender, ${dropoutDateSql("s.id", "s.current_school_year_id")} AS dropoutEffectiveDate, ${joinedDateSql("s.id", "s.current_school_year_id")} AS joinedDate, ${withdrawalTypeSql("s.id", "s.current_school_year_id")} AS withdrawalType,
                   CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
            FROM elem_students s
            WHERE s.grade_level_id = ? AND ${ROSTER_FILTER}
@@ -162,6 +162,7 @@ const getSubjectSectionInfo = async (req, res) => {
         roster: students.map((s) => ({
           id: String(s.id),
           dropoutEffectiveDate: s.dropoutEffectiveDate ?? null,
+          joinedDate:s.joinedDate??null,
           withdrawalType: s.withdrawalType ?? null,
           name: s.name.trim(),
           gender: s.gender === "Female" ? "F" : "M",
@@ -723,7 +724,7 @@ const getHolistic = async (req, res) => {
     const [rows] = await connection.execute(
       `SELECT student_id, axis, rating, DATE_FORMAT(week_start_date, '%Y-%m-%d') AS weekStartDate
        FROM holistic_ratings
-       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)")} AND subject_section_id = ? AND week_start_date = ? AND term_number = ? AND ${activeOnDateSql("holistic_ratings.student_id","(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)","DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)")}`,
+       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)", "holistic_ratings.term_number")} AND subject_section_id = ? AND week_start_date = ? AND term_number = ? AND ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)", "holistic_ratings.term_number")}`,
       [subjectSectionId, requestedWeek, termNumber],
     );
 

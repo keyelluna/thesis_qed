@@ -10,7 +10,7 @@ exports.getHolisticOverview = async (req, res) => {
       JOIN school_year sy ON ss.school_year_id = sy.id
       JOIN elem_students st ON hr.student_id = st.id
       WHERE sy.is_active = 1
-        AND st.status <> 'graduated' AND ${activeOnDateSql('hr.student_id','ss.school_year_id','DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)')}
+        AND st.status <> 'graduated' AND ${activeOnDateSql('hr.student_id', 'ss.school_year_id', 'DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)', 'hr.term_number')}
         AND st.is_deleted = 0
       GROUP BY hr.axis
     `);

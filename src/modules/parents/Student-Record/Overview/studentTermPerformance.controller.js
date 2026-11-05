@@ -1,4 +1,4 @@
-const {studentDroppedPeriods} = require('../../../shared/grades/dropoutAcademicPolicy');
+const {studentDroppedPeriods,studentNotEnrolledPeriods} = require('../../../shared/grades/dropoutAcademicPolicy');
 const { isParentReportReleased } = require('../ProgressReport/parentReportRelease');
 const connection = require('../../../../../config/db');
 
@@ -120,8 +120,10 @@ async function getStudentTermPerformance(req, res) {
     );
 
     const droppedPeriods = await studentDroppedPeriods(connection,studentId,periods[0].schoolYearId);
+    const notEnrolledPeriods=await studentNotEnrolledPeriods(connection,studentId,periods[0].schoolYearId);
     const terms = periods.map((period) => {
-      const dropped = droppedPeriods.has(String(period.id));
+      const notEnrolled=notEnrolledPeriods.has(String(period.id));
+      const dropped = !notEnrolled&&droppedPeriods.has(String(period.id));
       const withdrawalType=droppedPeriods.get?.(String(period.id))??(dropped?"dropout":null);
       const isReleased = isParentReportReleased(period);
 
@@ -132,17 +134,17 @@ async function getStudentTermPerformance(req, res) {
 
       const validAverages = subjects.map((s) => s.grade).filter((grade) => grade !== null);
       const overallAverage =
-        !dropped && validAverages.length > 0
+        !dropped && !notEnrolled && validAverages.length > 0
           ? Math.round((validAverages.reduce((a, b) => a + b, 0) / validAverages.length) * 100) / 100
           : null;
 
       return {
         key: String(period.id),
         label: period.termLabel,
-        released: isReleased && (dropped || overallAverage !== null),
-        dropped, withdrawalType,
+        released: isReleased && (dropped || notEnrolled || overallAverage !== null),
+        dropped, withdrawalType, notEnrolled,
         average: isReleased ? overallAverage ?? undefined : undefined,
-        subjects: isReleased ? subjects.map(row => dropped ? {...row,grade:null} : row) : [],
+        subjects: isReleased ? subjects.map(row => dropped||notEnrolled ? {...row,grade:null} : row) : [],
       };
     });
 

@@ -134,7 +134,7 @@ async function getStudentWeeklyEvaluation(req, res) {
        FROM holistic_ratings hr
        INNER JOIN \`subject-section\` ss ON ss.id = hr.subject_section_id
        INNER JOIN elem_subjects es ON es.id = ss.subject_id
-       WHERE ${activeOnDateSql("hr.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=hr.subject_section_id)", "DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)")} AND hr.subject_section_id IN (${placeholders}) AND hr.student_id = ? AND hr.term_number = ?`,
+       WHERE ${activeOnDateSql("hr.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=hr.subject_section_id)", "DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)", "hr.term_number")} AND hr.subject_section_id IN (${placeholders}) AND hr.student_id = ? AND hr.term_number = ?`,
       [...subjectSectionIds, studentId, termNumber]
     );
 

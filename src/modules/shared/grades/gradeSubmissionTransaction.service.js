@@ -1,4 +1,4 @@
-const {periodDropouts} = require('./dropoutAcademicPolicy');
+const {periodDropouts,periodNotEnrolled} = require('./dropoutAcademicPolicy');
 const connection = require('../../../../config/db');
 const { recordSubjectGradeSubmission, recordAdvisoryGradeSubmission } = require('./gradeSubmissionHistory.service');
 const { recalcOverallAverage } = require('./gradeCache.service');
@@ -75,7 +75,8 @@ async function runGradeSubmission(req, kind, validate = async () => {}) {
       const history = { subjectSectionId: req.subjectSection?.id, sectionId: scope.sectionId, gradeLevelId: scope.gradeLevelId, gradingPeriodId: period, teacherId: req.teacherId };
       await (kind === 'subject' ? recordSubjectGradeSubmission : recordAdvisoryGradeSubmission)(history, db);
       const droppedStudents = await periodDropouts(db,period);
-      for (const student of students) if(!droppedStudents.has(String(student.id))) await recalcOverallAverage(student.id, period, db);
+      const notEnrolledStudents=await periodNotEnrolled(db,period);
+      for (const student of students) if(!droppedStudents.has(String(student.id))&&!notEnrolledStudents.has(String(student.id))) await recalcOverallAverage(student.id, period, db);
       notification = true;
     } else body.alreadySubmitted = true;
     commitAttempted = true;

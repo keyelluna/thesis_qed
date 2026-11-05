@@ -1,4 +1,4 @@
-const {periodDropouts} = require('../../shared/grades/dropoutAcademicPolicy');
+const {periodDropouts,periodNotEnrolled} = require('../../shared/grades/dropoutAcademicPolicy');
 const connection = require("../../../../config/db");
 
 const getActiveSchoolYearId = async () => {
@@ -862,8 +862,10 @@ const getPrincipalSectionGradebook = async (req, res) => {
     // Principal reaches this point ONLY after advisory submission.
     // ============================================================
     const droppedStudents = await periodDropouts(connection, gradingPeriodId);
+    const notEnrolledStudents=await periodNotEnrolled(connection,gradingPeriodId);
     const studentsOut = students.map((student) => {
-      const dropped = droppedStudents.has(String(student.id));
+      const notEnrolled=notEnrolledStudents.has(String(student.id));
+      const dropped = !notEnrolled&&droppedStudents.has(String(student.id));
       const grades = {};
 
       for (const subject of subjectSections) {
@@ -901,6 +903,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
         }
 
         if (dropped) status = "dropped";
+        if (notEnrolled) status = "not_enrolled";
         const visibleAverage =
           status === "submitted" &&
           cache.isComplete &&
@@ -929,7 +932,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
 
       return {
         studentId: String(student.id),
-        dropped,
+        dropped, notEnrolled, joinedDate:notEnrolledStudents.get(String(student.id))??null,
         dropoutEffectiveDate: droppedStudents.get(String(student.id))?.effectiveDate ?? droppedStudents.get(String(student.id)) ?? null,
         withdrawalType: droppedStudents.get(String(student.id))?.eventType ?? (dropped?'dropout':null),
 
@@ -945,7 +948,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
         grades,
 
         overallAverage:
-          !dropped && overallByStudent.has(student.id)
+          !dropped && !notEnrolled && overallByStudent.has(student.id)
             ? overallByStudent.get(student.id)
             : null,
       };
@@ -970,7 +973,7 @@ const getPrincipalSectionGradebook = async (req, res) => {
 
         if (isOwnAdvisory) {
           // Same approach as teacher gradebook.
-          submitted = students.filter((student) => !droppedStudents.has(String(student.id))).every((student) => {
+          submitted = students.filter((student) => !droppedStudents.has(String(student.id))&&!notEnrolledStudents.has(String(student.id))).every((student) => {
             const cache = cacheByKey.get(
               `${student.id}:${subject.subjectSectionId}`
             );

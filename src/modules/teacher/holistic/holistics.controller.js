@@ -78,7 +78,7 @@ async function computeHolisticTrend(subjectSectionIds, studentId, termNumber) {
   const [rows] = await connection.execute(
     `SELECT DATE_FORMAT(week_start_date, '%Y-%m-%d') AS week, rating
      FROM holistic_ratings
-     WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)")} AND subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?`,
+     WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)", "holistic_ratings.term_number")} AND subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?`,
     [...subjectSectionIds, studentId, termNumber]
   );
   return computeTrendFromRows(rows);
@@ -93,7 +93,7 @@ const getHolistic = async (req, res) => {
       let sql = `SELECT hr.student_id, hr.axis, hr.rating, DATE_FORMAT(hr.week_start_date, '%Y-%m-%d') AS week
                  FROM holistic_ratings hr
                  INNER JOIN elem_students st ON hr.student_id = st.id
-                 WHERE ${activeOnDateSql("hr.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=hr.subject_section_id)", "DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)")} AND hr.subject_section_id = ? AND ${rosterFilter("st")}`;
+                 WHERE ${activeOnDateSql("hr.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=hr.subject_section_id)", "DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)", "hr.term_number")} AND hr.subject_section_id = ? AND ${rosterFilter("st")}`;
       const params = [subjectSectionId];
       if (termNumber) {
         sql += ` AND hr.term_number = ?`;
@@ -149,7 +149,7 @@ const getHolistic = async (req, res) => {
       `SELECT hr.student_id, hr.axis, hr.rating, DATE_FORMAT(hr.week_start_date, '%Y-%m-%d') AS weekStartDate
        FROM holistic_ratings hr
        INNER JOIN elem_students st ON hr.student_id = st.id
-       WHERE ${activeOnDateSql("hr.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=hr.subject_section_id)", "DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)")} AND hr.subject_section_id = ? AND hr.week_start_date = ? AND ${rosterFilter("st")}`,
+       WHERE ${activeOnDateSql("hr.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=hr.subject_section_id)", "DATE_ADD(hr.week_start_date, INTERVAL 4 DAY)", "hr.term_number")} AND hr.subject_section_id = ? AND hr.week_start_date = ? AND ${rosterFilter("st")}`,
       [subjectSectionId, getCurrentWeekStartDate()]
     );
 
@@ -336,7 +336,7 @@ const getHolisticOverview = async (req, res) => {
       `SELECT subject_section_id, student_id,
               DATE_FORMAT(week_start_date, '%Y-%m-%d') AS week, rating
        FROM holistic_ratings
-       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)")} AND subject_section_id IN (${subjectPlaceholders}) AND term_number = ?`,
+       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)", "holistic_ratings.term_number")} AND subject_section_id IN (${subjectPlaceholders}) AND term_number = ?`,
       [...allSubjectSectionIds, termNumber]
     );
 
@@ -526,7 +526,7 @@ const getStudentHolisticProfile = async (req, res) => {
     const [overallAxisRows] = await connection.execute(
       `SELECT axis, AVG(rating) AS avgRating, COUNT(*) AS cnt, MAX(week_start_date) AS lastWeek
        FROM holistic_ratings
-       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)")} AND subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?
+       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)", "holistic_ratings.term_number")} AND subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?
        GROUP BY axis`,
       [...subjectSectionIds, studentId, termNumber]
     );
@@ -542,7 +542,7 @@ const getStudentHolisticProfile = async (req, res) => {
     const [subjectAxisRows] = await connection.execute(
       `SELECT subject_section_id, axis, AVG(rating) AS avgRating, COUNT(*) AS cnt, MAX(week_start_date) AS lastWeek
        FROM holistic_ratings
-       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)")} AND subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?
+       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)", "holistic_ratings.term_number")} AND subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?
        GROUP BY subject_section_id, axis`,
       [...subjectSectionIds, studentId, termNumber]
     );
@@ -550,7 +550,7 @@ const getStudentHolisticProfile = async (req, res) => {
     const [subjectWeekRows] = await connection.execute(
       `SELECT subject_section_id, DATE_FORMAT(week_start_date, '%Y-%m-%d') AS week, axis, rating
        FROM holistic_ratings
-       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)")} AND subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?
+       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)", "holistic_ratings.term_number")} AND subject_section_id IN (${placeholders}) AND student_id = ? AND term_number = ?
        ORDER BY week_start_date DESC, subject_section_id, axis`,
       [...subjectSectionIds, studentId, termNumber]
     );
@@ -731,7 +731,7 @@ const getDomainTrends = async (req, res) => {
           `SELECT subject_section_id AS subjectSectionId, student_id AS studentId, axis, rating,
                   DATE_FORMAT(week_start_date, '%Y-%m-%d') AS week
            FROM holistic_ratings
-           WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)")} AND subject_section_id IN (${subjectPh}) AND term_number = ?`,
+           WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)", "holistic_ratings.term_number")} AND subject_section_id IN (${subjectPh}) AND term_number = ?`,
           [...subjectIds, termNumber]
         );
       }

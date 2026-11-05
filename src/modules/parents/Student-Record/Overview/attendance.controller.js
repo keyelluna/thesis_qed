@@ -84,20 +84,25 @@ exports.getMonthlyAttendance = async (req, res) => {
     //    = distinct attendance_date na may record sa advisory_attendance_records,
     //    naka-scope sa section ng student (dati walang section filter, kaya
     //    posibleng magkaiba ang bilang depende sa records ng ibang section)
+    // Bind the requested student once. Enrollment predicates reference columns,
+    // so adding another enrollment check cannot change the placeholder count.
     const [schoolDaysRows] = student.section_id
       ? await connection.query(
-          `SELECT COUNT(DISTINCT attendance_date) AS school_days
-           FROM advisory_attendance_records
-           WHERE section_id = ? AND ${activeOnDateSql("?", "(SELECT dropout_year.current_school_year_id FROM elem_students dropout_year WHERE dropout_year.id=?)", "attendance_date")} AND MONTH(attendance_date) = ? AND YEAR(attendance_date) = ?`,
-          [student.section_id,student_id,student_id, monthNum, yearNum],
+          `SELECT COUNT(DISTINCT aar.attendance_date) AS school_days
+           FROM advisory_attendance_records aar
+           JOIN elem_students attendance_student ON attendance_student.id = ?
+           WHERE aar.section_id = ? AND ${activeOnDateSql("attendance_student.id", "attendance_student.current_school_year_id", "aar.attendance_date")}
+             AND MONTH(aar.attendance_date) = ? AND YEAR(aar.attendance_date) = ?`,
+          [student_id, student.section_id, monthNum, yearNum],
         )
       : await connection.query(
           `SELECT COUNT(DISTINCT aar.attendance_date) AS school_days
            FROM advisory_attendance_records aar
            INNER JOIN classes c ON c.id = aar.class_id
-           WHERE c.grade_level_id = ? AND c.section_id IS NULL AND ${activeOnDateSql("?","c.school_year_id","aar.attendance_date")}
+           JOIN elem_students attendance_student ON attendance_student.id = ?
+           WHERE c.grade_level_id = ? AND c.section_id IS NULL AND ${activeOnDateSql("attendance_student.id","c.school_year_id","aar.attendance_date")}
              AND MONTH(aar.attendance_date) = ? AND YEAR(aar.attendance_date) = ?`,
-          [student.grade_level_id,student_id, monthNum, yearNum],
+          [student_id, student.grade_level_id, monthNum, yearNum],
         );
 
     const schoolDays = schoolDaysRows[0].school_days || 0;

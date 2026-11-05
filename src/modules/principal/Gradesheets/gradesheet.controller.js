@@ -930,7 +930,8 @@ const getPrincipalSectionGradebook = async (req, res) => {
       return {
         studentId: String(student.id),
         dropped,
-        dropoutEffectiveDate: droppedStudents.get(String(student.id)) ?? null,
+        dropoutEffectiveDate: droppedStudents.get(String(student.id))?.effectiveDate ?? droppedStudents.get(String(student.id)) ?? null,
+        withdrawalType: droppedStudents.get(String(student.id))?.eventType ?? (dropped?'dropout':null),
 
         firstName: student.firstName,
         middleName: student.middleName,

@@ -346,7 +346,7 @@ exports.getAllStudents = async (req, res) => {
                 DATE_FORMAT(ti.joined_date,'%Y-%m-%d') AS joined_date,
                 gl.grade_level AS grade_level_name,
                 sec.section_name,
-                CASE WHEN dropout.id IS NULL THEN s.status ELSE 'dropped' END AS enrollment_status,
+                CASE WHEN dropout.id IS NULL THEN s.status WHEN dropout.reason='Transferred out' THEN 'transferred' ELSE 'dropped' END AS enrollment_status,
                 DATE_FORMAT(dropout.effective_date,'%Y-%m-%d') AS dropout_effective_date,
                 guardian.first_name AS guardian_first_name,
                 guardian.middle_name AS guardian_middle_name,

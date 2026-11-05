@@ -1,4 +1,4 @@
-const {dropoutDateSql} = require('../../shared/grades/dropoutAcademicPolicy');
+const {dropoutDateSql,withdrawalTypeSql} = require('../../shared/grades/dropoutAcademicPolicy');
 const path = require("path");
 const crypto = require("crypto");
 const templateStorage = require("../../../services/templateStorage.service");
@@ -461,7 +461,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
 
     const [roster] = scope.sectionId
       ? await connection.execute(
-        `SELECT s.id, s.gender, ${dropoutDateSql("s.id","s.current_school_year_id")} AS dropoutEffectiveDate, CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
+        `SELECT s.id, s.gender, ${dropoutDateSql("s.id","s.current_school_year_id")} AS dropoutEffectiveDate, ${withdrawalTypeSql("s.id","s.current_school_year_id")} AS withdrawalType, CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
            FROM elem_students s
           WHERE s.is_deleted = 0 AND s.status <> 'graduated'
             AND s.current_school_year_id = ? AND s.section_id = ?
@@ -469,7 +469,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
         [scope.schoolYearId, scope.sectionId],
       )
       : await connection.execute(
-        `SELECT s.id, s.gender, ${dropoutDateSql("s.id","s.current_school_year_id")} AS dropoutEffectiveDate, CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
+        `SELECT s.id, s.gender, ${dropoutDateSql("s.id","s.current_school_year_id")} AS dropoutEffectiveDate, ${withdrawalTypeSql("s.id","s.current_school_year_id")} AS withdrawalType, CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
            FROM elem_students s
           WHERE s.is_deleted = 0 AND s.status <> 'graduated'
             AND s.current_school_year_id = ? AND s.grade_level_id = ? AND s.section_id IS NULL
@@ -569,7 +569,7 @@ exports.exportGradeTemplateBySection = async (req, res) => {
         for (const mapped of mappedRows) writes["INPUT DATA"][mapped.nameInputCell] = null;
         students.forEach((student, index) => {
           const mapped = mappedRows[index];
-          writes["INPUT DATA"][mapped.nameInputCell] = String(student.name || "").trim() + (student.dropoutEffectiveDate ? ` (Dropped ${student.dropoutEffectiveDate})` : "");
+          writes["INPUT DATA"][mapped.nameInputCell] = String(student.name || "").trim() + (student.dropoutEffectiveDate ? ` (${student.withdrawalType==='transfer'?'Transferred Out':'Dropped'} ${student.dropoutEffectiveDate})` : "");
           rowByStudent.set(String(student.id), mapped.row);
         });
       }

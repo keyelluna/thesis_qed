@@ -267,13 +267,14 @@ const getTermPerformance = async (req, res) => {
     const droppedPeriods = await studentDroppedPeriods(connection,studentId,activeSchoolYearId);
     const data = gradingPeriods.map((gp) => {
       const dropped = droppedPeriods.has(String(gp.id));
+      const withdrawalType=droppedPeriods.get?.(String(gp.id))??(dropped?"dropout":null);
       const released = canRelease(gp);
       return {
         key: `term_${gp.id}`,
         label: gp.termLabel || TERM_LABEL_FALLBACK(gp.termNumber),
         termNumber: gp.termNumber,
         released,
-        dropped,
+        dropped, withdrawalType,
         average: released && !dropped ? overallByPeriodId.get(gp.id) ?? undefined : undefined,
         subjects: released ? (subjectsByPeriodId.get(gp.id) || []).map(row => dropped ? {...row,grade:null,components:row.components?.map(c=>({...c,grade:null}))} : row) : [],
       };

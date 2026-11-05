@@ -1,4 +1,4 @@
-const {activeOnDateSql,dropoutDateSql,eligibleForPeriodSql,assertPeriodWriteAllowed,saveHolisticRating} = require('../../shared/grades/dropoutAcademicPolicy');
+const {withdrawalTypeSql,activeOnDateSql,dropoutDateSql,eligibleForPeriodSql,assertPeriodWriteAllowed,saveHolisticRating} = require('../../shared/grades/dropoutAcademicPolicy');
 const { resolveHolisticTerm, getCurrentWeekStartDate, schoolWeekday } = require('../holistic/holisticPeriod');
 const { runGradeSubmission } = require('../../shared/grades/gradeSubmissionTransaction.service');
 const { studentBelongsToSubject } = require('./subjectStudent.authorization');
@@ -134,7 +134,7 @@ const getSubjectSectionInfo = async (req, res) => {
 
     const [students] = section_id
       ? await connection.execute(
-          `SELECT s.id, s.gender, ${dropoutDateSql("s.id", "s.current_school_year_id")} AS dropoutEffectiveDate,
+          `SELECT s.id, s.gender, ${dropoutDateSql("s.id", "s.current_school_year_id")} AS dropoutEffectiveDate, ${withdrawalTypeSql("s.id", "s.current_school_year_id")} AS withdrawalType,
                   CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
            FROM elem_students s
            WHERE s.section_id = ? AND ${ROSTER_FILTER}
@@ -142,7 +142,7 @@ const getSubjectSectionInfo = async (req, res) => {
           [section_id],
         )
       : await connection.execute(
-          `SELECT s.id, s.gender, ${dropoutDateSql("s.id", "s.current_school_year_id")} AS dropoutEffectiveDate,
+          `SELECT s.id, s.gender, ${dropoutDateSql("s.id", "s.current_school_year_id")} AS dropoutEffectiveDate, ${withdrawalTypeSql("s.id", "s.current_school_year_id")} AS withdrawalType,
                   CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
            FROM elem_students s
            WHERE s.grade_level_id = ? AND ${ROSTER_FILTER}
@@ -162,6 +162,7 @@ const getSubjectSectionInfo = async (req, res) => {
         roster: students.map((s) => ({
           id: String(s.id),
           dropoutEffectiveDate: s.dropoutEffectiveDate ?? null,
+          withdrawalType: s.withdrawalType ?? null,
           name: s.name.trim(),
           gender: s.gender === "Female" ? "F" : "M",
         })),

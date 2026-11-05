@@ -269,7 +269,8 @@ const getAdvisoryGradebook = async (req, res) => {
       return {
         studentId: String(student.id),
         dropped,
-        dropoutEffectiveDate: droppedStudents.get(String(student.id)) ?? null,
+        dropoutEffectiveDate: droppedStudents.get(String(student.id))?.effectiveDate ?? droppedStudents.get(String(student.id)) ?? null,
+        withdrawalType: droppedStudents.get(String(student.id))?.eventType ?? (dropped?'dropout':null),
         firstName: student.firstName,
         lastName: student.lastName,
         middleName: student.middleName,

@@ -122,6 +122,7 @@ async function getStudentTermPerformance(req, res) {
     const droppedPeriods = await studentDroppedPeriods(connection,studentId,periods[0].schoolYearId);
     const terms = periods.map((period) => {
       const dropped = droppedPeriods.has(String(period.id));
+      const withdrawalType=droppedPeriods.get?.(String(period.id))??(dropped?"dropout":null);
       const isReleased = isParentReportReleased(period);
 
       const subjects = subjectSections.map((ss) => ({
@@ -139,7 +140,7 @@ async function getStudentTermPerformance(req, res) {
         key: String(period.id),
         label: period.termLabel,
         released: isReleased && (dropped || overallAverage !== null),
-        dropped,
+        dropped, withdrawalType,
         average: isReleased ? overallAverage ?? undefined : undefined,
         subjects: isReleased ? subjects.map(row => dropped ? {...row,grade:null} : row) : [],
       };

@@ -6,7 +6,7 @@ async function context(db,req,lock=false){
  FROM classes c JOIN school_year sy ON sy.id=c.school_year_id AND sy.is_active=1
  JOIN teacher_table t ON t.id=c.class_adviser_id AND t.user_id=? AND t.is_deleted=0 AND LOWER(t.status)='active'
  WHERE c.id=? AND c.status='Active' ${lock?'FOR UPDATE':''}`,[req.user.userId,req.params.classId]);
- if(!classes.length)fail(403,'Only the current class adviser may manage dropout declarations.');
+ if(!classes.length)fail(403,'Only the current class adviser may manage student departure declarations.');
  return classes[0];
 }
 async function student(db,ctx,id){
@@ -44,28 +44,31 @@ async function getState(req,res){
 async function declare(req,res){
  let db;
  try{
- const id=Number(req.params.studentId),{effectiveDate,reason,remarks=''}=req.body??{};
- if(!Number.isSafeInteger(id)||id<=0||!isoDate(effectiveDate)||!REASONS.includes(reason)||typeof remarks!=='string'||remarks.trim().length>1000||(reason==='Other'&&!remarks.trim()))fail(400,'Choose an effective date and a reason. Other requires remarks (maximum 1,000 characters).');
+ const id=Number(req.params.studentId),{effectiveDate,remarks=''}=req.body??{};
+ // Reserved reason identifies transfer-outs in the existing audited departure
+ // table; the dropout endpoint rejects it, so the two statuses stay distinct.
+ const reason=req.transferOut?'Transferred out':req.body?.reason;
+ if(!Number.isSafeInteger(id)||id<=0||!isoDate(effectiveDate)||!(req.transferOut||REASONS.includes(reason))||typeof remarks!=='string'||remarks.trim().length>1000||(reason==='Other'&&!remarks.trim()))fail(400,'Choose an effective date and a reason. Other requires remarks (maximum 1,000 characters).');
  db=await pool.getConnection();await db.beginTransaction();const ctx=await context(db,req,true);await student(db,ctx,id);
  const [bounds]=await db.execute("SELECT DATE_FORMAT(MIN(start_date),'%Y-%m-%d') AS startDate,DATE_FORMAT(MAX(end_date),'%Y-%m-%d') AS endDate FROM grading_periods WHERE school_year_id=?",[ctx.yearId]);
  if(!bounds[0]?.startDate||effectiveDate<bounds[0].startDate||effectiveDate>bounds[0].endDate||effectiveDate>ctx.today)fail(400,'Effective date must fall within the active school year and cannot be in the future.');
  const transfers=await require('./transferIn.service').classTransferIns(db,ctx);
  const joined=transfers.find(t=>t.studentId===String(id));if(joined&&effectiveDate<joined.joinedDate)fail(400,'Effective date cannot precede the date the student joined.');
- const existing=await activeDropouts(db,ctx.id,ctx.yearId);if(existing.some(d=>d.studentId===String(id)))fail(409,'This student already has an active dropout declaration.');
+ const existing=await activeDropouts(db,ctx.id,ctx.yearId);if(existing.some(d=>d.studentId===String(id)))fail(409,'This student already has an active dropout or transfer-out declaration.');
  const last=await lastAttendance(db,ctx,ctx.id,id);
  if(last&&effectiveDate<=last)fail(409,'Effective date must be after the last recorded present or late attendance ('+last+'). Existing attendance has not been changed.');
  await db.execute('INSERT INTO student_dropout_events (student_id,class_id,school_year_id,last_attended,effective_date,reason,remarks,declared_by) VALUES (?,?,?,?,?,?,?,?)',[id,ctx.id,ctx.yearId,last,effectiveDate,reason,remarks.trim(),req.user.userId]);
  await db.commit();res.status(201).json({success:true});
- }catch(error){if(db)await db.rollback();if(error.code==='ER_DUP_ENTRY')return res.status(409).json({message:'This student already has an active dropout declaration.'});return errorResponse(res,error);}finally{db?.release();}
+ }catch(error){if(db)await db.rollback();if(error.code==='ER_DUP_ENTRY')return res.status(409).json({message:'This student already has an active dropout or transfer-out declaration.'});return errorResponse(res,error);}finally{db?.release();}
 }
 async function reverse(req,res){
  let db;try{
  const {reason}=req.body??{};const id=Number(req.params.studentId),declarationId=Number(req.body?.declarationId);
  if(!Number.isSafeInteger(id)||id<=0||!Number.isSafeInteger(declarationId)||declarationId<=0||typeof reason!=='string'||!reason.trim()||reason.trim().length>1000)fail(400,'A reversal reason and the current declaration are required.');
  db=await pool.getConnection();await db.beginTransaction();const ctx=await context(db,req,true);await student(db,ctx,id);
- const [result]=await db.execute(`UPDATE student_dropout_events SET reversed_by=?,reversed_at=CURRENT_TIMESTAMP,reversal_reason=? WHERE id=? AND student_id=? AND class_id=? AND school_year_id=? AND reversed_at IS NULL`,[req.user.userId,reason.trim(),declarationId,id,ctx.id,ctx.yearId]);
+ const [result]=await db.execute(`UPDATE student_dropout_events SET reversed_by=?,reversed_at=CURRENT_TIMESTAMP,reversal_reason=? WHERE id=? AND student_id=? AND class_id=? AND school_year_id=? AND reversed_at IS NULL AND (reason = 'Transferred out') = ?`,[req.user.userId,reason.trim(),declarationId,id,ctx.id,ctx.yearId,req.transferOut?1:0]);
  if(result.affectedRows!==1)fail(409,'This declaration changed or was already reversed. Refresh attendance.');
  await db.commit();res.json({success:true});
  }catch(error){if(db)await db.rollback();return errorResponse(res,error);}finally{db?.release();}
 }
-module.exports={getState,declare,reverse};
+module.exports={getState,declare,reverse,declareTransferOut:(req,res)=>{req.transferOut=true;return declare(req,res);},reverseTransferOut:(req,res)=>{req.transferOut=true;return reverse(req,res);}};

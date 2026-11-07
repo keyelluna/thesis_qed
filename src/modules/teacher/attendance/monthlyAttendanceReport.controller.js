@@ -40,7 +40,8 @@ async function getMonthlyReport(req, res) {
     const principal = principals.length === 1 ? principals[0] : null;
     const data = { ...aggregateReport(roster, records, month, dropouts), classId: String(classId), schoolYearId: String(yearId), schoolYearLabel: schoolClass.schoolYearLabel,
       transferIns: roster.filter(s=>s.joinedDate?.slice(0,7)===month).map(s=>({studentId:String(s.id),name:s.name,joinedDate:s.joinedDate})),
-      dropouts: dropouts.filter(d=>d.effectiveDate.slice(0,7)===month).map(d=>({...d,name:roster.find(s=>String(s.id)===d.studentId)?.name||'Student '+d.studentId})),
+      transferOuts: dropouts.filter(d=>d.eventType==='transfer'&&d.effectiveDate.slice(0,7)===month).map(d=>({...d,name:roster.find(s=>String(s.id)===d.studentId)?.name||d.studentName||'Student '+d.studentId})),
+      dropouts: dropouts.filter(d=>d.eventType!=='transfer'&&d.effectiveDate.slice(0,7)===month).map(d=>({...d,name:roster.find(s=>String(s.id)===d.studentId)?.name||'Student '+d.studentId})),
       gradeSection: [schoolClass.gradeLevel, schoolClass.sectionName].filter(Boolean).join(' - '), month, months,
       adviserName: schoolClass.adviserName || '', principalName: principal?.name || '', principalDesignation: principal?.designation || '',
       principalSource: principal ? 'system' : 'manual' };

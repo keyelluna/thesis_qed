@@ -1,3 +1,4 @@
+const {schoolDate,unfinishedTerms} = require('../../shared/academic/academicYearPolicy');
 const connection = require("../../../../config/db");
 
 /**
@@ -16,27 +17,19 @@ function termLabelFor(termNumber) {
  */
 function deriveTermStatus(startDate, endDate) {
   if (!startDate || !endDate) return "Upcoming";
-  const today = new Date().toISOString().slice(0, 10);
+  const today = schoolDate();
   if (today < startDate) return "Upcoming";
   if (today > endDate) return "Completed";
   return "Active";
 }
 
-async function getUnfinishedTerms(conn, schoolYearId) {
-  const today = new Date().toLocaleDateString("en-CA", {
-    timeZone: "Asia/Manila",
-  }); // YYYY-MM-DD
-
+async function getUnfinishedTerms(conn, schoolYearId, lock=false) {
   const [rows] = await conn.query(
     `SELECT term_number, term_label, start_date, end_date
-     FROM grading_periods
-     WHERE school_year_id = ?
-       AND (start_date IS NULL OR end_date IS NULL OR end_date >= ?)
-     ORDER BY term_number ASC`,
-    [schoolYearId, today],
+     FROM grading_periods WHERE school_year_id = ? ORDER BY term_number ASC ${lock?'FOR UPDATE':''}`,
+    [schoolYearId],
   );
-
-  return rows;
+  return unfinishedTerms(rows);
 }
 
 async function fetchAcademicYearById(conn, id) {
@@ -85,6 +78,7 @@ exports.getActiveAcademicYear = async (_req, res) => {
       });
     }
 
+    const blocked=await getUnfinishedTerms(connection,row.id);
     res.status(200).json({
       status: "success",
       message: "Active academic year fetched successfully.",
@@ -94,6 +88,8 @@ exports.getActiveAcademicYear = async (_req, res) => {
         startDate: row.start_date,
         endDate: row.end_date,
         status: row.is_active ? "Active" : "Inactive",
+        canChangeYear:blocked.length===0,
+        changeLockReason:blocked.length?"All three terms must have valid dates and have ended before the academic year can be changed. Pending: "+blocked.map(t=>t.term_label).join(', ')+'.':null,
       },
     });
   } catch (error) {
@@ -210,8 +206,8 @@ exports.addAcademicYear = async (req, res) => {
     // =========================================================
 
     // ===== BLOCK: terms of current SY must be done first =====
-    if (isActive && previousActiveYear) {
-      const unfinished = await getUnfinishedTerms(conn, previousActiveYear.id);
+    if (previousActiveYear) {
+      const unfinished = await getUnfinishedTerms(conn, previousActiveYear.id,true);
 
       if (unfinished.length > 0) {
         const names = unfinished.map((t) => t.term_label).join(", ");
@@ -465,6 +461,8 @@ exports.saveTermsForSchoolYear = async (req, res) => {
 
   try {
     await conn.beginTransaction();
+    const [currentYear]=await conn.query('SELECT id FROM school_year WHERE id=? AND is_active=1 FOR UPDATE',[id]);
+    if(!currentYear.length)throw Object.assign(new Error('The active academic year changed. Refresh before editing term dates.'),{statusCode:409});
 
     for (const term of terms) {
       const isActive =
@@ -514,8 +512,8 @@ exports.saveTermsForSchoolYear = async (req, res) => {
     await conn.rollback();
     console.error("Database Error:", error);
     res
-      .status(500)
-      .json({ status: "error", message: "Database error occurred." });
+      .status(error.statusCode||500)
+      .json({ status: "error", message: error.statusCode?error.message:"Database error occurred." });
   } finally {
     conn.release();
   }

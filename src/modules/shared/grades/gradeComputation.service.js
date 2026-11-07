@@ -10,9 +10,18 @@ function calculateOfficialGrade({ ww, pt, exam, weights, examinations, transmuta
   if (!complete) return { isComplete: false, initialGrade: null, termGrade: null };
 
   const initialGrade = required.reduce((sum, category) => sum + Number(category.ws), 0);
-  const match = (transmutationTable || []).find((row) =>
+  const table = transmutationTable || [];
+  const match = table.find((row) =>
     initialGrade >= Number(row.igMin) && (transmutationMode === "descendingMinimum" || initialGrade <= Number(row.igMax))
-  );
+  ) ?? (transmutationMode === "descendingMinimum" ? undefined : table.find((row) =>
+    // Match the workbook's lower band within two-decimal HELPER range gaps.
+    // Larger gaps remain invalid rather than inventing missing grading rules.
+    initialGrade > Number(row.igMax) && table.some((next) =>
+      Number(next.igMin) > Number(row.igMax) &&
+      Number(next.igMin) - Number(row.igMax) <= 0.010000001 &&
+      initialGrade < Number(next.igMin)
+    )
+  ));
   const termGrade = match && Number.isFinite(Number(match.transmuted)) ? Number(match.transmuted) : null;
   return { isComplete: termGrade !== null, initialGrade, termGrade };
 }

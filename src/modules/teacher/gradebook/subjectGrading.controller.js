@@ -1,3 +1,4 @@
+const {joinedDateSql,withdrawalTypeSql,activeOnDateSql,dropoutDateSql,eligibleForPeriodSql,assertPeriodWriteAllowed,saveHolisticRating} = require('../../shared/grades/dropoutAcademicPolicy');
 const { resolveHolisticTerm, getCurrentWeekStartDate, schoolWeekday } = require('../holistic/holisticPeriod');
 const { runGradeSubmission } = require('../../shared/grades/gradeSubmissionTransaction.service');
 const { studentBelongsToSubject } = require('./subjectStudent.authorization');
@@ -133,7 +134,7 @@ const getSubjectSectionInfo = async (req, res) => {
 
     const [students] = section_id
       ? await connection.execute(
-          `SELECT s.id, s.gender,
+          `SELECT s.id, s.gender, ${dropoutDateSql("s.id", "s.current_school_year_id")} AS dropoutEffectiveDate, ${joinedDateSql("s.id", "s.current_school_year_id")} AS joinedDate, ${withdrawalTypeSql("s.id", "s.current_school_year_id")} AS withdrawalType,
                   CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
            FROM elem_students s
            WHERE s.section_id = ? AND ${ROSTER_FILTER}
@@ -141,7 +142,7 @@ const getSubjectSectionInfo = async (req, res) => {
           [section_id],
         )
       : await connection.execute(
-          `SELECT s.id, s.gender,
+          `SELECT s.id, s.gender, ${dropoutDateSql("s.id", "s.current_school_year_id")} AS dropoutEffectiveDate, ${joinedDateSql("s.id", "s.current_school_year_id")} AS joinedDate, ${withdrawalTypeSql("s.id", "s.current_school_year_id")} AS withdrawalType,
                   CONCAT(s.last_name, ', ', s.first_name, ' ', COALESCE(s.middle_name, '')) AS name
            FROM elem_students s
            WHERE s.grade_level_id = ? AND ${ROSTER_FILTER}
@@ -160,6 +161,9 @@ const getSubjectSectionInfo = async (req, res) => {
         sectionName: sectionName || null,
         roster: students.map((s) => ({
           id: String(s.id),
+          dropoutEffectiveDate: s.dropoutEffectiveDate ?? null,
+          joinedDate:s.joinedDate??null,
+          withdrawalType: s.withdrawalType ?? null,
           name: s.name.trim(),
           gender: s.gender === "Female" ? "F" : "M",
         })),
@@ -273,7 +277,7 @@ const addItem = async (req, res) => {
     if (tab === "exams") {
       const examinations = normalizeExaminations(structure, structure?.examWeightPercent);
       if (!examinations.enabled) return res.status(400).json({ success: false, message: "This pinned grade template has no Examination section." });
-      const accepted = examinations.components.some((component) => component.key.toUpperCase() === "ALL" || component.key.toUpperCase() === String(examType || "").toUpperCase());
+      const accepted = examinations.components.some((component) => (component.key.toUpperCase() === "ALL" ? "TE" : component.key.toUpperCase()) === String(examType || "").trim().toUpperCase());
       if (!accepted) return res.status(400).json({ success: false, message: "Choose an examination component supported by the pinned grade template." });
     }
     if (group?.domains?.length > 1 && !templateDomainId) {
@@ -309,6 +313,18 @@ const addItem = async (req, res) => {
       return res.status(201).json({ success: true, id: String(dupe[0].id) });
     }
 
+    if (tab === "exams") {
+      // The subject row lock above serializes concurrent additions, including
+      // requests from different browser tabs. Saved exams still occupy a slot.
+      const [existingExams] = await db.execute(
+        `SELECT id FROM grade_items WHERE subject_section_id = ? AND grading_period_id = ?
+         AND tab = 'exams' AND template_domain_id <=> ?
+         AND UPPER(TRIM(COALESCE(exam_type, 'TE'))) = ? LIMIT 1`,
+        [subjectSectionId, gradingPeriodId, templateDomainId || null, String(examType).trim().toUpperCase()],
+      );
+      if (existingExams.length) throw Object.assign(new Error('This exam has already been added for this term. View or edit it in Full Records.'), {statusCode:409});
+    }
+
     if(group?.domains?.length){
       const domain=group.domains.length===1?group.domains[0]:group.domains.find(entry=>entry.id===templateDomainId);
       if(Array.isArray(domain?.scoreColumns)){
@@ -333,7 +349,7 @@ const addItem = async (req, res) => {
         topicId || null,
         templateDomainId || null,
         safeFormat,
-        examType || null,
+        tab === "exams" ? String(examType).trim().toUpperCase() : examType || null,
         maxItems,
       ],
     );
@@ -566,6 +582,7 @@ const upsertScore = async (req, res, batch = {}) => {
       FROM grade_items WHERE id = ? AND subject_section_id = ? FOR UPDATE`, [itemId, subjectSectionId]);
     if (!items.length) reject(403, 'This item does not belong to your class.');
     if (!students.length || !(await studentBelongsToSubject(studentId, req.subjectSection, db))) reject(403, 'This student is not enrolled in your class.');
+    if(items[0].gradingPeriodId) await assertPeriodWriteAllowed(db, studentId, items[0].gradingPeriodId);
     const tables = ['subject-section', 'elem_students', 'grade_items', 'grade_scores', 'subject_grade_cache', 'advisory_overall_grades'];
     const [engines] = await db.execute(`SELECT TABLE_NAME AS tableName, ENGINE AS engine FROM information_schema.TABLES
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (?, ?, ?, ?, ?, ?)`, tables);
@@ -707,7 +724,7 @@ const getHolistic = async (req, res) => {
     const [rows] = await connection.execute(
       `SELECT student_id, axis, rating, DATE_FORMAT(week_start_date, '%Y-%m-%d') AS weekStartDate
        FROM holistic_ratings
-       WHERE subject_section_id = ? AND week_start_date = ? AND term_number = ?`,
+       WHERE ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)", "holistic_ratings.term_number")} AND subject_section_id = ? AND week_start_date = ? AND term_number = ? AND ${activeOnDateSql("holistic_ratings.student_id", "(SELECT dropout_ss.school_year_id FROM `subject-section` dropout_ss WHERE dropout_ss.id=holistic_ratings.subject_section_id)", "DATE_ADD(holistic_ratings.week_start_date, INTERVAL 4 DAY)", "holistic_ratings.term_number")}`,
       [subjectSectionId, requestedWeek, termNumber],
     );
 
@@ -795,12 +812,7 @@ const upsertHolistic = async (req, res) => {
 
     const termNumber = await resolveHolisticTerm(connection, subjectSectionId, weekStartDate, requestedTermNumber);
 
-    await connection.execute(
-      `INSERT INTO holistic_ratings (subject_section_id, student_id, week_start_date, term_number, axis, rating)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE rating = VALUES(rating)`,
-      [subjectSectionId, studentId, weekStartDate, termNumber, axis, value],
-    );
+    await saveHolisticRating(connection,{subjectSectionId,studentId,weekStartDate,termNumber,axis,value});
 
     return res.status(200).json({ success: true, weekStartDate, termNumber });
   } catch (error) {
@@ -824,7 +836,7 @@ const getGradeSubmissionStatus = async (req, res) => {
     }
 
     const [rows] = await connection.execute(
-      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt,
+      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%s+08:00') AS submittedAt,
               (SELECT CAST(MAX(h.id) AS CHAR) FROM grade_submission_history h WHERE h.submission_type = 'subject' AND h.subject_section_id = subject_grade_submissions.subject_section_id AND h.grading_period_id = subject_grade_submissions.grading_period_id) AS submissionVersion
        FROM subject_grade_submissions
        WHERE subject_section_id = ? AND grading_period_id = ?`,
@@ -876,8 +888,9 @@ const submitSubjectGrades = async (req, res) => {
        WHERE ${ROSTER_FILTER}
          AND ((ss.section_id IS NOT NULL AND s.section_id = ss.section_id)
            OR (ss.section_id IS NULL AND s.section_id IS NULL AND s.grade_level_id = es.grade_level_id))
+         AND ${eligibleForPeriodSql("s.id", "?")}
          AND (c.is_complete IS NULL OR c.is_complete = 0 OR c.average IS NULL)`,
-      [subjectSectionId, gradingPeriodId],
+      [subjectSectionId, gradingPeriodId, gradingPeriodId],
     );
     if (Number(incompleteRows[0]?.incompleteCount || 0) > 0) {
       const error = new Error("Every enrolled student must have complete scores and an official Term Grade before submission."); error.statusCode = 400; throw error;

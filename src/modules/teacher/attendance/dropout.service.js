@@ -32,10 +32,10 @@ async function activeDropouts(db,classId,yearId){
  LEFT JOIN elem_students s ON s.id=d.student_id
  WHERE d.class_id=? AND d.school_year_id=? AND d.reversed_at IS NULL
  ORDER BY d.effective_date DESC,d.id DESC`,[classId,yearId]);
- return rows.map(row=>({...row,id:String(row.id),studentId:String(row.studentId)}));
+ return rows.map(row=>({...row,eventType:row.reason==='Transferred out'?'transfer':'dropout',id:String(row.id),studentId:String(row.studentId)}));
 }
 async function assertAttendanceAllowed(db,studentId,yearId,date){
  const [rows]=await db.execute('SELECT id FROM student_dropout_events WHERE student_id=? AND school_year_id=? AND reversed_at IS NULL AND effective_date<=? LIMIT 1',[studentId,yearId,date]);
- if(rows.length)fail(409,'Attendance is locked from the effective dropout date. Reverse the declaration before editing this date.');
+ if(rows.length)fail(409,'Attendance is locked from the effective dropout or transfer-out date. Reverse the declaration before editing this date.');
 }
 module.exports={ensureDropoutTable,REASONS,isoDate,fail,consecutiveAbsences,activeDropouts,assertAttendanceAllowed};

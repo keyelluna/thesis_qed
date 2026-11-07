@@ -1,3 +1,4 @@
+const {periodNotEnrolled} = require('./dropoutAcademicPolicy');
 // src/modules/shared/grades/gradeCache.service.js
 const connection = require('../../../../config/db');
 const { resolveGradeTemplateForPeriod } = require('./gradeTemplateResolution.service');
@@ -402,7 +403,9 @@ async function recalcAllStudentsForSubject(subjectSectionId, gradingPeriodId, db
       return metadata.get(key);
     },
   });
+  const notEnrolledStudents=await periodNotEnrolled(db,gradingPeriodId);
   for (const s of students) {
+    if(notEnrolledStudents.has(String(s.id)))continue;
     await recalcSubjectAverage(s.id, subjectSectionId, gradingPeriodId, calculationDb);
     await recalcOverallAverage(s.id, gradingPeriodId, calculationDb);
   }

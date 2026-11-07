@@ -1,3 +1,4 @@
+const {activeOnDateSql} = require('../../shared/grades/dropoutAcademicPolicy');
 const connection = require("../../../../config/db");
 
 // Active school year id (subquery na ginagamit sa lahat ng queries)
@@ -18,7 +19,7 @@ exports.getTodaysAttendance = async (req, res) => {
          JOIN elem_students es
            ON es.id = aar.student_id
            AND es.is_deleted = 0
-           AND es.status <> 'graduated'
+           AND es.status <> 'graduated' AND ${activeOnDateSql('es.id','es.current_school_year_id','CURDATE()')}
            AND es.current_school_year_id = ${ACTIVE_SY}
          LEFT JOIN grading_periods gp
            ON gp.id = aar.grading_period_id
@@ -69,7 +70,7 @@ exports.getAttendanceByGrade = async (req, res) => {
           OR (gls.id IS NULL AND es.section_id IS NULL)
         )
         AND es.is_deleted = 0
-        AND es.status <> 'graduated'
+        AND es.status <> 'graduated' AND ${activeOnDateSql('es.id','es.current_school_year_id','CURDATE()')}
         AND es.current_school_year_id = ${ACTIVE_SY}
       GROUP BY gl.id, gl.grade_level, gls.id, gls.section_name
       ORDER BY gl.id, gls.id
@@ -87,7 +88,7 @@ exports.getAttendanceByGrade = async (req, res) => {
         JOIN elem_students es
           ON es.id = aar.student_id
           AND es.is_deleted = 0
-          AND es.status <> 'graduated'
+          AND es.status <> 'graduated' AND ${activeOnDateSql('es.id','es.current_school_year_id','CURDATE()')}
           AND es.current_school_year_id = ${ACTIVE_SY}
         LEFT JOIN grading_periods gp
           ON gp.id = aar.grading_period_id

@@ -38,3 +38,6 @@ router.post('/:classId/students/:studentId/dropout', verifyToken, monthlyReport.
 router.post('/:classId/students/:studentId/dropout/reverse', verifyToken, monthlyReport.requireTeacher, dropout.reverse);
 
 router.post('/:classId/mark-present', verifyToken, monthlyReport.requireTeacher, require('./bulkAttendance.controller').markPresent);
+
+router.post('/:classId/students/:studentId/transfer-out', verifyToken, monthlyReport.requireTeacher, dropout.declareTransferOut);
+router.post('/:classId/students/:studentId/transfer-out/reverse', verifyToken, monthlyReport.requireTeacher, dropout.reverseTransferOut);

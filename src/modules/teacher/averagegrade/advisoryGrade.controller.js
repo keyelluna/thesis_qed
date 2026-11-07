@@ -1,3 +1,4 @@
+const {periodDropouts,periodNotEnrolled} = require('../../shared/grades/dropoutAcademicPolicy');
 const { runGradeSubmission } = require('../../shared/grades/gradeSubmissionTransaction.service');
 const connection = require("../../../../config/db");
 const { getSingleTermVisibility } = require('../../parents/Student-Record/ProgressReport/progressVisibility.controller');
@@ -195,7 +196,7 @@ const getAdvisoryGradebook = async (req, res) => {
 
     const [submissionRows] = await connection.execute(
       `SELECT sgs.subject_section_id AS subjectSectionId,
-              DATE_FORMAT(sgs.submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt,
+              DATE_FORMAT(sgs.submitted_at, '%Y-%m-%dT%H:%i:%s+08:00') AS submittedAt,
               CONCAT(t.first_name, ' ', t.last_name) AS submittedByName
        FROM subject_grade_submissions sgs
        INNER JOIN teacher_table t ON sgs.submitted_by = t.id
@@ -219,7 +220,11 @@ const getAdvisoryGradebook = async (req, res) => {
 
     // Calculate from the same visible subject grades returned below. This
     // keeps a running average current even before every subject is complete.
+    const droppedStudents = await periodDropouts(connection, gradingPeriodId);
+    const notEnrolledStudents=await periodNotEnrolled(connection,gradingPeriodId);
     const studentsOut = students.map((student) => {
+      const notEnrolled=notEnrolledStudents.has(String(student.id));
+      const dropped = !notEnrolled&&droppedStudents.has(String(student.id));
       const grades = {};
       for (const ss of subjectSections) {
         const cell = cacheByKey.get(`${student.id}:${ss.subjectSectionId}`) || {
@@ -244,6 +249,8 @@ const getAdvisoryGradebook = async (req, res) => {
           status = "not_submitted";
         }
 
+        if (dropped) status = "dropped";
+        if (notEnrolled) status = "not_enrolled";
         grades[String(ss.subjectSectionId)] = {
           status,
           termGrade: status === "submitted" && cell.isComplete && cell.average !== null ? Number(cell.average) : null,
@@ -264,6 +271,9 @@ const getAdvisoryGradebook = async (req, res) => {
         : null;
       return {
         studentId: String(student.id),
+        dropped, notEnrolled, joinedDate:notEnrolledStudents.get(String(student.id))??null,
+        dropoutEffectiveDate: droppedStudents.get(String(student.id))?.effectiveDate ?? droppedStudents.get(String(student.id)) ?? null,
+        withdrawalType: droppedStudents.get(String(student.id))?.eventType ?? (dropped?'dropout':null),
         firstName: student.firstName,
         lastName: student.lastName,
         middleName: student.middleName,
@@ -285,7 +295,7 @@ const getAdvisoryGradebook = async (req, res) => {
             s.subjectSectionId,
           );
           if (isOwnAdvisorySubject) {
-            const allComplete = students.every(
+            const allComplete = students.filter(student => !droppedStudents.has(String(student.id))&&!notEnrolledStudents.has(String(student.id))).every(
               (student) =>
                 cacheByKey.get(`${student.id}:${s.subjectSectionId}`)
                   ?.isComplete,
@@ -336,7 +346,7 @@ const getSubmissionStatus = async (req, res) => {
     const scope = advisoryScope(req.advisorySection);
 
     const [rows] = await connection.execute(
-      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt,
+      `SELECT DATE_FORMAT(submitted_at, '%Y-%m-%dT%H:%i:%s+08:00') AS submittedAt,
               (SELECT CAST(MAX(h.id) AS CHAR) FROM grade_submission_history h WHERE h.submission_type = 'advisory' AND h.${scope.column} = grade_submissions.${scope.column} ${scope.column === 'grade_level_id' ? 'AND h.section_id IS NULL' : ''} AND h.grading_period_id = grade_submissions.grading_period_id) AS submissionVersion
        FROM grade_submissions
        WHERE ${scope.column} = ? AND grading_period_id = ?`,
@@ -428,7 +438,7 @@ const getGradeVisibility = async (req, res) => {
 
     const [visRows] = await connection.execute(
       `SELECT student_id AS studentId, is_visible AS isVisible,
-              DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') AS updatedAt
+              DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%s+08:00') AS updatedAt
        FROM grade_visibility
        WHERE student_id IN (${placeholders}) AND grading_period_id = ?`,
       [...studentIds, gradingPeriodId],

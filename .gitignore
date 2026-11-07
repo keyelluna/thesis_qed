@@ -3,3 +3,5 @@
 !.env.example
 !.env.storage.example
 node_modules/
+.vercel
+.env*

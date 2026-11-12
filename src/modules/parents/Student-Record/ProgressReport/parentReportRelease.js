@@ -1,5 +1,5 @@
-// Parent release is separate from submission to the principal.
-function isParentReportReleased({ isVisible, termEnded }) {
-  return Number(isVisible) === 1 && Number(termEnded) === 1;
+// Formal grades reach parents only after all three release conditions are met.
+function isParentReportReleased({ isVisible, termEnded, approved }) {
+  return Number(isVisible) === 1 && Number(termEnded) === 1 && approved === true;
 }
 module.exports = { isParentReportReleased };

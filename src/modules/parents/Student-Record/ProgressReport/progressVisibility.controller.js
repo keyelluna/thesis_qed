@@ -1,3 +1,4 @@
+const { isGradeApproved, withGradeSnapshot } = require('../../../shared/grades/principalGradeApproval.service');
 const { isParentReportReleased } = require('./parentReportRelease');
 const connection = require("../../.././../../config/db");
 
@@ -10,28 +11,29 @@ const SUBMITTED = `EXISTS (
   )
 )`;
 
-function visibilityEntry(row) {
+async function visibilityEntry(db, studentId, row) {
   const submitted = Number(row.submitted) === 1;
   const isVisible = Number(row.isVisible) === 1;
   const termEnded = Number(row.termEnded) === 1;
+  const approved = termEnded && await isGradeApproved(db, studentId, row.gradingPeriodId);
   return {
     gradingPeriodId: row.gradingPeriodId,
     termNumber: row.termNumber,
     termLabel: row.termLabel,
-    submitted, isVisible, termEnded,
-    available: isParentReportReleased({ isVisible, termEnded }),
+    submitted, isVisible, termEnded, approved,
+    available: isParentReportReleased({ isVisible, termEnded, approved }),
   };
 }
 
-async function getVisibilityMapForStudent(studentId) {
-  const [rows] = await connection.execute(
+async function getVisibilityMapForStudent(studentId, db) {
+  const [rows] = await db.execute(
     `SELECT
         gp.id            AS gradingPeriodId,
         gp.term_number   AS termNumber,
         gp.term_label    AS termLabel,
         gp.end_date      AS endDate,
         COALESCE(gv.is_visible, 0)      AS isVisible,
-        (CURDATE() >= gp.end_date)      AS termEnded,
+        (gp.end_date < CURDATE())      AS termEnded,
         ${SUBMITTED} AS submitted
      FROM grading_periods gp
      INNER JOIN school_year sy ON sy.id = gp.school_year_id
@@ -44,45 +46,43 @@ async function getVisibilityMapForStudent(studentId) {
     [studentId]
   );
 
-//   console.log(`[getVisibilityMapForStudent] studentId=${studentId} raw rows:`, rows);
-
-  const mapped = rows.map(visibilityEntry);
-
-//   console.log(`[getVisibilityMapForStudent] studentId=${studentId} mapped:`, mapped);
-
-  return mapped;
+  const entries = [];
+  for (const row of rows) entries.push(await visibilityEntry(db, studentId, row));
+  return entries;
 }
 
 async function getSingleTermVisibility(studentId, gradingPeriodId) {
-  const [rows] = await connection.execute(
-    `SELECT
-        gp.id AS gradingPeriodId,
-        gp.term_number AS termNumber,
-        gp.term_label AS termLabel,
-        COALESCE(gv.is_visible, 0) AS isVisible,
-        (CURDATE() >= gp.end_date) AS termEnded,
-        ${SUBMITTED} AS submitted
-     FROM grading_periods gp
-     INNER JOIN elem_students s ON s.id = ? AND s.is_deleted = 0
-       AND s.current_school_year_id = gp.school_year_id
-     LEFT JOIN grade_visibility gv
-        ON gv.grading_period_id = gp.id AND gv.student_id = s.id
-     WHERE gp.id = ?
-     LIMIT 1`,
-    [studentId, gradingPeriodId]
-  );
+  return withGradeSnapshot(async db => {
+    const [rows] = await db.execute(
+      `SELECT
+          gp.id AS gradingPeriodId,
+          gp.term_number AS termNumber,
+          gp.term_label AS termLabel,
+          COALESCE(gv.is_visible, 0) AS isVisible,
+          (gp.end_date < CURDATE()) AS termEnded,
+          ${SUBMITTED} AS submitted
+       FROM grading_periods gp
+       INNER JOIN elem_students s ON s.id = ? AND s.is_deleted = 0
+         AND s.current_school_year_id = gp.school_year_id
+       LEFT JOIN grade_visibility gv
+          ON gv.grading_period_id = gp.id AND gv.student_id = s.id
+       WHERE gp.id = ?
+       LIMIT 1`,
+      [studentId, gradingPeriodId]
+    );
 
-  if (!rows.length) return null;
+    if (!rows.length) return null;
 
-  const r = rows[0];
-  return visibilityEntry(r);
+    const r = rows[0];
+    return visibilityEntry(db, studentId, r);
+  });
 }
 async function isStudentLinkedToParent(parentUserId, studentId) {
   const [rows] = await connection.execute(
     `SELECT 1
      FROM parent_student ps
      INNER JOIN parent_table pt ON pt.id = ps.parent_id
-     WHERE pt.user_id = ? AND ps.student_id = ?
+     WHERE pt.user_id = ? AND pt.is_deleted = 0 AND ps.student_id = ?
      LIMIT 1`,
     [parentUserId, studentId]
   );
@@ -94,14 +94,14 @@ async function getVisibilityStatus(req, res) {
     const { studentId } = req.params;
     const { role, userId } = req.user;
 
-    if (role === "parent") {
+    if (String(role).toLowerCase() === "parent") {
       const isLinked = await isStudentLinkedToParent(userId, studentId);
       if (!isLinked) {
         return res.status(403).json({ success: false, message: "Hindi mo ito authorized na tignan." });
       }
     }
 
-    const visibility = await getVisibilityMapForStudent(studentId);
+    const visibility = await withGradeSnapshot(db => getVisibilityMapForStudent(studentId, db));
 
     return res.status(200).json({ success: true, data: visibility });
   } catch (err) {
@@ -115,19 +115,19 @@ async function getStudentTermPerformance(req, res) {
     const { studentId } = req.params;
     const { role, userId } = req.user;
 
-    if (role === "parent") {
+    if (String(role).toLowerCase() === "parent") {
       const isLinked = await isStudentLinkedToParent(userId, studentId);
       if (!isLinked) {
         return res.status(403).json({ success: false, message: "Hindi mo ito authorized na tignan." });
       }
     }
 
-    const visibility = await getVisibilityMapForStudent(studentId);
+    const visibility = await withGradeSnapshot(db => getVisibilityMapForStudent(studentId, db));
 
     let terms = [];
     const meta = {};
 
-    if (role === "parent") {
+    if (String(role).toLowerCase() === "parent") {
       const availableTermNumbers = new Set(
         visibility.filter((v) => v.available).map((v) => v.termNumber)
       );

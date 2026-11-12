@@ -1,3 +1,4 @@
+const { isGradeApproved, withGradeSnapshot } = require('../../../shared/grades/principalGradeApproval.service');
 const {studentDroppedPeriods,studentNotEnrolledPeriods} = require('../../../shared/grades/dropoutAcademicPolicy');
 const { getSubjectComponentGrades } = require('../../../shared/grades/gradeCache.service');
 const { isParentReportReleased } = require('./parentReportRelease');
@@ -104,8 +105,8 @@ async function verifyStudentAccess(req, res, next) {
   }
 }
 
-async function getStudentMeta(studentId, schoolYearId) {
-  const [rows] = await connection.execute(
+async function getStudentMeta(studentId, schoolYearId, db) {
+  const [rows] = await db.execute(
     `SELECT
        es.first_name AS firstName,
        es.last_name AS lastName,
@@ -141,148 +142,156 @@ async function getStudentMeta(studentId, schoolYearId) {
 
 const getTermPerformance = async (req, res) => {
   try {
-    const { id: studentId, sectionId, gradeLevelId, schoolYearId: studentSchoolYearId } = req.student;
-    const activeSchoolYearId = req.activeSchoolYearId;
+    const isParent = String(req.user?.role).toLowerCase() === 'parent';
+    const read = async (db) => {
+      const { id: studentId, sectionId, gradeLevelId, schoolYearId: studentSchoolYearId } = req.student;
+      const activeSchoolYearId = req.activeSchoolYearId;
 
-    const meta = await getStudentMeta(studentId, activeSchoolYearId);
+      const meta = await getStudentMeta(studentId, activeSchoolYearId, db);
 
-    const [gradingPeriods] = await connection.execute(
-      `SELECT gp.id, gp.term_number AS termNumber, gp.term_label AS termLabel,
-              COALESCE(gv.is_visible, 0) AS isVisible,
-              (CURDATE() >= gp.end_date) AS termEnded
-       FROM grading_periods gp
-       LEFT JOIN grade_visibility gv ON gv.grading_period_id = gp.id AND gv.student_id = ?
-       WHERE gp.school_year_id = ?
-       ORDER BY gp.term_number ASC`,
-      [studentId, activeSchoolYearId]
-    );
-
-    const shell = (released) =>
-      gradingPeriods.map((gp) => ({
-        key: `term_${gp.id}`,
-        label: gp.termLabel || TERM_LABEL_FALLBACK(gp.termNumber),
-        termNumber: gp.termNumber,
-        released: typeof released === "function" ? released(gp.id) : released,
-        subjects: [],
-      }));
-
-    const notInActiveYear =
-      !activeSchoolYearId ||
-      studentSchoolYearId !== activeSchoolYearId;
-
-    if (gradingPeriods.length === 0 || notInActiveYear) {
-      return res.status(200).json({ success: true, meta, data: shell(false) });
-    }
-
-    const periodIds = gradingPeriods.map((gp) => gp.id);
-    const periodPlaceholders = periodIds.map(() => "?").join(",");
-
-    const [submissionRows] = await connection.execute(
-      `SELECT grading_period_id AS gradingPeriodId
-       FROM grade_submissions
-       WHERE ${sectionId !== null ? 'section_id = ?' : 'section_id IS NULL AND grade_level_id = ?'}
-         AND grading_period_id IN (${periodPlaceholders})`,
-      [sectionId ?? gradeLevelId, ...periodIds]
-    );
-    const releasedPeriodIds = new Set(submissionRows.map((r) => r.gradingPeriodId));
-    const canRelease = (gp) => String(req.user?.role).toLowerCase() === 'parent'
-      ? isParentReportReleased(gp)
-      : releasedPeriodIds.has(gp.id);
-
-    const [subjectSections] = await connection.execute(
-      `SELECT ss.id, es.subject_name AS subjectName
-       FROM \`subject-section\` ss
-       INNER JOIN elem_subjects es ON ss.subject_id = es.id
-       WHERE ${sectionId !== null
-         ? '(ss.section_id = ? OR (ss.section_id IS NULL AND es.grade_level_id = ?))'
-         : 'ss.section_id IS NULL AND es.grade_level_id = ?'}
-         AND ss.status = 'Active' AND ss.school_year_id = ?
-         AND es.is_graded = 1`,
-      sectionId !== null ? [sectionId, gradeLevelId, activeSchoolYearId] : [gradeLevelId, activeSchoolYearId]
-    );
-
-    if (subjectSections.length === 0) {
-      return res.status(200).json({
-        success: true,
-        meta,
-        data: shell((id) => canRelease(gradingPeriods.find(gp => gp.id === id))),
-      });
-    }
-
-    const subjectSectionIds = subjectSections.map((s) => s.id);
-    const ssPlaceholders = subjectSectionIds.map(() => "?").join(",");
-
-    const [cacheRows] = await connection.execute(
-      `SELECT subject_section_id AS subjectSectionId, grading_period_id AS gradingPeriodId, average
-       FROM subject_grade_cache
-       WHERE student_id = ?
-         AND subject_section_id IN (${ssPlaceholders})
-         AND grading_period_id IN (${periodPlaceholders})
-         AND average IS NOT NULL
-         AND is_complete = 1`,
-      [studentId, ...subjectSectionIds, ...periodIds]
-    );
-
-    const [overallRows] = await connection.execute(
-      `SELECT grading_period_id AS gradingPeriodId, overall_average AS overallAverage
-       FROM advisory_overall_grades
-       WHERE student_id = ? AND grading_period_id IN (${periodPlaceholders})`,
-      [studentId, ...periodIds]
-    );
-    const overallByPeriodId = new Map(
-      overallRows
-        .filter((r) => r.overallAverage !== null)
-        .map((r) => [r.gradingPeriodId, Number(r.overallAverage)])
-    );
-
-    const gradeBySubjectAndPeriod = new Map();
-    for (const row of cacheRows) {
-      gradeBySubjectAndPeriod.set(
-        `${row.subjectSectionId}_${row.gradingPeriodId}`,
-        Number(row.average)
+      const [gradingPeriods] = await db.execute(
+        `SELECT gp.id, gp.term_number AS termNumber, gp.term_label AS termLabel,
+                COALESCE(gv.is_visible, 0) AS isVisible,
+                (gp.end_date < CURDATE()) AS termEnded
+         FROM grading_periods gp
+         LEFT JOIN grade_visibility gv ON gv.grading_period_id = gp.id AND gv.student_id = ?
+         WHERE gp.school_year_id = ?
+         ORDER BY gp.term_number ASC`,
+        [studentId, activeSchoolYearId]
       );
-    }
 
-    const componentGrades = new Map();
-    for (const gp of gradingPeriods) {
-      if (!canRelease(gp)) continue;
-      for (const ss of subjectSections) {
-        if (/\bMAPEH\b/i.test(ss.subjectName)) {
-          componentGrades.set(`${ss.id}_${gp.id}`, await getSubjectComponentGrades(studentId, ss.id, gp.id));
+      const shell = (released) =>
+        gradingPeriods.map((gp) => ({
+          key: `term_${gp.id}`,
+          label: gp.termLabel || TERM_LABEL_FALLBACK(gp.termNumber),
+          termNumber: gp.termNumber,
+          released: typeof released === "function" ? released(gp.id) : released,
+          subjects: [],
+        }));
+
+      const notInActiveYear =
+        !activeSchoolYearId ||
+        studentSchoolYearId !== activeSchoolYearId;
+
+      if (gradingPeriods.length === 0 || notInActiveYear) {
+        return { success: true, meta, data: shell(false) };
+      }
+
+      const periodIds = gradingPeriods.map((gp) => gp.id);
+      const periodPlaceholders = periodIds.map(() => "?").join(",");
+
+      const [submissionRows] = await db.execute(
+        `SELECT grading_period_id AS gradingPeriodId
+         FROM grade_submissions
+         WHERE ${sectionId !== null ? 'section_id = ?' : 'section_id IS NULL AND grade_level_id = ?'}
+           AND grading_period_id IN (${periodPlaceholders})`,
+        [sectionId ?? gradeLevelId, ...periodIds]
+      );
+      const releasedPeriodIds = new Set(submissionRows.map((r) => r.gradingPeriodId));
+      const approvedPeriods = new Set();
+      if (isParent) {
+        for (const gp of gradingPeriods) {
+          if (Number(gp.isVisible) === 1 && Number(gp.termEnded) === 1 &&
+            await isGradeApproved(db, studentId, gp.id, { sectionId, gradeLevelId })) approvedPeriods.add(gp.id);
         }
       }
-    }
-    const subjectsByPeriodId = new Map();
-    for (const gp of gradingPeriods) {
-      subjectsByPeriodId.set(
-        gp.id,
-        subjectSections.map((ss) => ({
-          subject: ss.subjectName,
-          grade: gradeBySubjectAndPeriod.get(`${ss.id}_${gp.id}`) ?? null,
-          ...(componentGrades.has(`${ss.id}_${gp.id}`) ? { components: componentGrades.get(`${ss.id}_${gp.id}`) } : {}),
-        }))
+      const canRelease = gp => isParent
+        ? isParentReportReleased({ ...gp, approved: approvedPeriods.has(gp.id) })
+        : releasedPeriodIds.has(gp.id);
+
+      const [subjectSections] = await db.execute(
+        `SELECT ss.id, es.subject_name AS subjectName
+         FROM \`subject-section\` ss
+         INNER JOIN elem_subjects es ON ss.subject_id = es.id
+         WHERE ${sectionId !== null
+           ? '(ss.section_id = ? OR (ss.section_id IS NULL AND es.grade_level_id = ?))'
+           : 'ss.section_id IS NULL AND es.grade_level_id = ?'}
+           AND ss.status = 'Active' AND ss.school_year_id = ?
+           AND es.is_graded = 1`,
+        sectionId !== null ? [sectionId, gradeLevelId, activeSchoolYearId] : [gradeLevelId, activeSchoolYearId]
       );
-    }
 
-    const droppedPeriods = await studentDroppedPeriods(connection,studentId,activeSchoolYearId);
-    const notEnrolledPeriods=await studentNotEnrolledPeriods(connection,studentId,activeSchoolYearId);
-    const data = gradingPeriods.map((gp) => {
-      const notEnrolled=notEnrolledPeriods.has(String(gp.id));
-      const dropped = !notEnrolled&&droppedPeriods.has(String(gp.id));
-      const withdrawalType=droppedPeriods.get?.(String(gp.id))??(dropped?"dropout":null);
-      const released = canRelease(gp);
-      return {
-        key: `term_${gp.id}`,
-        label: gp.termLabel || TERM_LABEL_FALLBACK(gp.termNumber),
-        termNumber: gp.termNumber,
-        released,
-        dropped, withdrawalType, notEnrolled,
-        average: released && !dropped && !notEnrolled ? overallByPeriodId.get(gp.id) ?? undefined : undefined,
-        subjects: released ? (subjectsByPeriodId.get(gp.id) || []).map(row => dropped||notEnrolled ? {...row,grade:null,components:row.components?.map(c=>({...c,grade:null}))} : row) : [],
-      };
-    });
+      if (subjectSections.length === 0) {
+        return { success: true, meta, data: shell((id) => canRelease(gradingPeriods.find(gp => gp.id === id))) };
+      }
 
-    return res.status(200).json({ success: true, meta, data });
+      const subjectSectionIds = subjectSections.map((s) => s.id);
+      const ssPlaceholders = subjectSectionIds.map(() => "?").join(",");
+
+      const [cacheRows] = await db.execute(
+        `SELECT subject_section_id AS subjectSectionId, grading_period_id AS gradingPeriodId, average
+         FROM subject_grade_cache
+         WHERE student_id = ?
+           AND subject_section_id IN (${ssPlaceholders})
+           AND grading_period_id IN (${periodPlaceholders})
+           AND average IS NOT NULL
+           AND is_complete = 1`,
+        [studentId, ...subjectSectionIds, ...periodIds]
+      );
+
+      const [overallRows] = await db.execute(
+        `SELECT grading_period_id AS gradingPeriodId, overall_average AS overallAverage
+         FROM advisory_overall_grades
+         WHERE student_id = ? AND grading_period_id IN (${periodPlaceholders})`,
+        [studentId, ...periodIds]
+      );
+      const overallByPeriodId = new Map(
+        overallRows
+          .filter((r) => r.overallAverage !== null)
+          .map((r) => [r.gradingPeriodId, Number(r.overallAverage)])
+      );
+
+      const gradeBySubjectAndPeriod = new Map();
+      for (const row of cacheRows) {
+        gradeBySubjectAndPeriod.set(
+          `${row.subjectSectionId}_${row.gradingPeriodId}`,
+          Number(row.average)
+        );
+      }
+
+      const componentGrades = new Map();
+      for (const gp of gradingPeriods) {
+        if (!canRelease(gp)) continue;
+        for (const ss of subjectSections) {
+          if (/\bMAPEH\b/i.test(ss.subjectName)) {
+            componentGrades.set(`${ss.id}_${gp.id}`, await getSubjectComponentGrades(studentId, ss.id, gp.id, db));
+          }
+        }
+      }
+      const subjectsByPeriodId = new Map();
+      for (const gp of gradingPeriods) {
+        subjectsByPeriodId.set(
+          gp.id,
+          subjectSections.map((ss) => ({
+            subject: ss.subjectName,
+            grade: gradeBySubjectAndPeriod.get(`${ss.id}_${gp.id}`) ?? null,
+            ...(componentGrades.has(`${ss.id}_${gp.id}`) ? { components: componentGrades.get(`${ss.id}_${gp.id}`) } : {}),
+          }))
+        );
+      }
+
+      const droppedPeriods = await studentDroppedPeriods(db,studentId,activeSchoolYearId);
+      const notEnrolledPeriods=await studentNotEnrolledPeriods(db,studentId,activeSchoolYearId);
+      const data = gradingPeriods.map((gp) => {
+        const notEnrolled=notEnrolledPeriods.has(String(gp.id));
+        const dropped = !notEnrolled&&droppedPeriods.has(String(gp.id));
+        const withdrawalType=droppedPeriods.get?.(String(gp.id))??(dropped?"dropout":null);
+        const released = canRelease(gp);
+        return {
+          key: `term_${gp.id}`,
+          label: gp.termLabel || TERM_LABEL_FALLBACK(gp.termNumber),
+          termNumber: gp.termNumber,
+          released,
+          dropped, withdrawalType, notEnrolled,
+          average: released && !dropped && !notEnrolled ? overallByPeriodId.get(gp.id) ?? undefined : undefined,
+          subjects: released ? (subjectsByPeriodId.get(gp.id) || []).map(row => dropped||notEnrolled ? {...row,grade:null,components:row.components?.map(c=>({...c,grade:null}))} : row) : [],
+        };
+      });
+
+      return { success: true, meta, data };
+    };
+    const data = isParent ? await withGradeSnapshot(read) : await read(connection);
+    return res.status(200).json(data);
   } catch (error) {
     console.error("Error fetching term performance progress:", error);
     return res.status(500).json({ success: false, message: "Internal server error." });

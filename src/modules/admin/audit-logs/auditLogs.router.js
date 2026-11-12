@@ -1,13 +1,16 @@
 const express = require("express");
 const router = express.Router();
 const verifyToken = require("../../authentication/authentication.middleware");
-const { getAuditLogs } = require("./auditLogs.controller");
+const { getAuditLogs, deleteAuditLog } = require("./auditLogs.controller");
 
-router.get("/", verifyToken, (req, res, next) => {
+function requireAdmin(req, res, next) {
   if (String(req.user?.role || "").toLowerCase() !== "admin") {
     return res.status(403).json({ success: false, message: "Administrator access is required." });
   }
   return next();
-}, getAuditLogs);
+}
+
+router.get('/', verifyToken, requireAdmin, getAuditLogs);
+router.delete('/:id', verifyToken, requireAdmin, deleteAuditLog);
 
 module.exports = router;

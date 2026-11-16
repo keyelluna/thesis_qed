@@ -12,7 +12,7 @@ function ipv4DatabaseStream({ config }, connect = net.createConnection) {
 }
 
 // Only acquisition is bounded here. Never race a running transaction or replay a write.
-function boundPoolAcquisition(pool, { timeoutMs = 10000, setTimer = setTimeout, clearTimer = clearTimeout, report = diagnostic } = {}) {
+function boundPoolAcquisition(pool, { timeoutMs = 35000, setTimer = setTimeout, clearTimer = clearTimeout, report = diagnostic } = {}) {
   const acquire = pool.getConnection.bind(pool);
   pool.getConnection = callback => {
     let settled = false;

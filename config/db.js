@@ -223,7 +223,7 @@ function createPool() {
 
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
-    connectTimeout: 10000,
+    connectTimeout: 30000,
   });
 
   if (process.env.VERCEL === '1') {

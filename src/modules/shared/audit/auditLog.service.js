@@ -115,8 +115,39 @@ function auditMutationRequests(req, res, next) {
   next();
 }
 
+let removalTableReady;
+
+function ensureRemovalTable() {
+  if (!removalTableReady) {
+    removalTableReady = connection.execute(
+      "CREATE TABLE IF NOT EXISTS system_audit_log_removals (" +
+        "event_id DECIMAL(20,0) PRIMARY KEY, removed_by BIGINT NOT NULL, " +
+        "removed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB",
+    ).catch((error) => {
+      removalTableReady = null;
+      throw error;
+    });
+  }
+  return removalTableReady;
+}
+
+async function removeAuditLog(id, adminId) {
+  await ensureAuditLogTable();
+  await ensureRemovalTable();
+  // Negative IDs represent sign-in history from the separate login table.
+  const legacy = id.startsWith("-");
+  const source = legacy ? "login_logs" : "system_audit_logs";
+  await connection.execute(
+    `INSERT INTO system_audit_log_removals (event_id, removed_by)
+      SELECT ?, ? FROM ${source} WHERE id = CAST(? AS UNSIGNED)
+      ON DUPLICATE KEY UPDATE event_id = system_audit_log_removals.event_id`,
+    [id, adminId, legacy ? id.slice(1) : id],
+  );
+}
+
 async function listAuditLogs({ page = 1, limit = 25, search = "", role = "", action = "", from = "", to = "" }) {
   await ensureAuditLogTable();
+  await ensureRemovalTable();
   const actorFullNameSql = `COALESCE(
     NULLIF(TRIM(CONCAT_WS(' ', admin_actor.first_name, admin_actor.middle_name, admin_actor.last_name)), ''),
     NULLIF(TRIM(CONCAT_WS(' ', principal_actor.first_name, principal_actor.middle_name, principal_actor.last_name)), ''),
@@ -124,7 +155,7 @@ async function listAuditLogs({ page = 1, limit = 25, search = "", role = "", act
     NULLIF(TRIM(CONCAT_WS(' ', parent_actor.first_name, parent_actor.middle_name, parent_actor.last_name)), ''),
     al.actor_username
   )`;
-  const filters = [];
+  const filters = ["NOT EXISTS (SELECT 1 FROM system_audit_log_removals removed WHERE removed.event_id = al.id)"];
   const values = [];
   if (search) {
     filters.push(`(${actorFullNameSql} LIKE ? OR al.actor_username LIKE ? OR al.resource_name LIKE ? OR al.endpoint LIKE ? OR al.resource_id LIKE ?)`);
@@ -140,7 +171,7 @@ async function listAuditLogs({ page = 1, limit = 25, search = "", role = "", act
   const safeLimit = Math.min(100, Math.max(1, Math.floor(Number(limit) || 25)));
   const offset = (safePage - 1) * safeLimit;
   const eventRowsSql = `
-    SELECT id, actor_user_id,
+    SELECT CAST(id AS DECIMAL(20,0)) AS id, actor_user_id,
            CONVERT(actor_username USING utf8mb4) COLLATE utf8mb4_unicode_ci AS actor_username,
            CONVERT(actor_role USING utf8mb4) COLLATE utf8mb4_unicode_ci AS actor_role,
            CONVERT(CASE WHEN LOWER(SUBSTRING_INDEX(endpoint, '?', 1)) = '/api/auth/logout' THEN 'LOGOUT' ELSE action_type END USING utf8mb4) COLLATE utf8mb4_unicode_ci AS action_type,
@@ -155,7 +186,7 @@ async function listAuditLogs({ page = 1, limit = 25, search = "", role = "", act
            created_at
     FROM system_audit_logs
     UNION ALL
-    SELECT -ll.id AS id, ll.user_id AS actor_user_id,
+    SELECT -CAST(ll.id AS DECIMAL(20,0)) AS id, ll.user_id AS actor_user_id,
            CONVERT(auth.user_name USING utf8mb4) COLLATE utf8mb4_unicode_ci AS actor_username,
            CONVERT(UPPER(ll.role) USING utf8mb4) COLLATE utf8mb4_unicode_ci AS actor_role,
            _utf8mb4'LOGIN' COLLATE utf8mb4_unicode_ci AS action_type,
@@ -193,7 +224,7 @@ async function listAuditLogs({ page = 1, limit = 25, search = "", role = "", act
   // placeholders are accepted. These values are numeric, floored, and
   // bounded above, so embedding them avoids driver-level bind errors safely.
   const [rows] = await connection.query(
-    `SELECT al.id, al.actor_user_id AS actorUserId,
+    `SELECT CAST(al.id AS CHAR) AS id, al.actor_user_id AS actorUserId,
             ${actorFullNameSql} AS actorFullName, al.actor_username AS actorUsername,
             al.actor_role AS actorRole, al.action_type AS action, al.resource_name AS resource, al.resource_id AS resourceId,
             al.http_method AS httpMethod, al.endpoint, al.status_code AS statusCode,
@@ -208,4 +239,4 @@ async function listAuditLogs({ page = 1, limit = 25, search = "", role = "", act
   return { entries: rows, page: safePage, limit: safeLimit, total: Number(countRows[0]?.total || 0) };
 }
 
-module.exports = { ensureAuditLogTable, recordAuditEvent, auditMutationRequests, listAuditLogs };
+module.exports = { ensureAuditLogTable, recordAuditEvent, auditMutationRequests, listAuditLogs, removeAuditLog };

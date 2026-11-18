@@ -103,7 +103,7 @@ const getAdvisorySectionsList = async (req, res) => {
       classes.map(async ({ classId, section_id: sectionId, sectionName, gradeLevel, schoolYearId, schoolYearLabel }) => {
         const [roster] = sectionId
           ? await connection.execute(
-              `SELECT s.id, CAST(s.lrn AS CHAR) AS lrn, s.student_number AS studentNumber,
+              `SELECT s.id, CAST(s.learner_reference_number AS CHAR) AS lrn, s.student_number AS studentNumber,
                       s.last_name AS lastName, s.first_name AS firstName, s.middle_name AS middleName,
                       CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
                       s.gender AS gender, DATE_FORMAT(ti.joined_date, '%Y-%m-%d') AS joinedDate
@@ -116,7 +116,7 @@ const getAdvisorySectionsList = async (req, res) => {
               [sectionId, activeSchoolYearId],
             )
           : await connection.execute(
-              `SELECT s.id, CAST(s.lrn AS CHAR) AS lrn, s.student_number AS studentNumber,
+              `SELECT s.id, CAST(s.learner_reference_number AS CHAR) AS lrn, s.student_number AS studentNumber,
                       s.last_name AS lastName, s.first_name AS firstName, s.middle_name AS middleName,
                       CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
                       s.gender AS gender, DATE_FORMAT(ti.joined_date, '%Y-%m-%d') AS joinedDate

@@ -103,7 +103,8 @@ const getAdvisorySectionsList = async (req, res) => {
       classes.map(async ({ classId, section_id: sectionId, sectionName, gradeLevel, schoolYearId, schoolYearLabel }) => {
         const [roster] = sectionId
           ? await connection.execute(
-              `SELECT s.id,
+              `SELECT s.id, CAST(s.lrn AS CHAR) AS lrn, s.student_number AS studentNumber,
+                      s.last_name AS lastName, s.first_name AS firstName, s.middle_name AS middleName,
                       CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
                       s.gender AS gender, DATE_FORMAT(ti.joined_date, '%Y-%m-%d') AS joinedDate
                FROM elem_students s LEFT JOIN student_transfer_ins ti ON ti.student_id=s.id AND ti.school_year_id=s.current_school_year_id
@@ -115,7 +116,8 @@ const getAdvisorySectionsList = async (req, res) => {
               [sectionId, activeSchoolYearId],
             )
           : await connection.execute(
-              `SELECT s.id,
+              `SELECT s.id, CAST(s.lrn AS CHAR) AS lrn, s.student_number AS studentNumber,
+                      s.last_name AS lastName, s.first_name AS firstName, s.middle_name AS middleName,
                       CONCAT(s.last_name, ', ', s.first_name, IF(s.middle_name IS NOT NULL AND s.middle_name != '', CONCAT(' ', s.middle_name), '')) AS name,
                       s.gender AS gender, DATE_FORMAT(ti.joined_date, '%Y-%m-%d') AS joinedDate
                FROM elem_students s LEFT JOIN student_transfer_ins ti ON ti.student_id=s.id AND ti.school_year_id=s.current_school_year_id
@@ -135,7 +137,17 @@ const getAdvisorySectionsList = async (req, res) => {
           sectionId: sectionId ? String(sectionId) : null,
           sectionName: sectionName?.trim() || gradeLevel,
           gradeLevel,
-          roster: roster.map((r) => ({ id: String(r.id), name: r.name, gender: r.gender, joinedDate: r.joinedDate })),
+          roster: roster.map((r) => ({
+            id: String(r.id),
+            name: r.name,
+            gender: r.gender,
+            joinedDate: r.joinedDate,
+            lrn: r.lrn,
+            studentNumber: r.studentNumber,
+            lastName: r.lastName,
+            firstName: r.firstName,
+            middleName: r.middleName,
+          })),
           terms: formattedTerms,
         };
       }),
